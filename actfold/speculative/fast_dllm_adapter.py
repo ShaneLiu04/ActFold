@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any, cast
+from typing import Any, Callable, cast
 
 import torch
 import torch.nn as nn
@@ -193,7 +193,8 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
 
         # Hugging Face style accessor.
         if hasattr(model, "get_input_embeddings"):
-            emb = model.get_input_embeddings()
+            getter = cast(Callable[[], nn.Module], getattr(model, "get_input_embeddings"))
+            emb = getter()
             if isinstance(emb, nn.Module):
                 out = emb(tokens)
                 if isinstance(out, torch.Tensor):
