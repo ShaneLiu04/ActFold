@@ -1,0 +1,5 @@
+# Optional benchmark backends (real model evaluation).
+-r requirements.txt
+
+lm-eval>=0.4.0
+evalplus>=0.1.0

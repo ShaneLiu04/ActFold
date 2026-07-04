@@ -1,0 +1,45 @@
+# Default ActFold experiment configuration.
+
+# Similarity gating
+tau: 0.95
+metric: "cosine"
+
+# Activation cache
+max_entries_per_layer: 1024
+
+# Dynamic threshold scheduling
+enable_dynamic_tau: false
+
+# Device and seed
+device: "cuda"
+seed: 42
+
+# Model dimensions for FLOPs estimation and lightweight stand-in models.
+# When model_name_or_path is set, these are inferred from the loaded model.
+num_layers: 12
+hidden_dim: 768
+num_heads: 12
+seq_len: 128
+vocab_size: 32000
+num_steps: 10
+
+# Real model configuration.  Benchmarking requires a real model identifier;
+# the default uses GPT-2 as a lightweight stand-in.
+model_name_or_path: "gpt2"
+model_family: "causal_lm"
+trust_remote_code: true
+use_fast_tokenizer: true
+load_in_8bit: false
+load_in_4bit: false
+torch_dtype: null        # "float32", "float16", "bfloat16", or null
+device_map: null          # "auto", "cuda:0", etc.
+
+# Evaluation backend configuration.
+# ActFold only supports real evaluation backends (lm-eval / evalplus).
+# Install them with: pip install -r requirements-bench.txt
+use_real_eval: true
+eval_backend: "auto"      # "auto", "lm-eval", or "evalplus"
+eval_batch_size: 1
+eval_num_fewshot: null
+eval_limit: null
+eval_base_only: false

@@ -1,0 +1,76 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "actfold"
+version = "0.1.0"
+description = "Cross-Branch Activation Reuse & Branch Folding for Diffusion LLMs"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "ActFold Contributors" },
+]
+keywords = ["diffusion-llm", "speculative-decoding", "activation-reuse", "inference-optimization"]
+dependencies = [
+    "torch>=2.0.0",
+    "transformers>=4.30.0",
+    "accelerate>=0.20.0",
+    "datasets>=2.12.0",
+    "numpy>=1.24.0",
+    "matplotlib>=3.7.0",
+    "seaborn>=0.12.0",
+    "pyyaml>=6.0",
+    "tqdm>=4.65.0",
+    "safetensors>=0.3.0",
+    "pandas>=2.0.0",
+]
+
+[project.optional-dependencies]
+bench = [
+    "lm-eval>=0.4.0",
+    "evalplus>=0.1.0",
+]
+cuda = [
+    "triton>=2.0",
+]
+dev = [
+    "pytest>=7.3.0",
+    "black>=23.0",
+    "isort>=5.12.0",
+    "mypy>=1.3.0",
+    "pyflakes>=3.0.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["actfold*", "actfold.models*", "actfold.core*", "actfold.profiler*", "actfold.speculative*", "actfold.eval*", "actfold.utils*", "actfold.configs*"]
+
+[tool.setuptools.package-data]
+actfold = ["configs/**/*.yaml"]
+
+[tool.black]
+line-length = 100
+target-version = ["py310", "py311"]
+include = 'actfold/.*\.py|tests/.*\.py|demo\.py|scripts/.*\.py'
+
+[tool.isort]
+profile = "black"
+line_length = 100
+known_first_party = ["actfold"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_ignores = true
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-v --tb=short"
+markers = [
+    "slow: tests that rely on real benchmark backends (lm-eval/evalplus) and may take minutes",
+]
