@@ -78,5 +78,7 @@ def get_model_device(model: FastDLLMAdapter) -> torch.device:
         except StopIteration:
             pass
     if hasattr(raw, "get_device"):
-        return torch.device(raw.get_device())
+        device_getter = raw.get_device
+        if callable(device_getter):
+            return torch.device(device_getter())
     return torch.device("cpu")

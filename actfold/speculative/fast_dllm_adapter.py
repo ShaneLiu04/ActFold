@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import inspect
 from abc import ABC, abstractmethod
-from typing import Any
+from typing import Any, cast
 
 import torch
 import torch.nn as nn
@@ -87,14 +87,12 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
     ) -> None:
         self._model = model
         self._folded_model = folded_model
-        self._is_diffusion_llm = isinstance(model, DiffusionLLM)
 
-        if self._is_diffusion_llm:
-            diffusion = model
-            self._num_layers = diffusion.num_layers
-            self._hidden_dim = diffusion.hidden_dim
-            self._num_heads = diffusion.num_heads
-            self._vocab_size = diffusion.vocab_size
+        if isinstance(model, DiffusionLLM):
+            self._num_layers = model.num_layers
+            self._hidden_dim = model.hidden_dim
+            self._num_heads = model.num_heads
+            self._vocab_size = model.vocab_size
         else:
             if num_layers is None or hidden_dim is None:
                 raise ValueError("num_layers and hidden_dim are required for raw nn.Module models.")
@@ -132,18 +130,20 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
         forward_kwargs = {k: v for k, v in kwargs.items() if k not in actfold_kwargs}
 
         model = self._model
-        if self._is_diffusion_llm:
-            logits = model(tokens, attention_mask=attention_mask, **forward_kwargs)
-            return logits
+        if isinstance(model, DiffusionLLM):
+            return cast(
+                torch.Tensor, model(tokens, attention_mask=attention_mask, **forward_kwargs)
+            )
 
         # For raw nn.Module, only pass arguments accepted by its forward method.
         sig = inspect.signature(model.forward)
         accepted = set(sig.parameters)
-        forward_kwargs = {k: v for k, v in forward_kwargs.items() if k in accepted}
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values())
+        if not has_varkw:
+            forward_kwargs = {k: v for k, v in forward_kwargs.items() if k in accepted}
         if "attention_mask" in accepted:
             forward_kwargs["attention_mask"] = attention_mask
-        logits = model(tokens, **forward_kwargs)
-        return logits
+        return cast(torch.Tensor, model(tokens, **forward_kwargs))
 
     @property
     def num_layers(self) -> int:
@@ -185,9 +185,8 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
         model = self._model
 
         # DiffusionLLM implementations expose a dedicated embed method.
-        if self._is_diffusion_llm:
-            diffusion = model
-            embeddings: torch.Tensor = diffusion.embed(tokens)
+        if isinstance(model, DiffusionLLM):
+            embeddings = model.embed(tokens)
             if isinstance(embeddings, torch.Tensor):
                 return embeddings
             raise RuntimeError("DiffusionLLM.embed did not return a tensor.")
