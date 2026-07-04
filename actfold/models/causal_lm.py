@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, cast
 
 import torch
+import torch.nn as nn
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from actfold.models.base import DiffusionLLM
@@ -66,7 +67,8 @@ class CausalLMDiffusionLLM(DiffusionLLM):
         model = self.model
         if model is None:
             raise RuntimeError("Model has not been loaded.")
-        embeddings: torch.Tensor = model.get_input_embeddings()(tokens)
+        getter = cast(Callable[[], nn.Module], model.get_input_embeddings)
+        embeddings: torch.Tensor = getter()(tokens)
         return embeddings
 
     def forward(
@@ -102,7 +104,11 @@ class CausalLMDiffusionLLM(DiffusionLLM):
         tokenizer = self.tokenizer
         if tokenizer is None:
             raise RuntimeError("Tokenizer has not been loaded.")
-        generated: torch.Tensor = model.generate(
+        generate_fn = cast(
+            Callable[..., torch.Tensor],
+            model.generate,
+        )
+        generated: torch.Tensor = generate_fn(
             prompt_tokens,
             max_new_tokens=max_new_tokens,
             do_sample=False,

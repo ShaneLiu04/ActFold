@@ -69,8 +69,7 @@ class ModelRegistry:
         model_class = cls._REGISTRY.get(family.lower())
         if model_class is None:
             raise ValueError(
-                f"Unknown model family: {family}. "
-                f"Available: {', '.join(cls.list_models())}"
+                f"Unknown model family: {family}. " f"Available: {', '.join(cls.list_models())}"
             )
         return model_class(model_name_or_path, **kwargs)
 

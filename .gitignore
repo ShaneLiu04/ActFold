@@ -47,9 +47,9 @@ figures/
 .coverage
 htmlcov/
 
-# Model weights and data
-models/
-data/
+# Model weights and data (only top-level directories)
+/models/
+/data/
 checkpoints/
 *.safetensors
 *.bin

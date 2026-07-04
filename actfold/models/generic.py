@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, cast
 
 import torch
 import torch.nn as nn
@@ -66,9 +66,14 @@ class GenericDiffusionLLM(DiffusionLLM):
 
         # Attach a lm_head if the model does not have one.
         if hasattr(self.model, "lm_head") and self.model.lm_head is not None:
-            self.lm_head = self.model.lm_head
-        elif hasattr(self.model, "get_output_embeddings") and self.model.get_output_embeddings() is not None:
-            self.lm_head = self.model.get_output_embeddings()
+            self.lm_head = cast(nn.Module, self.model.lm_head)
+        elif hasattr(self.model, "get_output_embeddings"):
+            output_emb = cast(Callable[[], nn.Module | None], self.model.get_output_embeddings)()
+            if output_emb is not None:
+                self.lm_head = output_emb
+            else:
+                self.lm_head = nn.Linear(self._hidden_dim, self._vocab_size, bias=False)
+                nn.init.normal_(self.lm_head.weight, std=0.02)
         else:
             self.lm_head = nn.Linear(self._hidden_dim, self._vocab_size, bias=False)
             # Initialize the head with small random weights.
@@ -79,7 +84,8 @@ class GenericDiffusionLLM(DiffusionLLM):
         model = self.model
         if model is None:
             raise RuntimeError("Model has not been loaded.")
-        embeddings: torch.Tensor = model.get_input_embeddings()(tokens)
+        getter = cast(Callable[[], nn.Module], model.get_input_embeddings)
+        embeddings: torch.Tensor = getter()(tokens)
         return embeddings
 
     def forward(
@@ -100,7 +106,7 @@ class GenericDiffusionLLM(DiffusionLLM):
             **kwargs,
         )
         last_hidden = outputs.last_hidden_state
-        logits: torch.Tensor = self.lm_head(last_hidden)
+        logits: torch.Tensor = cast(torch.Tensor, self.lm_head(last_hidden))
         return logits
 
     def generate(
