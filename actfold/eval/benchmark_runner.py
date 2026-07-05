@@ -9,7 +9,8 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from actfold.core import ActivationCache, FoldedModel, SimilarityGate
+from actfold.core import FoldedModel, SimilarityGate
+from actfold.core.cache_factory import make_activation_cache
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.eval.evalplus_adapter import EvalPlusAdapter
 from actfold.eval.judges import Judge, JudgeFactory
@@ -147,9 +148,11 @@ class BenchmarkRunner:
         raw_model = getattr(diffusion_model, "model", None)
         if raw_model is None:
             return None
-        cache = ActivationCache(
+        cache = make_activation_cache(
             max_entries_per_layer=self.config.max_entries_per_layer,
             device=self.device,
+            use_chunked=self.config.use_chunked_cache,
+            chunk_size=self.config.cache_chunk_size,
         )
         gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
         scheduler = FoldingScheduler(
@@ -180,9 +183,11 @@ class BenchmarkRunner:
             gate = folded.gate
             scheduler = folded.scheduler
         else:
-            cache = ActivationCache(
+            cache = make_activation_cache(
                 max_entries_per_layer=self.config.max_entries_per_layer,
                 device=self.device,
+                use_chunked=self.config.use_chunked_cache,
+                chunk_size=self.config.cache_chunk_size,
             )
             gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
             scheduler = FoldingScheduler(
@@ -190,7 +195,12 @@ class BenchmarkRunner:
                 num_layers=self.model.num_layers,
                 num_steps=self.config.num_steps,
             )
-        return ActFoldVerificationEngine(self.model, cache, gate, scheduler)
+        cost_model = None
+        if self.config.use_cost_model:
+            from actfold.utils.cost_model import ComputeBandwidthCostModel, HardwareProfile
+
+            cost_model = ComputeBandwidthCostModel(HardwareProfile.from_device(self.device))
+        return ActFoldVerificationEngine(self.model, cache, gate, scheduler, cost_model=cost_model)
 
     def _build_judge(self, task: str) -> Judge:
         """Create a real judge for ``task``."""

@@ -7,6 +7,8 @@ from typing import Any
 import torch
 
 from actfold.models.causal_lm import CausalLMDiffusionLLM
+from actfold.models.diffusion_sampler import DiffusionSampler
+from actfold.models.fast_dllm_sampler import FastDLLMSampler
 
 
 class FastDLLMModel(CausalLMDiffusionLLM):
@@ -30,11 +32,20 @@ class FastDLLMModel(CausalLMDiffusionLLM):
         super().__init__(model_name_or_path, trust_remote_code=trust_remote_code)
         self._native_sampler: Any | None = None
 
+    def get_native_sampler(
+        self,
+        num_steps: int,
+        num_tokens: int,
+    ) -> DiffusionSampler | None:
+        """Return the reference Fast-dLLM discrete diffusion sampler."""
+        return FastDLLMSampler(self, num_steps=num_steps, num_tokens=num_tokens)
+
     def generate(
         self,
         prompt_tokens: torch.Tensor,
         max_new_tokens: int = 16,
         num_steps: int = 10,
+        folded_model: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Generate tokens using Fast-dLLM sampling if available.
@@ -55,5 +66,6 @@ class FastDLLMModel(CausalLMDiffusionLLM):
             prompt_tokens,
             max_new_tokens=max_new_tokens,
             num_steps=num_steps,
+            folded_model=folded_model,
             **kwargs,
         )

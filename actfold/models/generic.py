@@ -114,22 +114,21 @@ class GenericDiffusionLLM(DiffusionLLM):
         prompt_tokens: torch.Tensor,
         max_new_tokens: int = 16,
         num_steps: int = 10,
+        folded_model: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Simple autoregressive-like generation fallback.
+        """Generate tokens, delegating to the base class implementation.
 
-        Real Diffusion LLMs implement their own sampling loop. This fallback
-        greedily decodes tokens for environments where the native sampler is
-        not available.
+        The base class handles autoregressive fallback and diffusion sampling
+        via :meth:`DiffusionLLM.get_native_sampler`.
         """
-        self.eval()
-        generated = prompt_tokens.clone()
-        with torch.no_grad():
-            for _ in range(max_new_tokens):
-                logits = self.forward(generated)
-                next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
-                generated = torch.cat([generated, next_token], dim=-1)
-        return generated
+        return super().generate(
+            prompt_tokens,
+            max_new_tokens=max_new_tokens,
+            num_steps=num_steps,
+            folded_model=folded_model,
+            **kwargs,
+        )
 
     @property
     def num_layers(self) -> int:

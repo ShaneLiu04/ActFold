@@ -95,9 +95,25 @@ class CausalLMDiffusionLLM(DiffusionLLM):
         prompt_tokens: torch.Tensor,
         max_new_tokens: int = 16,
         num_steps: int = 10,
+        folded_model: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Generate tokens using the model's built-in generation method."""
+        """Generate tokens using the model's built-in generation method.
+
+        When ``num_steps > 1`` or a ``folded_model`` is supplied, the call is
+        delegated to the base class so that Branch Folding can be applied.  For
+        plain autoregressive generation with ``num_steps == 1`` we use the
+        underlying Hugging Face ``model.generate`` for best compatibility.
+        """
+        if num_steps != 1 or folded_model is not None:
+            return super().generate(
+                prompt_tokens,
+                max_new_tokens=max_new_tokens,
+                num_steps=num_steps,
+                folded_model=folded_model,
+                **kwargs,
+            )
+
         model = self.model
         if model is None:
             raise RuntimeError("Model has not been loaded.")

@@ -6,11 +6,13 @@ from dataclasses import dataclass
 
 import torch
 
-from actfold.core.activation_cache import ActivationCache
+from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.similarity_gate import SimilarityGate
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER, StabilityProfile
 from actfold.speculative.branch import Branch
 from actfold.speculative.fast_dllm_adapter import DiffusionLLMAdapter
+from actfold.utils.cost_model import ComputeBandwidthCostModel, HardwareProfile
 from actfold.utils.flops_counter import count_diffusion_llm_flops
 from actfold.utils.gpu_profiler import gpu_profile
 
@@ -25,6 +27,8 @@ class VerificationResult:
     stable_ratio: float
     tflops: float
     latency_ms: float
+    estimated_latency_ms: float = 0.0
+    stability_profile: StabilityProfile | None = None
 
 
 class ActFoldVerificationEngine:
@@ -49,10 +53,11 @@ class ActFoldVerificationEngine:
     def __init__(
         self,
         model: DiffusionLLMAdapter,
-        cache: ActivationCache,
+        cache: ActivationCacheType,
         gate: SimilarityGate,
         scheduler: FoldingScheduler | None = None,
         acceptance_threshold: float = 0.0,
+        cost_model: ComputeBandwidthCostModel | None = None,
     ) -> None:
         if not 0.0 <= acceptance_threshold <= 1.0:
             raise ValueError(f"acceptance_threshold must be in [0, 1], got {acceptance_threshold}")
@@ -63,6 +68,9 @@ class ActFoldVerificationEngine:
         self.scheduler = scheduler
         self.acceptance_threshold = acceptance_threshold
         self._current_seq_len: int = 1
+        self.cost_model = cost_model or ComputeBandwidthCostModel(
+            HardwareProfile.from_device(cache.device)
+        )
 
     def verify_branch(
         self,
@@ -89,6 +97,10 @@ class ActFoldVerificationEngine:
         # If the adapter has a folded model, run the parent forward first so that
         # all layer caches are populated with real activations.
         self._ensure_parent_layers(parent_branch, step_idx)
+
+        # Reset any stale profile for the child branch before running the
+        # folded forward pass so the profiler only sees the current verification.
+        GLOBAL_STABILITY_PROFILER.reset_branch(child_branch.branch_id)
 
         with gpu_profile(device=self.cache.device) as measurement:
             logits = self.model.forward(
@@ -117,6 +129,9 @@ class ActFoldVerificationEngine:
         if not accepted:
             self.cache.clear_branch(child_branch.branch_id)
 
+        profile = GLOBAL_STABILITY_PROFILER.get_profile(child_branch.branch_id)
+        estimated_latency_ms = self._estimate_latency(stable_ratio, profile)
+
         return VerificationResult(
             accepted=accepted,
             child_branch=child_branch,
@@ -124,6 +139,8 @@ class ActFoldVerificationEngine:
             stable_ratio=stable_ratio,
             tflops=tflops,
             latency_ms=measurement.latency_ms,
+            estimated_latency_ms=estimated_latency_ms,
+            stability_profile=profile,
         )
 
     def _ensure_parent_layers(
@@ -141,6 +158,7 @@ class ActFoldVerificationEngine:
         folded = getattr(self.model, "folded_model", None)
         if folded is None:
             return
+        GLOBAL_STABILITY_PROFILER.reset_branch(parent_branch.branch_id)
         with torch.no_grad():
             self.model.forward(
                 parent_branch.tokens,
@@ -196,13 +214,23 @@ class ActFoldVerificationEngine:
     ) -> float:
         """Estimate the fraction of stable tokens using the similarity gate.
 
+        When the child forward pass was executed through a folded model, the
+        :class:`~actfold.profiler.stability_profiler.StabilityProfiler` records
+        per-layer stable ratios.  In that case we return the mean stable ratio
+        across layers, which reflects the actual folding behaviour.  Otherwise we
+        fall back to comparing the input embeddings at layer 0.
+
         ``child_logits`` is accepted for API symmetry with the forward pass but
         is not needed for the embedding-based estimate.
-
-        The ratio is measured directly from real parent/child embeddings.  No
-        synthetic depth decay is applied.
         """
         del child_logits
+
+        # Prefer real layer-wise profile when available.
+        profile = GLOBAL_STABILITY_PROFILER.get_profile(child_branch.branch_id)
+        if profile is not None and profile.layer_stats:
+            return float(profile.mean_stable_ratio)
+
+        # Fallback: compare input embeddings.
         h_child = self._token_to_hidden(child_branch.tokens)
         h_parent = self._token_to_hidden(parent_branch.tokens)
 
@@ -236,3 +264,31 @@ class ActFoldVerificationEngine:
             reuse_ratio=stable_ratio,
         )
         return flops.total_tflops
+
+    def _estimate_latency(
+        self,
+        stable_ratio: float,
+        profile: StabilityProfile | None,
+    ) -> float:
+        """Estimate latency using the compute-bandwidth-aware cost model.
+
+        If a layer-wise stability profile is available, the mean stable ratio
+        across layers is used; otherwise the embedding-level stable ratio is
+        used as a fallback.
+        """
+        if profile is not None and profile.layer_stats:
+            effective_ratio = profile.mean_stable_ratio
+        else:
+            effective_ratio = stable_ratio
+
+        return (
+            self.cost_model.estimate_total_time(
+                num_layers=self.model.num_layers,
+                seq_len=self._current_seq_len,
+                hidden_dim=self.model.hidden_dim,
+                stable_ratio=effective_ratio,
+                num_steps=1,
+                num_heads=max(1, self.model.num_heads),
+            )
+            * 1000.0
+        )  # seconds -> ms

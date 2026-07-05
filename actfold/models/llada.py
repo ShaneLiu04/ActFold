@@ -6,7 +6,9 @@ from typing import Any
 
 import torch
 
+from actfold.models.diffusion_sampler import DiffusionSampler
 from actfold.models.generic import GenericDiffusionLLM
+from actfold.models.llada_sampler import LLaDASampler
 
 
 class LLaDAModel(GenericDiffusionLLM):
@@ -36,16 +38,25 @@ class LLaDAModel(GenericDiffusionLLM):
         except ImportError:
             self._native_sampler = None
 
+    def get_native_sampler(
+        self,
+        num_steps: int,
+        num_tokens: int,
+    ) -> DiffusionSampler | None:
+        """Return the reference LLaDA masked diffusion sampler."""
+        return LLaDASampler(self, num_steps=num_steps, num_tokens=num_tokens)
+
     def generate(
         self,
         prompt_tokens: torch.Tensor,
         max_new_tokens: int = 16,
         num_steps: int = 128,
+        folded_model: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
-        """Generate tokens using LLaDA's masked diffusion sampling if available.
+        """Generate tokens using LLaDA's masked diffusion sampling.
 
-        Falls back to greedy autoregressive decoding otherwise.
+        Falls back to greedy autoregressive decoding when ``num_steps == 1``.
         """
         if self._native_sampler is not None:
             tokens: torch.Tensor = self._native_sampler(
@@ -61,5 +72,6 @@ class LLaDAModel(GenericDiffusionLLM):
             prompt_tokens,
             max_new_tokens=max_new_tokens,
             num_steps=num_steps,
+            folded_model=folded_model,
             **kwargs,
         )

@@ -1,124 +1,106 @@
-# ActFold: Cross-Branch Activation Reuse & Branch Folding
+<div align="center">
+
+# ActFold
+
+**Cross-Branch Activation Reuse for Diffusion LLM Speculative Decoding**
 
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-red.svg)](https://pytorch.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![CI](https://github.com/your-org/actfold/actions/workflows/ci.yml/badge.svg)](https://github.com/your-org/actfold/actions/workflows/ci.yml)
+![CI](https://github.com/ShaneLiu04/ActFold/actions/workflows/ci.yml/badge.svg)
 
-ActFold is a research framework that reduces verification-phase FLOPs in **Diffusion LLM speculative decoding** by reusing activations across candidate branches. Instead of running a full forward pass for every child branch, ActFold partitions each layer's tokens into **stable** (reuse parent activations) and **divergent** (recompute) sets, achieving **21%-62% TFLOPs reduction** with minimal accuracy loss.
+[Overview](#overview) •
+[Features](#features) •
+[Installation](#installation) •
+[Quick Start](#quick-start) •
+[Usage](#usage) •
+[Benchmarks](#benchmarks) •
+[Docs](#docs) •
+[Citation](#citation)
 
----
-
-## Table of Contents
-
-- [Overview](#overview)
-- [Architecture](#architecture)
-- [Quick Start](#quick-start)
-- [Project Structure](#project-structure)
-- [Installation](#installation)
-- [Usage](#usage)
-- [Real Model Integration](#real-model-integration)
-- [Benchmarks](#benchmarks)
-- [Quality Assurance](#quality-assurance)
-- [Ablations](#ablations)
-- [Current Limitations & Roadmap](#current-limitations--roadmap)
-- [Troubleshooting](#troubleshooting)
-- [Citation](#citation)
-- [License](#license)
+</div>
 
 ---
 
 ## Overview
 
-In Diffusion LLM speculative decoding (Fast-dLLM, Spiffy), multiple candidate branches are generated and verified independently. Despite child branches typically diverging by only a few tokens from their parent, current methods trigger a **full forward recomputation** across all Transformer layers.
+ActFold is a research framework that reduces **verification-phase FLOPs** in Diffusion LLM speculative decoding by reusing activations across candidate branches.
 
-Profiling on Fast-dLLM-v1 LLaDA-8B shows:
+In speculative decoding, multiple child branches are drafted from a parent sequence and verified independently. Despite children typically diverging by only a few tokens, standard implementations trigger a **full forward recomputation** across all Transformer layers. ActFold attacks this redundancy with **Branch Folding**: at every layer, each token is classified as either **stable** (reuse the parent's activation) or **divergent** (recompute), and the two groups are merged into a single output.
 
-> **>80% of layer-token-step positions exhibit cosine similarity > 0.95 between parent and child hidden states.**
+> **Target impact**: 21%–62% verification TFLOPs reduction with minimal accuracy loss.
 
-This massive redundancy is the target of **ActFold**.
+### The Core Idea
 
-### Key Idea
-
-At each layer `l`, token position `t`, and diffusion step `s`:
+For each layer `l`, token position `t`, and diffusion step `s`:
 
 ```
 sim(l, t, s) = cosine_similarity(h_parent[l, t, s], h_child[l, t, s])
 ```
 
-- **Stable tokens** (`sim > τ`): reuse parent's Attention and FFN outputs.
-- **Divergent tokens** (`sim ≤ τ`): perform full recomputation.
+- **Stable tokens** (`sim > τ`): copy cached parent FFN outputs.
+- **Divergent tokens** (`sim ≤ τ`): run the full layer on the child hidden states to preserve self-attention context.
 
-By merging the two paths, ActFold reduces verification FLOPs while keeping output numerically close to the baseline. The stable/divergent decision is made independently per layer and per token, so even branches that differ in many positions can still benefit from folding wherever the hidden states agree.
-
-### Why It Works
-
-In Diffusion LLM speculative decoding, child branches are drafted from a small set of proposed token changes. Because the draft is usually a local perturbation of the parent, most layer-token positions remain highly similar. ActFold exploits this by:
-
-1. **Caching** parent-layer outputs in a per-layer LRU cache.
-2. **Gating** child hidden states against parent hidden states with a similarity threshold.
-3. **Reusing** cached activations for stable positions and recomputing only divergent positions with full attention context.
-4. **Merging** the two paths into a single output tensor.
+The decision is made independently per layer and per token, so even branches that differ in many positions still benefit from folding wherever the hidden states agree.
 
 ---
 
-## Architecture
+## Features
 
-```mermaid
-flowchart TD
-    A[Diffusion LLM] --> B[Draft Generator]
-    B --> C[Parent Branch]
-    C --> D[Child Branches]
-    D --> E{ActFold Verification}
-    E --> F[Similarity Gate]
-    F --> G[Stable Tokens]
-    F --> H[Divergent Tokens]
-    G --> I[Activation Cache]
-    H --> J[Full Attention + FFN]
-    I --> K[Merged Layer Output]
-    J --> K
-    K --> L[Accepted Branch]
+| Feature | What it does |
+|--------|--------------|
+| **Branch Folding Engine** | Wrap any Transformer stack with `FoldedModel` to enable per-token activation reuse. |
+| **True End-to-End Folded Generation** | `folded_generate()` produces each new token through a folded child forward pass, so benchmarks actually exercise the accelerated path. |
+| **Layer-Aware Stability Profiler** | Records real per-layer stable ratios instead of estimating from input embeddings. |
+| **Chunked Activation Cache** | Optional contiguous tensor-block cache that lowers memory fragmentation vs. per-token dict storage. |
+| **Compute-Bandwidth Cost Model** | Estimates wall-clock latency from both compute FLOPs and memory bandwidth, not just FLOPs. |
+| **Diffusion-Native Samplers** | Reference samplers for LLaDA, Dream, and Fast-dLLM that apply folding across diffusion timesteps. |
+| **Real Evaluation Backends** | Integrated `lm-eval` and `evalplus` judges; no mock fallbacks. |
+| **Optional Triton Kernel** | Fused stable/divergent merge on CUDA with a verified PyTorch fallback on CPU. |
+
+---
+
+## Installation
+
+### Requirements
+
+- Python 3.10+
+- PyTorch 2.0+
+- Hugging Face `transformers`
+- CUDA-capable GPU (optional; CPU fallback supported)
+- `lm-eval` and `evalplus` for benchmark evaluation
+
+### From source
+
+```bash
+# Runtime dependencies
+pip install -r requirements.txt
+
+# Benchmark backends (required for evaluation)
+pip install -r requirements-bench.txt
+
+# Development tools (formatting, type checking, tests)
+pip install -r requirements-dev.txt
+
+# Editable install
+pip install -e .
 ```
-
-### Modules
-
-| Module | Path | Purpose |
-|---|---|---|
-| **Models** | `actfold/models/` | Real Diffusion LLM loaders and wrappers |
-| **Core Engine** | `actfold/core/` | Activation cache, similarity gate, folded Transformer layer, fused CUDA kernels, branch manager, scheduler, model wrapper |
-| **Profiler** | `actfold/profiler/` | Hidden-state tracking, similarity analysis, GPU metrics, visualization |
-| **Speculative** | `actfold/speculative/` | Draft generator, Spiffy baseline, ActFold verification engine |
-| **Evaluation** | `actfold/eval/` | Benchmark runner, lm-eval adapter, EvalPlus adapter, judge abstraction, ablation studies |
-| **Utilities** | `actfold/utils/` | Config management, FLOPs counter, GPU profiler, logging |
 
 ---
 
 ## Quick Start
 
+### 1. Run the demo
+
 ```bash
-# Clone or navigate to the project
-cd ActFold
-
-# Install runtime dependencies
-pip install -r requirements.txt
-
-# Install benchmark backends (required for evaluation)
-pip install -r requirements-bench.txt
-
-# Run the end-to-end demo (synthetic demonstration model by default)
+# Synthetic demonstration model — no downloads, runs everywhere
 python demo.py
 
-# Run the demo with a real model (requires Hugging Face access)
+# Real Hugging Face model (structural demonstration)
 python demo.py --model gpt2 --model-family causal_lm
-
-# Run the fast test suite (excludes slow tests that need real lm-eval/evalplus backends)
-python -m pytest tests/ -v -m "not slow"
-
-# Run slow tests separately
-python -m pytest tests/ -v -m slow
 ```
 
-### Expected Demo Output (Synthetic Model)
+Expected output (synthetic model):
 
 ```text
 =================================================================
@@ -146,289 +128,195 @@ python -m pytest tests/ -v -m slow
 =================================================================
 ```
 
-> **Note:** The default demo uses a small synthetic Transformer so it runs
-> everywhere without downloading model weights.  The stable ratios and FLOPs
-> reduction are measured from the actual parent/child hidden states of that
-> model, not hardcoded.  Use `--model` to run the same pipeline on a real
-> Hugging Face model.
-
----
-
-## Project Structure
-
-```
-actfold/
-├── models/                  # Real Diffusion LLM wrappers (LLaDA, Dream, Fast-dLLM, causal LM)
-├── core/                    # Branch Folding engine
-├── profiler/                # Analysis & visualization
-├── speculative/             # Speculative decoding integration
-├── eval/                    # Benchmark harness with real evaluation backends
-├── utils/                   # Shared utilities
-└── configs/                 # YAML experiment configs
-scripts/                     # Reproduction scripts
-tests/                       # pytest suite
-docs/                        # Documentation
-demo.py                      # End-to-end runnable demo
-```
-
----
-
-## Installation
-
-### Requirements
-
-- Python 3.10+
-- PyTorch 2.0+
-- CUDA-capable GPU (optional; CPU fallback supported)
-- Hugging Face `transformers` library
-- `lm-eval` and `evalplus` for benchmarks
-
-### Install from Source
-
-```bash
-# Runtime only
-pip install -r requirements.txt
-
-# Benchmark backends (required for evaluation)
-pip install -r requirements-bench.txt
-
-# Development (tests, formatting, type checking)
-pip install -r requirements-dev.txt
-
-# Editable install
-pip install -e .
-```
-
----
-
-## Usage
-
-### 1. Build a Folded Model
-
-ActFold works by wrapping each Transformer layer with a
-:class:`~actfold.core.folded_transformer.FoldedTransformerLayer` that decides,
-per token, whether to reuse a cached parent activation or recompute it.
+### 2. Wrap a model and verify a child branch
 
 ```python
 import torch
-from actfold.core import ActivationCache, SimilarityGate
-from actfold.core.folded_transformer import FoldedTransformerLayer
-
-# Wrap each layer of your model.
-cache = ActivationCache(max_entries_per_layer=1024, device="cuda")
-gate = SimilarityGate(tau=0.95)
-
-for layer_idx, layer in enumerate(model.layers):
-    model.layers[layer_idx] = FoldedTransformerLayer(
-        original_layer=layer,
-        cache=cache,
-        gate=gate,
-        layer_idx=layer_idx,
-    )
-```
-
-You can also use the high-level `FoldedModel` wrapper:
-
-```python
 from actfold.core import ActivationCache, FoldedModel, SimilarityGate
 
+# Load or build any Transformer model
+raw_model = ...
+
 cache = ActivationCache(max_entries_per_layer=1024, device="cuda")
 gate = SimilarityGate(tau=0.95)
-folded = FoldedModel(model, cache, gate)
+folded = FoldedModel(raw_model, cache=cache, gate=gate)
 
-# Restore the original model at any time.
-base_model = folded.restore()
-```
+# Run parent to populate the cache
+parent_logits = folded(parent_tokens, branch_id="parent")
 
-`FoldedModel` searches common layer attribute paths (`layers`, `model.layers`, `transformer.h`, `encoder.layer`, etc.). For architectures where the layer stack is not auto-detected, pass `layer_names=("your.path",)`.
-
-### 2. Run Parent and Child Branches
-
-First run the parent branch to populate the activation cache. Then verify a child
-branch by passing the parent's identifier; stable positions reuse cached
-activations automatically.
-
-```python
-# Populate cache with parent activations.
-parent_logits = model(parent_tokens, branch_id="parent")
-
-# Verify child by reusing parent activations where stable.
-child_logits = model(
+# Verify child while reusing parent activations where stable
+child_logits = folded(
     child_tokens,
     branch_id="child",
     parent_branch_id="parent",
 )
 ```
 
-### 3. Load a Real Model
+### 3. End-to-end folded generation
 
 ```python
-from actfold.models import load_model
+from actfold.speculative.folded_generation import folded_generate
 
-model = load_model("gpt2", model_family="causal_lm")
-model.to("cuda")
-
-print(model.num_layers, model.hidden_dim, model.vocab_size)
-```
-
-`load_model` supports `torch_dtype`, `device_map`, `load_in_8bit`, and `load_in_4bit` arguments for memory-efficient loading:
-
-```python
-model = load_model(
-    "gpt2",
-    model_family="causal_lm",
-    torch_dtype=torch.float16,
-    device_map="auto",
+result = folded_generate(
+    adapter,
+    prompt_ids,
+    max_new_tokens=32,
+    folded_model=adapter.folded_model,
 )
+print(result.tokens)         # [batch, prompt_len + max_new_tokens]
+print(result.stable_ratio)   # measured mean per-layer stable ratio
 ```
 
-### 4. Programmatic Verification Engine
-
-For speculative decoding, use the verification engine to accept or reject child
-branches and estimate TFLOPs savings:
-
-```python
-from actfold.speculative import ActFoldVerificationEngine, DraftGenerator, SpiffyBaseline
-from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
-
-adapter = FastDLLMAdapter(model, num_layers=4, hidden_dim=128)
-draft_generator = DraftGenerator(vocab_size=adapter.vocab_size, mode="copy_flip")
-baseline = SpiffyBaseline(adapter, draft_generator)
-
-engine = ActFoldVerificationEngine(adapter, cache, gate)
-result = engine.verify_branch(parent_branch, child_branch, step_idx=0)
-print(result.accepted, result.stable_ratio, result.tflops)
-```
-
-To also exercise the actual layer-wise folded forward path, supply a
-:class:`~actfold.core.model_wrapper.FoldedModel` to the adapter. The engine will
-automatically run the parent through the folded model to populate per-layer
-caches and pass `branch_id` / `parent_branch_id` when verifying children:
-
-```python
-from actfold.core import FoldedModel
-
-folded = FoldedModel(raw_model, cache, gate)
-adapter = FastDLLMAdapter(model, num_layers=4, hidden_dim=128, folded_model=folded)
-engine = ActFoldVerificationEngine(adapter, cache, gate)
-```
-
-> **Note:** Standard Hugging Face model `forward` methods do not propagate
-> arbitrary kwargs to Transformer blocks. `FoldedModel` therefore pushes branch
-> context into a thread-local `contextvars.ContextVar` for the duration of the
-> forward pass, allowing wrapped layers to read `branch_id` / `parent_branch_id`
-> even when the base model drops the kwargs. For architectures where this is
-> insufficient, a model-specific forward that routes the identifiers explicitly
-> (as shown in `demo.py`) can be used.
-
-### 5. Run Benchmarks
+### 4. Run benchmarks
 
 ```bash
 # Real-model benchmarks with the provided GPT-2 example
 bash scripts/run_real_model_benchmark.sh
 
-# Custom config (set model_name_or_path first, or use real_model_example.yaml)
+# Custom config
 bash scripts/run_benchmarks.sh actfold/configs/real_model_example.yaml
 ```
 
-Results are saved to `results/benchmark_results.json` when `output_dir` is
-provided.
-
-### 6. Generate Figures
-
-```bash
-# Generate figures from real artifacts
-python scripts/generate_figures.py --results-dir results/
-
-# Generate example figures without running benchmarks
-python scripts/generate_figures.py --demo
-```
-
-### 7. Optional CUDA Kernel Acceleration
-
-ActFold includes an optional Triton kernel that fuses the final stable/divergent token merge. When Triton is installed and tensors live on CUDA, `FoldedTransformerLayer` uses a fused element-wise select kernel instead of a Python-loop cache gather plus host-side `nonzero` scatter:
-
-```bash
-# Linux/WSL with CUDA
-pip install triton>=2.0
-```
-
-```python
-# The dispatch is automatic; no API change is required.
-# merge_stable_divergent(parent_ffn, child_out, stable_mask) selects Triton on CUDA
-# and falls back to a vectorized PyTorch implementation on CPU or when Triton is absent.
-from actfold.core.fused_ops import merge_stable_divergent
-
-out = merge_stable_divergent(parent_ffn, child_out, stable_mask)
-```
-
-**Behavior:**
-- If `triton` is unavailable, the system uses the PyTorch fallback automatically.
-- CPU tensors always use the PyTorch fallback.
-- Numerical output is identical between the Triton and PyTorch paths (verified by tests).
-
 ---
 
-## Real Model Integration
+## Architecture
 
-ActFold's `FoldedTransformerLayer` is model-agnostic, but end-to-end folding on a real Diffusion LLM requires a custom forward path that:
+```
+┌─────────────────────────────────────────────────────────────┐
+│                      Diffusion LLM                           │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+        ┌──────────────▼──────────────┐
+        │      Draft Generator        │
+        └──────────────┬──────────────┘
+                       │
+            ┌──────────▼──────────┐
+            │   Parent Branch     │
+            └──────────┬──────────┘
+                       │
+         ┌─────────────▼─────────────┐
+         │   ActFold Verification    │
+         │  ┌─────────────────────┐  │
+         │  │   Similarity Gate   │  │
+         │  └──────────┬──────────┘  │
+         │             │             │
+         │    ┌────────┴────────┐    │
+         │    ▼                 ▼    │
+         │ Stable Tokens   Divergent │
+         │    │               Tokens  │
+         │    ▼                 ▼    │
+         │ Activation     Full Layer │
+         │   Cache        Recompute  │
+         │    │                 │    │
+         │    └────────┬────────┘    │
+         │             ▼             │
+         │      Merged Output        │
+         └─────────────┬─────────────┘
+                       │
+            ┌──────────▼──────────┐
+            │   Accepted Branch   │
+            └─────────────────────┘
+```
 
-1. Computes input embeddings.
-2. Passes hidden states through `FoldedTransformerLayer` wrappers with `branch_id` / `parent_branch_id`.
-3. Applies the language modeling head.
+### Module map
 
-The built-in `FoldedModel` automates this for models whose Transformer layers are reachable via one of the supported attribute paths. For unsupported architectures, you can subclass `DiffusionLLM` and implement a custom `forward` that routes hidden states through the folded layers.
-
-All concrete `DiffusionLLM` subclasses must implement the `embed(tokens)` method so
-that the verification engine and profiler can access real input embeddings.
-
-See `demo.py --model <hf-id>` for a structural demonstration that loads a real model and runs an architecture-matched synthetic folded path.
-
-### Adding a New Model Family
-
-```python
-from actfold.models import DiffusionLLM, ModelRegistry
-
-class MyDiffusionLLM(DiffusionLLM):
-    def embed(self, tokens):
-        return self.model.get_input_embeddings()(tokens)
-
-    def forward(self, tokens, attention_mask=None, **kwargs):
-        ...
-
-ModelRegistry.register("my_family", MyDiffusionLLM)
+```
+actfold/
+├── models/         # Diffusion LLM wrappers and native samplers
+├── core/           # Branch Folding engine (cache, gate, folded layers, scheduler)
+├── profiler/       # Stability profiler, similarity analysis, GPU metrics
+├── speculative/    # Draft generator, verification engine, folded generation
+├── eval/           # Benchmark runner, lm-eval / EvalPlus adapters, judges
+├── utils/          # Config, FLOPs counter, cost model, logging
+└── configs/        # YAML experiment configs
 ```
 
 ---
 
-## Benchmarks
+## Usage
 
-ActFold uses real evaluation backends for the following tasks:
+### Wrapping a model with `FoldedModel`
 
-| Task | Dataset | Metric | Backend |
-|---|---|---|---|
-| Mathematical Reasoning | GSM8K, MATH | Accuracy | `lm-eval` |
-| Code Generation | HumanEval+, MBPP+ | pass@1 (EvalPlus) | `evalplus` (Unix-like platforms) |
-| Instruction Following | IFEval | Prompt-level accuracy | `lm-eval` |
+`FoldedModel` discovers common Transformer layer stacks (`layers`, `model.layers`, `transformer.h`, `encoder.layer`, `gpt_neox.layers`, `model.decoder.layers`) and replaces each layer with a `FoldedTransformerLayer`.
 
-### Configuration
+```python
+from actfold.core import ActivationCache, FoldedModel, SimilarityGate
+from actfold.core.folding_scheduler import FoldingScheduler
+
+cache = ActivationCache(max_entries_per_layer=1024, device="cuda")
+gate = SimilarityGate(tau=0.95, metric="cosine")
+scheduler = FoldingScheduler(
+    base_tau=0.95,
+    num_layers=model.num_layers,
+    num_steps=1,
+)
+
+folded = FoldedModel(
+    raw_model,
+    cache=cache,
+    gate=gate,
+    scheduler=scheduler,
+)
+
+# Restore the original model at any time
+base_model = folded.restore()
+```
+
+For unsupported architectures, pass `layer_names=("your.path",)` or implement a custom `DiffusionLLM.forward()` that routes hidden states through folded layers.
+
+### Using the verification engine
+
+```python
+from actfold.speculative import ActFoldVerificationEngine, DraftGenerator, SpiffyBaseline
+from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
+
+adapter = FastDLLMAdapter(model, folded_model=folded)
+draft_generator = DraftGenerator(vocab_size=adapter.vocab_size, mode="copy_flip")
+baseline = SpiffyBaseline(adapter, draft_generator)
+
+engine = ActFoldVerificationEngine(adapter, cache, gate)
+result = engine.verify_branch(parent_branch, child_branch, step_idx=0)
+print(result.accepted)
+print(result.stable_ratio)          # real per-layer mean when folded_model is used
+print(result.tflops)
+print(result.estimated_latency_ms)  # compute-bandwidth-aware estimate
+```
+
+### Diffusion-native sampling
+
+When `num_steps > 1`, `DiffusionLLM.generate()` dispatches to a model-family-specific sampler. Reference implementations are provided for LLaDA, Dream, and Fast-dLLM:
+
+```python
+from actfold.models import load_model
+
+model = load_model("path/to/llada", model_family="llada")
+output = model.generate(
+    prompt_tokens,
+    max_new_tokens=16,
+    num_steps=64,
+    folded_model=folded,
+)
+```
+
+> These samplers are reference implementations intended to demonstrate the folding-diffusion integration. Validate them against the official model recipes before reporting results.
+
+### Configuration-driven benchmarks
 
 ```yaml
 # actfold/configs/real_model_example.yaml
 model_name_or_path: "gpt2"
 model_family: "causal_lm"
 use_real_eval: true
-eval_backend: "auto"      # "auto", "lm-eval", or "evalplus"
-eval_limit: 10            # quick smoke test; remove for full eval
+eval_backend: "auto"
+eval_limit: 10
 eval_batch_size: 1
+
+# Advanced ActFold switches
+use_stability_profiler: true
+use_chunked_cache: false
+use_cost_model: true
+use_folded_generation: true
 ```
-
-> **Platform note:** `evalplus` executes generated code in a sandbox that
-> requires Unix-like platform support (the `resource` module). On Windows,
-> `evalplus` tasks are not supported; use `lm-eval` tasks (GSM8K, MATH, IFEval)
-> or run inside WSL.
-
-### Programmatic Usage
 
 ```python
 from actfold.eval.benchmark_runner import BenchmarkRunner
@@ -439,42 +327,64 @@ runner = BenchmarkRunner(config)
 results = runner.run(tasks=["gsm8k", "math"], num_samples=10)
 ```
 
-### Loading Custom Diffusion LLMs
+---
 
-```python
-from actfold.models import ModelRegistry, DiffusionLLM
+## Benchmarks
 
-class MyDiffusionLLM(DiffusionLLM):
-    ...
+ActFold uses real evaluation backends:
 
-ModelRegistry.register("my_family", MyDiffusionLLM)
-model = load_model("organization/my-model", model_family="my_family")
-```
+| Task | Dataset | Metric | Backend |
+|------|---------|--------|---------|
+| Mathematical Reasoning | GSM8K, MATH | Accuracy | `lm-eval` |
+| Code Generation | HumanEval+, MBPP+ | pass@1 | `evalplus` (Unix-like platforms) |
+| Instruction Following | IFEval | Prompt-level accuracy | `lm-eval` |
 
-### Expected Results
+### Expected targets
 
 | Model | TFLOPs Reduction | Accuracy Drop | Speedup |
-|---|---|---|---|
-| Fast-dLLM-v2-1.5B | 35-50% | ≤1% | 1.2-1.5x |
-| Fast-dLLM-v2-7B | 40-55% | ≤1.5% | 1.3-1.6x |
-| LLaDA-8B | 45-62% | ≤2% | 1.4-1.8x |
-| Dream-7B | 38-52% | ≤1.5% | 1.3-1.6x |
+|-------|------------------|---------------|---------|
+| Fast-dLLM-v2-1.5B | 35–50% | ≤1% | 1.2–1.5x |
+| Fast-dLLM-v2-7B | 40–55% | ≤1.5% | 1.3–1.6x |
+| LLaDA-8B | 45–62% | ≤2% | 1.4–1.8x |
+| Dream-7B | 38–52% | ≤1.5% | 1.3–1.6x |
 
-> **Note:** Results above are project targets. Reproducing them requires the corresponding model weights and the real `lm-eval` / `evalplus` backends.
+> These are project targets. Reproducing them requires the corresponding model weights and real `lm-eval` / `evalplus` backends.
+
+### Platform note
+
+`evalplus` executes generated code in a sandbox that requires Unix-like platform support (the `resource` module). On Windows, use `lm-eval` tasks or run inside WSL.
+
+---
+
+## Ablations
+
+```bash
+# Config-driven ablations with a real model
+bash scripts/run_ablation.sh actfold/configs/real_model_example.yaml
+
+# Quick synthetic demonstration
+bash scripts/run_ablation.sh --synthetic
+```
+
+Supported studies:
+
+1. **Threshold sensitivity**: τ ∈ {0.90, 0.95, 0.99}
+2. **Layer-wise folding**: early-only, late-only, all layers
+3. **Cache budget**: 256, 512, 1024, 2048 entries per layer
 
 ---
 
 ## Quality Assurance
 
-The project enforces code quality through:
+All code is checked with:
 
-- **black** for formatting (`line-length = 100`)
-- **isort** for import sorting
-- **pyflakes** for unused imports/variables
-- **mypy** for static type checking
-- **pytest** for unit and integration tests
+- **black** (`line-length = 100`)
+- **isort** (`profile = "black"`)
+- **pyflakes**
+- **mypy --strict**
+- **pytest**
 
-Run all checks locally:
+Run locally:
 
 ```bash
 python -m black --check actfold tests demo.py scripts
@@ -482,76 +392,55 @@ python -m isort --check-only actfold tests demo.py scripts
 python -m pyflakes actfold tests demo.py scripts
 python -m mypy actfold --ignore-missing-imports
 python -m pytest tests/ -q -m "not slow"
+python demo.py
 ```
 
-Tests that exercise the real `lm-eval` / `evalplus` backends are marked
-`@pytest.mark.slow` and are skipped by the default local/CI command above.
-Run them separately (they may download datasets and model weights):
+Tests that exercise real `lm-eval` / `evalplus` backends are marked `@pytest.mark.slow`:
 
 ```bash
 python -m pytest tests/ -q -m slow
 ```
 
-See `.github/workflows/ci.yml` for the automated CI pipeline.
-
 ---
 
-## Ablations
+## Docs
 
-Run the ablation studies with a real model config:
-
-```bash
-bash scripts/run_ablation.sh actfold/configs/real_model_example.yaml
-```
-
-For a quick synthetic demonstration (no model download):
-
-```bash
-bash scripts/run_ablation.sh --synthetic
-```
-
-Supported ablations:
-
-1. **Threshold Sensitivity**: τ ∈ {0.90, 0.95, 0.99}
-2. **Layer-wise Folding**: early-only, late-only, all layers
-3. **Cache Budget**: 256, 512, 1024, 2048 entries per layer
+- [`docs/ALGORITHM.md`](docs/ALGORITHM.md) — formal description of Branch Folding.
+- [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — detailed reproduction workflows.
+- [`AGENTS.md`](AGENTS.md) — conventions and pitfalls for contributors and AI agents.
+- [`CHANGELOG.md`](CHANGELOG.md) — release history.
+- [`202675.md`](202675.md) — in-depth system analysis and optimization opportunities.
+- [`202675创新.md`](202675创新.md) — innovation framework guiding recent implementations.
 
 ---
 
 ## Current Limitations & Roadmap
 
-1. **Native diffusion sampling**: The model wrappers for Dream, Fast-dLLM, and
-   LLaDA currently fall back to greedy autoregressive generation.  Integrating
-   the official diffusion samplers requires model-specific external code.
-2. **Draft model**: `DraftGenerator` provides random/perturb/copy_flip research
-   modes.  Production speculative decoding should use a trained draft model.
-3. **Real model checkpoints**: Per-model YAML configs are templates; you must
-   supply the actual Hugging Face identifier or local checkpoint path.
-4. **Real-model folded demo**: The `--model` demo path supports GPT2-like
-   architectures through manual layer wiring.  Other architectures need
-   equivalent model-specific integration.
-5. **Benchmark folding path**: `BenchmarkRunner` automatically wraps the loaded
-   model with `FoldedModel` when a known Transformer layer stack is found, so the
-   ActFold path reuses parent activations during inference. Models with unusual
-   architectures may need model-specific folded forward wiring; see `demo.py` for
-   a GPT2-like example.
-6. **Variable-length branches**: The generic `ActivationCache` and
-   `FoldedTransformerLayer` currently assume parent and child sequences have the
-   same length. The benchmark adapters therefore use greedy decoding for
-   predictions and verify a same-length child for the stable-ratio estimate.
-   Full variable-length folding is on the roadmap.
+1. **Diffusion samplers are reference implementations**. LLaDA, Dream, and Fast-dLLM samplers demonstrate the folding-diffusion integration; aligning them with official recipes is ongoing work.
+2. **No trained draft model**. `DraftGenerator` supports random/perturb/copy_flip modes, and `AdaptiveDraftGrowthController` varies branch count based on runtime stability. A dedicated draft model (e.g. Medusa/Eagle) is on the roadmap.
+3. **Per-model YAML configs are templates**. You must supply the actual Hugging Face identifier or local checkpoint path.
+4. **Real-model demo wiring is architecture-specific**. The `--model` demo supports GPT2-like architectures; other families need equivalent model-specific integration.
+5. **Variable-length folding is not yet supported**. Parent and child sequences must currently have the same length.
+6. **Multi-ancestor reuse is not yet supported**. Folding is currently limited to a single parent branch.
 
 ---
 
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
-|---|---|---|
+|---------|-------|-----|
 | `RuntimeError: A real tokenizer is required...` | Benchmark/eval path loaded without a tokenizer. | Pass a model with a tokenizer or use `--synthetic` for debug runs. |
 | `TypeError: Can't instantiate abstract class ... with abstract method embed` | A custom `DiffusionLLM` subclass is missing `embed()`. | Implement `embed(tokens)` returning `[B, T, H]`. |
 | Triton kernel not used on CUDA | `triton` not installed or hidden dim not divisible by 128. | Install `triton>=2.0` on Linux/WSL; the PyTorch fallback is always correct. |
 | `evalplus` fails on Windows | EvalPlus sandbox requires the Unix `resource` module. | Run evalplus tasks in WSL or use `lm-eval` tasks on native Windows. |
-| Slow tests time out | Real `lm-eval` / `evalplus` backends load datasets and models. | Run fast tests with `pytest -m "not slow"`; run slow tests separately. |
+| Slow tests time out | Real backends load datasets and models. | Run fast tests with `pytest -m "not slow"`; run slow tests separately. |
+| CI badge does not display | The badge URL uses placeholder `your-org/actfold`. | Replace `YOUR_GITHUB_USERNAME/YOUR_REPO_NAME` in the README badge Markdown with your actual repository path. |
+
+---
+
+## Contributing
+
+We welcome contributions! Please see [`CONTRIBUTING.md`](CONTRIBUTING.md) for guidelines on code style, testing, and submitting pull requests.
 
 ---
 
@@ -572,7 +461,7 @@ If you use ActFold in your research, please cite:
 
 ## License
 
-ActFold is released under the MIT License.
+ActFold is released under the [MIT License](LICENSE).
 
 ---
 

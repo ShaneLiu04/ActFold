@@ -8,11 +8,12 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from actfold.core.activation_cache import ActivationCache
+from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_context import FOLDING_CONTEXT
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.fused_ops import merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 
 # Keywords that belong to ActFold and must never be forwarded to the original
 # Transformer layer.
@@ -44,7 +45,7 @@ class FoldedTransformerLayer(nn.Module):
     def __init__(
         self,
         original_layer: nn.Module,
-        cache: ActivationCache,
+        cache: ActivationCacheType,
         gate: SimilarityGate,
         layer_idx: int,
         scheduler: FoldingScheduler | None = None,
@@ -145,6 +146,17 @@ class FoldedTransformerLayer(nn.Module):
 
         # Compute stability mask entirely on GPU.
         stable_mask = self.gate(hidden_states, h_parent)  # [batch, seq_len]
+
+        # Record real layer-wise stability statistics for downstream consumers.
+        GLOBAL_STABILITY_PROFILER.record(
+            branch_id=branch_id,
+            parent_branch_id=parent_branch_id,
+            layer_idx=self.layer_idx,
+            step_idx=step_idx,
+            stable_mask=stable_mask,
+            tau=self.gate.tau,
+            metric=self.gate.metric,
+        )
 
         # Fast path: all tokens stable -> copy cached parent FFN output.
         if stable_mask.all():

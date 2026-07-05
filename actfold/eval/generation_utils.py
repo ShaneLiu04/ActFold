@@ -7,6 +7,7 @@ from typing import Any
 import torch
 
 from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
+from actfold.speculative.folded_generation import FoldedGenerationResult, folded_generate
 from actfold.utils.logger import get_logger
 
 logger = get_logger("eval.generation")
@@ -67,6 +68,17 @@ def greedy_generate(
             next_token = logits[:, -1, :].argmax(dim=-1, keepdim=True)
             generated = torch.cat([generated, next_token], dim=-1)
     return generated
+
+
+__all__ = [
+    "fallback_decode",
+    "encode_prompt",
+    "decode_tokens",
+    "greedy_generate",
+    "folded_generate",
+    "FoldedGenerationResult",
+    "get_model_device",
+]
 
 
 def get_model_device(model: FastDLLMAdapter) -> torch.device:

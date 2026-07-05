@@ -9,6 +9,7 @@ import torch
 from actfold.eval.generation_utils import (
     decode_tokens,
     encode_prompt,
+    folded_generate,
     get_model_device,
     greedy_generate,
 )
@@ -107,21 +108,38 @@ class BaseEvalAdapter:
             device,
         )
 
-        prediction_ids = greedy_generate(self.model, prompt_tokens, self.max_new_tokens)
-
         if use_actfold:
-            parent = Branch(branch_id="root", parent_id=None, tokens=prompt_tokens)
-            # Use a same-length child for the stable-ratio estimate. Variable-
-            # length branch folding is not yet supported by the generic cache.
-            children = self.baseline.draft_generator.generate(
-                parent,
-                num_branches=1,
-                max_new_tokens=0,
-                seed=seed,
-            )
-            result = self.engine.verify_branch(parent, children[0], step_idx=0)
-            stable_ratio = result.stable_ratio
+            folded_model = getattr(self.model, "folded_model", None)
+            if folded_model is not None:
+                # True end-to-end folded generation: each new token is produced
+                # by a folded child forward pass.
+                gen_result = folded_generate(
+                    self.model,
+                    prompt_tokens,
+                    self.max_new_tokens,
+                    folded_model=folded_model,
+                    draft_generator=self.baseline.draft_generator,
+                    num_branches_per_step=1,
+                    step_idx=0,
+                )
+                prediction_ids = gen_result.tokens
+                stable_ratio = gen_result.stable_ratio
+            else:
+                # Fallback for adapters without a folded model: generate greedily
+                # and estimate the stable ratio from a same-length verification
+                # branch.  This preserves compatibility with existing callers.
+                prediction_ids = greedy_generate(self.model, prompt_tokens, self.max_new_tokens)
+                parent = Branch(branch_id="root", parent_id=None, tokens=prompt_tokens)
+                children = self.baseline.draft_generator.generate(
+                    parent,
+                    num_branches=1,
+                    max_new_tokens=0,
+                    seed=seed,
+                )
+                result = self.engine.verify_branch(parent, children[0], step_idx=0)
+                stable_ratio = result.stable_ratio
         else:
+            prediction_ids = greedy_generate(self.model, prompt_tokens, self.max_new_tokens)
             stable_ratio = 0.0
 
         return decode_tokens(prediction_ids[0], self.tokenizer), stable_ratio

@@ -6,6 +6,42 @@ All notable changes to this project will be documented in this file.
 
 ### Added
 
+- `actfold/profiler/stability_profiler.py`: Layer-Aware Stability Profiler (LASP) that records real per-layer, per-step stable ratios from `FoldedTransformerLayer`.
+- `actfold/core/chunked_cache.py`: `ChunkedActivationCache`, a drop-in memory-efficient replacement for `ActivationCache` that stores activations in contiguous tensor chunks.
+- `actfold/core/cache_factory.py`: `make_activation_cache` factory to switch between legacy and chunked caches via config.
+- `actfold/utils/cost_model.py`: Compute-Bandwidth-Aware FLOPs Model (CBAF) that estimates wall-clock latency from compute throughput and memory bandwidth.
+- `actfold/speculative/folded_generation.py`: True End-to-End Folded Generation (TEFG) engine where each new token is produced through a folded child forward pass.
+- `actfold/speculative/branch_tree.py` and `acceptance_policy.py`: tree and policy helpers for folded generation.
+- `actfold/speculative/adaptive_draft_controller.py`: Adaptive Draft-Growth Controller (ADGC) that varies the number of draft branches based on runtime stability and acceptance history.
+- `actfold/models/diffusion_sampler.py`: abstract base for diffusion-native samplers with cross-timestep Branch Folding.
+- `actfold/models/llada_sampler.py`, `dream_sampler.py`, `fast_dllm_sampler.py`: reference diffusion samplers for LLaDA, Dream, and Fast-dLLM.
+- `ActFoldConfig` advanced switches: `use_stability_profiler`, `use_chunked_cache`, `cache_chunk_size`, `use_cost_model`, `use_folded_generation`, `max_active_branches`, `min_active_branches`, `use_adaptive_draft_growth`, `min_stable_ratio_to_expand`, `diffusion_sampler`.
+- `ActFoldVerificationEngine` now reports `estimated_latency_ms` and a full `StabilityProfile` when a folded model is used.
+- `BaseEvalAdapter` uses `folded_generate` automatically when the wrapped adapter carries a `FoldedModel`, so benchmark predictions are produced through the real folded path.
+- `DiffusionLLM.generate()` now supports an optional `folded_model` argument and dispatches to native samplers when `num_steps > 1`.
+- Tests for LASP, chunked cache, cost model, folded generation, adaptive draft growth, and diffusion samplers.
+
+### Changed
+
+- `ActFoldVerificationEngine._estimate_stable_ratio` now prefers the mean per-layer stable ratio from LASP over the embedding-level proxy.
+- `BenchmarkRunner` constructs caches via `make_activation_cache`, respecting `use_chunked_cache` and `cache_chunk_size`.
+- `BenchmarkRunner` passes a `ComputeBandwidthCostModel` to the verification engine when `use_cost_model` is enabled.
+- `FoldedTransformerLayer` and `FoldedModel` now accept `ActivationCacheType` (legacy or chunked).
+- `ActFoldVerificationEngine` now accepts `ActivationCacheType`.
+- `CausalLMDiffusionLLM.generate()` delegates to the base class when `num_steps != 1` or a `folded_model` is supplied.
+- `GenericDiffusionLLM.generate()` delegates to the base class implementation.
+- `LLaDAModel`, `DreamModel`, and `FastDLLMModel` implement `get_native_sampler()` and delegate to `DiffusionLLM.generate()` for diffusion sampling.
+- README, AGENTS.md, and this changelog updated to document the new components and configuration switches.
+
+### Fixed
+
+- `ActFoldVerificationEngine` no longer references `profile` before it is defined.
+- `FoldedModel` type annotations now accept the union cache type.
+
+## [Previous Releases]
+
+### Added
+
 - `actfold/core/model_wrapper.py`: high-level `FoldedModel` for wrapping existing models with Branch Folding.
 - `actfold/configs/__init__.py` and `actfold/configs/per_model/__init__.py` so YAML configs ship with the package.
 - `requirements-dev.txt` and `requirements-bench.txt` for clearer dependency separation.

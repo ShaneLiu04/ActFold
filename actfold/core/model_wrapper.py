@@ -9,7 +9,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from actfold.core.activation_cache import ActivationCache
+from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.folding_context import folding_scope
 from actfold.core.folding_scheduler import FoldingScheduler
@@ -52,7 +52,7 @@ class FoldedModel(nn.Module):
     def __init__(
         self,
         model: nn.Module,
-        cache: ActivationCache,
+        cache: ActivationCacheType,
         gate: SimilarityGate,
         layer_names: tuple[str, ...] | None = None,
         scheduler: FoldingScheduler | None = None,

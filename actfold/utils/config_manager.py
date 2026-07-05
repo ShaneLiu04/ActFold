@@ -70,6 +70,18 @@ class ActFoldConfig:
     eval_limit: int | float | None = None
     eval_base_only: bool = False
 
+    # ActFold advanced feature switches.
+    use_stability_profiler: bool = True
+    use_chunked_cache: bool = False
+    cache_chunk_size: int = 64
+    use_cost_model: bool = True
+    use_folded_generation: bool = True
+    max_active_branches: int = 8
+    min_active_branches: int = 1
+    use_adaptive_draft_growth: bool = False
+    min_stable_ratio_to_expand: float = 0.7
+    diffusion_sampler: str = "native"  # "native" | "autoregressive"
+
     def __post_init__(self) -> None:
         if not 0.0 <= self.tau <= 1.0:
             raise ValueError(f"tau must be in [0, 1], got {self.tau}")
@@ -94,6 +106,18 @@ class ActFoldConfig:
             )
         if self.eval_backend not in {"auto", "lm-eval", "evalplus"}:
             raise ValueError(f"Unsupported eval_backend: {self.eval_backend}")
+        if self.max_active_branches < 1:
+            raise ValueError("max_active_branches must be >= 1")
+        if self.min_active_branches < 1:
+            raise ValueError("min_active_branches must be >= 1")
+        if self.min_active_branches > self.max_active_branches:
+            raise ValueError("min_active_branches must be <= max_active_branches")
+        if self.cache_chunk_size <= 0:
+            raise ValueError("cache_chunk_size must be positive")
+        if not 0.0 <= self.min_stable_ratio_to_expand <= 1.0:
+            raise ValueError("min_stable_ratio_to_expand must be in [0, 1]")
+        if self.diffusion_sampler not in {"native", "autoregressive"}:
+            raise ValueError(f"Unsupported diffusion_sampler: {self.diffusion_sampler}")
 
 
 def load_config(path: Path | str) -> ActFoldConfig:
