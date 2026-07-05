@@ -1,0 +1,4 @@
+start_layer,end_layer,folded_layers,estimated_reduction_pct,full_model_stable_ratio
+0,1,2,39.21568627450981,0.9375
+2,3,2,39.21568627450981,0.9375
+0,3,4,78.43137254901961,0.9375
