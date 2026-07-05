@@ -356,6 +356,47 @@ ActFold uses real evaluation backends:
 
 ---
 
+## Results & Figures
+
+The figures below are example outputs generated from a small synthetic model for documentation illustration. Replace them with figures from real model benchmarks for publication.
+
+### Layer-Token Similarity Heatmap
+
+![Similarity heatmap](figures/fig1_similarity_heatmap.png)
+
+*Figure 1: Cosine similarity between parent and child hidden states across layers and token positions. Brighter regions indicate stable tokens that can reuse parent activations.*
+
+### Speedup vs. Accuracy Pareto Frontier
+
+![Pareto frontier](figures/fig2_pareto_frontier.png)
+
+*Figure 2: Pareto frontier of wall-clock speedup versus accuracy drop as the similarity threshold τ varies. Higher and further to the right is better.*
+
+### TFLOPs Reduction by Model
+
+![TFLOPs reduction](figures/fig3_tflops_reduction.png)
+
+*Figure 3: Verification-phase TFLOPs reduction across model families. The reduction comes from reusing stable-token activations at each Transformer layer.*
+
+### Ablation Study Summary
+
+![Ablation table](figures/fig4_ablation_table.png)
+
+*Figure 4: Ablation study over threshold τ, layer-wise folding strategy, and cache budget. Use these to choose a configuration for your target accuracy/latency budget.*
+
+### Regenerating figures
+
+```bash
+# Run real benchmarks and ablations
+bash scripts/run_benchmarks.sh actfold/configs/real_model_example.yaml
+bash scripts/run_ablation.sh actfold/configs/real_model_example.yaml
+
+# Generate figures from the artifacts
+python scripts/generate_figures.py --results-dir results/
+```
+
+---
+
 ## Ablations
 
 ```bash
@@ -409,8 +450,6 @@ python -m pytest tests/ -q -m slow
 - [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — detailed reproduction workflows.
 - [`AGENTS.md`](AGENTS.md) — conventions and pitfalls for contributors and AI agents.
 - [`CHANGELOG.md`](CHANGELOG.md) — release history.
-- [`202675.md`](202675.md) — in-depth system analysis and optimization opportunities.
-- [`202675创新.md`](202675创新.md) — innovation framework guiding recent implementations.
 
 ---
 
