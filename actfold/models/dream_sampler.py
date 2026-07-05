@@ -8,7 +8,7 @@ requires alignment with the official Dream sampling recipe.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable, cast
 
 import torch
 
@@ -85,7 +85,8 @@ class DreamSampler(DiffusionSampler):
         # Use the model's output head if available, otherwise a simple projection.
         logits: torch.Tensor
         if hasattr(self.model, "lm_head"):
-            logits = self.model.lm_head(x)
+            head = cast(Callable[[torch.Tensor], torch.Tensor], self.model.lm_head)
+            logits = head(x)
         else:
             projection = torch.nn.Linear(self.embedding_dim, self.model.vocab_size, bias=False).to(
                 dtype=x.dtype, device=x.device
