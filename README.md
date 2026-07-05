@@ -434,7 +434,7 @@ python -m pytest tests/ -q -m slow
 | Triton kernel not used on CUDA | `triton` not installed or hidden dim not divisible by 128. | Install `triton>=2.0` on Linux/WSL; the PyTorch fallback is always correct. |
 | `evalplus` fails on Windows | EvalPlus sandbox requires the Unix `resource` module. | Run evalplus tasks in WSL or use `lm-eval` tasks on native Windows. |
 | Slow tests time out | Real backends load datasets and models. | Run fast tests with `pytest -m "not slow"`; run slow tests separately. |
-| CI badge does not display | The badge URL uses placeholder `your-org/actfold`. | Replace `YOUR_GITHUB_USERNAME/YOUR_REPO_NAME` in the README badge Markdown with your actual repository path. |
+| CI badge does not display | The workflow may not have run yet or the repo path is wrong. | Ensure `.github/workflows/ci.yml` exists and the badge URL matches `ShaneLiu04/ActFold`. |
 
 ---
 
@@ -451,9 +451,9 @@ If you use ActFold in your research, please cite:
 ```bibtex
 @software{actfold2025,
   title = {ActFold: Cross-Branch Activation Reuse and Branch Folding},
-  author = {ActFold Contributors},
+  author = {ShaneLiu04},
   year = {2025},
-  url = {https://github.com/your-org/actfold},
+  url = {https://github.com/ShaneLiu04/ActFold},
 }
 ```
 
