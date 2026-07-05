@@ -96,9 +96,27 @@ pip install -e .
 # Synthetic demonstration model — no downloads, runs everywhere
 python demo.py
 
-# Real Hugging Face model (structural demonstration)
+# Standard causal LM (GPT-2, LLaMA, Qwen, Mistral, ...)
 python demo.py --model gpt2 --model-family causal_lm
+
+# Architecture-agnostic AutoModel wrapper (works with LLaDA/Dream/Fast-dLLM checkpoints)
+python demo.py --model <llada-checkpoint> --model-family generic
+
+# Diffusion-native generation with Branch Folding
+python demo.py \
+    --model <llada-checkpoint> \
+    --model-family llada \
+    --prompt "The future of artificial intelligence is" \
+    --num-steps 128 \
+    --max-new-tokens 32
 ```
+
+The demo auto-detects the embedding module, Transformer layer stack, and
+language modeling head for most Hugging Face architectures. It first tries
+:class:`~actfold.core.model_wrapper.FoldedModel` (which recognizes layer paths
+such as `model.layers`, `transformer.h`, `bert.encoder.layer`, and
+`decoder.block`) and falls back to explicit extraction via
+:class:`~actfold.models.architecture_utils.ManualFoldedForward` when needed.
 
 Expected output (synthetic model):
 
@@ -471,8 +489,7 @@ python -m pytest tests/ -q -m slow
 1. **Diffusion samplers are high-quality reference implementations**. They closely follow the official LLaDA/MDLM, Dream, and Fast-dLLM v2 recipes, but final published numbers should still be validated against the official implementation for the exact checkpoint.
 2. **No trained draft model**. `DraftGenerator` supports random/perturb/copy_flip modes, and `AdaptiveDraftGrowthController` varies branch count based on runtime stability. A dedicated draft model (e.g. Medusa/Eagle) is on the roadmap.
 3. **Per-model YAML configs are templates**. You must supply the actual Hugging Face identifier or local checkpoint path.
-4. **Real-model demo wiring is architecture-specific**. The `--model` demo supports GPT2-like architectures; other families need equivalent model-specific integration.
-5. **Variable-length folding is not yet supported**. Parent and child sequences must currently have the same length.
+4. **Variable-length folding is not yet supported**. Parent and child sequences must currently have the same length.
 6. **Multi-ancestor reuse is not yet supported**. Folding is currently limited to a single parent branch.
 
 ---

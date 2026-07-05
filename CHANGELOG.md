@@ -19,7 +19,11 @@ All notable changes to this project will be documented in this file.
 - `ActFoldVerificationEngine` now reports `estimated_latency_ms` and a full `StabilityProfile` when a folded model is used.
 - `BaseEvalAdapter` uses `folded_generate` automatically when the wrapped adapter carries a `FoldedModel`, so benchmark predictions are produced through the real folded path.
 - `DiffusionLLM.generate()` now supports an optional `folded_model` argument and dispatches to native samplers when `num_steps > 1`.
-- Tests for LASP, chunked cache, cost model, folded generation, adaptive draft growth, and diffusion samplers.
+- `actfold/models/architecture_utils.py`: architecture-agnostic detection of embedding modules, Transformer layer stacks, and language modeling heads for GPT/LLaMA/Qwen/Mistral/Gemma/OPT/BERT/RoBERTa/T5/BART/Falcon/Phi-style models.
+- `ManualFoldedForward`: fallback folded path used when `FoldedModel` cannot auto-discover a layer stack.
+- Extended `FoldedModel` default layer paths to cover `model.layers`, `transformer.h`, `transformer.layers`, `gpt_neox.layers`, `transformer.blocks`, `model.decoder.layers`, `decoder.layers`, `encoder.layer`, `model.encoder.layer`, `bert.encoder.layer`, `decoder.block`, `model.decoder.block`, `encoder.block`, and `model.encoder.block`.
+- `demo.py` real-model path is now architecture-agnostic and supports `--dtype`, `--seq-len`, `--num-branches`, `--tau`, `--prompt`, `--num-steps`, and `--max-new-tokens`.
+- Tests for architecture detection (`tests/test_architecture_utils.py`).
 
 ### Improved
 

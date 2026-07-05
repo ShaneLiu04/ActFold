@@ -8,11 +8,17 @@ demo demonstrates:
 2. Child branch generation (2 branches)
 3. Verification with ActFold vs. Baseline
 4. Per-layer similarity scores, FLOPs reduction, output equivalence
+
+The real-model path is architecture-agnostic: it auto-detects the Transformer
+layer stack, embedding module, and language modeling head using
+:class:`~actfold.models.architecture_utils.ArchitectureProfile` and wraps
+layers with :class:`~actfold.core.model_wrapper.FoldedModel`.
 """
 
 from __future__ import annotations
 
 import argparse
+from typing import Callable, cast
 
 import torch
 import torch.nn as nn
@@ -20,7 +26,10 @@ import torch.nn as nn
 from actfold.core import ActivationCache, SimilarityGate
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.folding_scheduler import FoldingScheduler
-from actfold.models import load_model
+from actfold.core.model_wrapper import FoldedModel
+from actfold.models import ArchitectureProfile, detect_architecture, load_model
+from actfold.models.architecture_utils import build_manual_folded_forward
+from actfold.models.utils import resolve_torch_dtype
 from actfold.speculative import ActFoldVerificationEngine, DraftGenerator, FastDLLMAdapter
 from actfold.speculative.branch import Branch
 from actfold.utils.flops_counter import count_diffusion_llm_flops
@@ -54,10 +63,10 @@ class SyntheticTransformerLayer(nn.Module):
     ) -> torch.Tensor:
         residual = hidden_states
         x, _ = self.attn(hidden_states, hidden_states, hidden_states, attn_mask=attention_mask)
-        x = self.norm1(x + residual)
+        x = self.norm1(cast(torch.Tensor, x) + residual)
         residual2 = x
         x = self.ffn(x)
-        return self.norm2(x + residual2)
+        return cast(torch.Tensor, self.norm2(cast(torch.Tensor, x) + residual2))
 
 
 class SyntheticTransformer(nn.Module):
@@ -85,7 +94,7 @@ class SyntheticTransformer(nn.Module):
         x = self.embedding(tokens)
         for layer in self.layers:
             x = layer(x, attention_mask=attention_mask)
-        return self.lm_head(x)
+        return cast(torch.Tensor, self.lm_head(x))
 
 
 class FoldedSyntheticTransformer(nn.Module):
@@ -128,7 +137,7 @@ class FoldedSyntheticTransformer(nn.Module):
                 parent_branch_id=parent_branch_id,
                 attention_mask=attention_mask,
             )
-        return self.lm_head(x)
+        return cast(torch.Tensor, self.lm_head(x))
 
 
 def print_table(rows: list[list[str]]) -> None:
@@ -184,109 +193,26 @@ def build_synthetic_models(
     return base_model, folded_model, vocab_size
 
 
-class RealModelFoldedForward(nn.Module):
-    """Manual folded forward for GPT2-like causal language models.
-
-    This is a structural demonstration: it extracts the embedding, Transformer
-    blocks, and language head from a loaded Hugging Face model and runs the
-    blocks through :class:`~actfold.core.folded_transformer.FoldedTransformerLayer`.
-    Production integration for other architectures requires equivalent
-    model-specific wiring.
-    """
-
-    def __init__(
-        self,
-        base_model: nn.Module,
-        cache: ActivationCache,
-        gate: SimilarityGate,
-        scheduler: FoldingScheduler | None = None,
-    ) -> None:
-        super().__init__()
-        self.base_model = base_model
-        self.cache = cache
-        self.gate = gate
-        self.scheduler = scheduler
-        self.embed, self.layers, self.lm_head = self._extract_parts(base_model)
-        self._wrapped_layers = nn.ModuleList(
-            FoldedTransformerLayer(
-                original_layer=layer,
-                cache=cache,
-                gate=gate,
-                layer_idx=idx,
-                scheduler=scheduler,
-            )
-            for idx, layer in enumerate(self.layers)
-        )
-
-    @staticmethod
-    def _extract_parts(model: nn.Module) -> tuple[nn.Module, nn.ModuleList, nn.Module]:
-        """Find embedding, Transformer blocks, and head on common HF models."""
-        # GPT2 / GPT-Neo / GPT-J style.
-        if hasattr(model, "transformer"):
-            transformer = model.transformer
-            if hasattr(transformer, "wte"):
-                embed = transformer.wte
-            elif hasattr(transformer, "word_embeddings"):
-                embed = transformer.word_embeddings
-            elif hasattr(transformer, "embedding"):
-                embed = transformer.embedding
-            else:
-                raise RuntimeError("Could not find embedding module on transformer.")
-
-            if hasattr(transformer, "h"):
-                layers = transformer.h
-            elif hasattr(transformer, "layers"):
-                layers = transformer.layers
-            else:
-                raise RuntimeError("Could not find Transformer block list.")
-
-            lm_head = model.lm_head
-            return embed, layers, lm_head
-
-        # Plain nn.Module with embedding/layers/head attributes.
-        embed = getattr(
-            model, "embedding", getattr(model, "word_embeddings", getattr(model, "wte", None))
-        )
-        layers = getattr(model, "layers", None)
-        lm_head = getattr(model, "lm_head", getattr(model, "head", None))
-        if embed is None or layers is None or lm_head is None:
-            raise RuntimeError(
-                "Real-model folded demo only supports GPT2-like architectures. "
-                "Use --synthetic for a toy demonstration."
-            )
-        return embed, layers, lm_head
-
-    def forward(
-        self,
-        tokens: torch.Tensor,
-        branch_id: str,
-        parent_branch_id: str | None = None,
-        attention_mask: torch.Tensor | None = None,
-    ) -> torch.Tensor:
-        x = self.embed(tokens)
-        for wrapped in self._wrapped_layers:
-            x = wrapped(
-                x,
-                branch_id=branch_id,
-                parent_branch_id=parent_branch_id,
-                attention_mask=attention_mask,
-                step_idx=0,
-            )
-        return self.lm_head(x)
-
-
 def build_real_models(
     model_name_or_path: str,
     model_family: str,
     device: str,
-) -> tuple[nn.Module, nn.Module, int]:
-    """Load a real Diffusion LLM and build a folded structural variant.
+    dtype: torch.dtype | None,
+) -> tuple[nn.Module, nn.Module, int, ArchitectureProfile]:
+    """Load a real Diffusion LLM and build an architecture-agnostic folded variant.
 
-    The baseline uses the original model.  The ActFold path uses
-    :class:`RealModelFoldedForward` for GPT2-like architectures.
+    The baseline uses the original model.  The ActFold path first tries
+    :class:`~actfold.core.model_wrapper.FoldedModel`, which auto-discovers the
+    Transformer layer stack for most Hugging Face architectures.  If that fails,
+    it falls back to :class:`~actfold.models.architecture_utils.ManualFoldedForward`,
+    which explicitly extracts the embedding, layers, and head.
     """
     logger.info("Loading real model: %s (family=%s)", model_name_or_path, model_family)
-    diffusion = load_model(model_name_or_path, model_family=model_family)
+    load_kwargs: dict[str, object] = {}
+    if dtype is not None:
+        load_kwargs["torch_dtype"] = dtype
+
+    diffusion = load_model(model_name_or_path, model_family=model_family, **load_kwargs)
     diffusion.to(device)
 
     vocab_size = diffusion.vocab_size
@@ -297,14 +223,25 @@ def build_real_models(
     scheduler = FoldingScheduler(base_tau=0.95, num_layers=num_layers, num_steps=10)
 
     raw_model = getattr(diffusion, "model", diffusion)
-    folded_model = RealModelFoldedForward(
+    folded_model: nn.Module = FoldedModel(
         raw_model,
         cache=cache,
         gate=gate,
         scheduler=scheduler,
     ).to(device)
 
-    return diffusion, folded_model, vocab_size
+    if not getattr(folded_model, "folding_applied", False):
+        logger.info("FoldedModel could not auto-discover layers; using manual extraction.")
+        cache2 = ActivationCache(max_entries_per_layer=1024, device=device)
+        folded_model = build_manual_folded_forward(
+            raw_model,
+            cache=cache2,
+            gate=SimilarityGate(tau=0.95, metric="cosine"),
+            scheduler=scheduler,
+        ).to(device)
+
+    profile = detect_architecture(raw_model)
+    return diffusion, folded_model, vocab_size, profile
 
 
 def _measure_stable_ratios(
@@ -313,6 +250,7 @@ def _measure_stable_ratios(
     child_tokens: torch.Tensor,
     num_layers: int,
     synthetic: bool,
+    embed_fn: Callable[[torch.Tensor], torch.Tensor] | None = None,
 ) -> list[float]:
     """Measure per-layer stable ratios from real parent/child hidden states.
 
@@ -338,12 +276,59 @@ def _measure_stable_ratios(
             return ratios
 
         # Real model path: use embedding-layer similarity as a proxy.
-        embed = folded_model.embed
-        parent_embed = embed(parent_tokens)
-        child_embed = embed(child_tokens)
+        if embed_fn is None:
+            profile = detect_architecture(folded_model)
+            embed = profile.embed_module
+            embed_fn = cast(Callable[[torch.Tensor], torch.Tensor], embed)
+        parent_embed = embed_fn(parent_tokens)
+        child_embed = embed_fn(child_tokens)
         sim = torch.cosine_similarity(parent_embed, child_embed, dim=-1)
         ratio = float(sim.mean().item())
         return [ratio] * num_layers
+
+
+def _encode_prompt(
+    diffusion: nn.Module,
+    prompt: str | None,
+    seq_len: int,
+    device: str,
+) -> torch.Tensor:
+    """Encode a text prompt, falling back to random token ids when unavailable."""
+    tokenizer = getattr(diffusion, "tokenizer", None)
+    if prompt is not None and tokenizer is not None:
+        encoded = tokenizer.encode(prompt, return_tensors="pt", add_special_tokens=True)
+        return cast(torch.Tensor, encoded).to(device)
+
+    if not hasattr(diffusion, "vocab_size"):
+        # Synthetic demonstration path: use the fixed vocabulary size.
+        vocab_size = 1000
+    else:
+        vocab_size = int(diffusion.vocab_size)
+    logger.info("No tokenizer or prompt provided; using random token ids for the parent branch.")
+    return torch.randint(0, vocab_size, (1, seq_len), device=device)
+
+
+def _maybe_generate(
+    diffusion: nn.Module,
+    folded_model: nn.Module,
+    prompt_tokens: torch.Tensor,
+    num_steps: int,
+    max_new_tokens: int,
+) -> torch.Tensor | None:
+    """Run a short diffusion/generation step if the family supports it."""
+    if num_steps <= 1:
+        return None
+    try:
+        generated = diffusion.generate(
+            prompt_tokens,
+            max_new_tokens=max_new_tokens,
+            num_steps=num_steps,
+            folded_model=folded_model,
+        )
+        return cast(torch.Tensor | None, generated)
+    except Exception as exc:  # noqa: BLE001
+        logger.info("Generation step skipped: %s", exc)
+        return None
 
 
 def main() -> None:
@@ -360,7 +345,7 @@ def main() -> None:
         "--model-family",
         type=str,
         default="auto",
-        help="Model family: llada, dream, fast_dllm, causal_lm, auto.",
+        help="Model family: llada, dream, fast_dllm, causal_lm, generic, auto.",
     )
     parser.add_argument(
         "--synthetic",
@@ -373,12 +358,59 @@ def main() -> None:
         default=None,
         help="Device to run on (cuda/cpu). Defaults to best available.",
     )
+    parser.add_argument(
+        "--dtype",
+        type=str,
+        default=None,
+        choices=["float32", "float16", "bfloat16"],
+        help="Torch dtype for the real model. Defaults to float32.",
+    )
+    parser.add_argument(
+        "--seq-len",
+        type=int,
+        default=16,
+        help="Sequence length for the parent branch when using random tokens.",
+    )
+    parser.add_argument(
+        "--num-branches",
+        type=int,
+        default=2,
+        help="Number of child branches to generate.",
+    )
+    parser.add_argument(
+        "--tau",
+        type=float,
+        default=0.95,
+        help="Cosine-similarity threshold for the similarity gate.",
+    )
+    parser.add_argument(
+        "--prompt",
+        type=str,
+        default=None,
+        help="Optional text prompt. If provided and a tokenizer is available, "
+        "it is used as the parent branch instead of random token ids.",
+    )
+    parser.add_argument(
+        "--num-steps",
+        type=int,
+        default=1,
+        help="Number of diffusion steps for the optional generation demo. "
+        "Use 1 to skip generation and only run the folding benchmark.",
+    )
+    parser.add_argument(
+        "--max-new-tokens",
+        type=int,
+        default=16,
+        help="Number of new tokens to generate when --num-steps > 1.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(42)
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
+    dtype = resolve_torch_dtype(args.dtype)
 
     use_synthetic = args.synthetic or args.model is None
+    profile: ArchitectureProfile | None = None
     if use_synthetic:
         if args.synthetic:
             logger.info("Using synthetic demonstration model.")
@@ -392,24 +424,32 @@ def main() -> None:
             vocab_size, hidden_dim, num_layers, num_heads, device
         )
     else:
-        base_model, folded_model, vocab_size = build_real_models(
-            args.model, args.model_family, device
+        base_model, folded_model, vocab_size, profile = build_real_models(
+            args.model, args.model_family, device, dtype
         )
         num_layers = base_model.num_layers
         hidden_dim = base_model.hidden_dim
         num_heads = base_model.num_heads
 
-    seq_len = 16
-    num_branches = 2
+    seq_len = args.seq_len
+    num_branches = args.num_branches
 
     print("=" * 65)
     print(" ActFold Demo")
     print("=" * 65)
     print(f" Device: {device}")
+    if dtype is not None:
+        print(f" Dtype: {args.dtype}")
     if use_synthetic:
         print(" Model: synthetic demonstration Transformer")
     else:
         print(" Model:", args.model)
+        if profile is not None:
+            print(f" Detected architecture: {profile.model_type}")
+            print(f" Layer path: {profile.layer_path}")
+            print(f" Embed path: {profile.embed_path}")
+            if profile.head_path:
+                print(f" Head path: {profile.head_path}")
     print(f" Architecture: {num_layers} layers, {hidden_dim} hidden dim, {num_heads} heads")
     print(f" Vocab size: {vocab_size}")
     print(f" Parent branch: [seq_len={seq_len}]")
@@ -417,7 +457,7 @@ def main() -> None:
     print()
 
     # Parent branch.
-    parent_tokens = torch.randint(0, vocab_size, (1, seq_len), device=device)
+    parent_tokens = _encode_prompt(base_model, args.prompt, seq_len, device)
     parent_branch = Branch(
         branch_id="root",
         parent_id=None,
@@ -461,6 +501,7 @@ def main() -> None:
         example_child.tokens,
         num_layers,
         synthetic=use_synthetic,
+        embed_fn=base_model.embed if not use_synthetic else None,
     )
     for layer_idx, ratio in enumerate(stable_ratios):
         actfold_pct = f"{int(100 * (1.0 - ratio))}%"
@@ -499,6 +540,25 @@ def main() -> None:
     status = "OK" if mse < 1e-3 else "HIGH"
     print(f" Output equivalence (MSE): {mse:.2e}  [{status}]")
 
+    # Optional generation demo.
+    if args.num_steps > 1 and not use_synthetic:
+        print()
+        print(" Generation Demo:")
+        generated = _maybe_generate(
+            base_model,
+            folded_model,
+            parent_tokens,
+            args.num_steps,
+            args.max_new_tokens,
+        )
+        if generated is not None:
+            tokenizer = getattr(base_model, "tokenizer", None)
+            if tokenizer is not None:
+                text = tokenizer.decode(generated[0], skip_special_tokens=True)
+                print(f" Generated: {text}")
+            else:
+                print(f" Generated tokens: {generated[0].tolist()}")
+
     # Also run the speculative verification engines for reporting.
     adapter = FastDLLMAdapter(
         base_model,
@@ -508,8 +568,8 @@ def main() -> None:
         vocab_size=vocab_size,
     )
     cache = ActivationCache(max_entries_per_layer=1024, device=device)
-    gate = SimilarityGate(tau=0.95, metric="cosine")
-    scheduler = FoldingScheduler(base_tau=0.95, num_layers=num_layers, num_steps=10)
+    gate = SimilarityGate(tau=args.tau, metric="cosine")
+    scheduler = FoldingScheduler(base_tau=args.tau, num_layers=num_layers, num_steps=10)
     engine = ActFoldVerificationEngine(adapter, cache, gate, scheduler)
     result = engine.verify_branch(parent_branch, example_child, step_idx=0)
     print(f" Estimated stable token ratio: {result.stable_ratio:.2%}")

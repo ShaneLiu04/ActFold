@@ -40,13 +40,28 @@ class FoldedModel(nn.Module):
     """
 
     _DEFAULT_LAYER_PATHS: tuple[str, ...] = (
-        "layers",
+        # Decoder-only models (LLaMA, Qwen, Mistral, Gemma, Yi, Phi, ...)
         "model.layers",
         "transformer.h",
+        "transformer.layers",
+        "layers",
+        "h",
+        # GPT-Neo / GPT-J / CodeGen
+        "gpt_neox.layers",
+        "transformer.blocks",
+        "blocks",
+        # OPT / BLOOM / Llama-style with explicit decoder
+        "model.decoder.layers",
+        "decoder.layers",
+        # Encoder-only models (BERT, RoBERTa, DeBERTa)
         "encoder.layer",
         "model.encoder.layer",
-        "gpt_neox.layers",
-        "model.decoder.layers",
+        "bert.encoder.layer",
+        # Seq2seq models (T5, BART, mT5, UL2)
+        "decoder.block",
+        "model.decoder.block",
+        "encoder.block",
+        "model.encoder.block",
     )
 
     def __init__(

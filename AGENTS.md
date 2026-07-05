@@ -68,6 +68,7 @@ benchmark dependencies are installed.
 20. **`folded_generate` requires a `FoldedModel` for actual folding**: If the adapter has no `folded_model`, `folded_generate` falls back to greedy autoregressive decoding and reports a stable ratio of `0.0`.
 21. **Reference diffusion samplers**: `LLaDASampler`, `DreamSampler`, and `FastDLLMSampler` are high-quality reference implementations aligned with the official recipes. They remain reference code, so validate final published numbers against the official sampler for the exact checkpoint.
 22. **`ActivationCache` vs `ChunkedActivationCache`**: Both implement the same public API. `ChunkedActivationCache` stores contiguous tensor chunks and is generally more memory-efficient for long sequences, but either can be passed to `FoldedModel` and `ActFoldVerificationEngine`.
+23. **Architecture-agnostic folding**: `FoldedModel` auto-discovers layer stacks via common Hugging Face attribute paths. If your model uses a non-standard layout, use `actfold.models.architecture_utils.detect_architecture()` or `ManualFoldedForward` to explicitly wire the embedding, layers, and head. Do not add model-family-specific extraction code in `demo.py`; keep it in `architecture_utils.py` so it is reusable and testable.
 
 ## Adding a New Model Family
 
