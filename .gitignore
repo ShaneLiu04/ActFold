@@ -56,7 +56,3 @@ checkpoints/
 *.bin
 *.pt
 *.pth
-
-# Internal analysis documents (not for public repo)
-202675.md
-202675创新.md
