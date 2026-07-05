@@ -256,7 +256,90 @@ eval_limit: 100
 
 ---
 
-## 6. Programmatic Real Model Benchmark
+## 6. Diffusion-Native Sampling
+
+When ``model_family`` is ``llada``, ``dream``, or ``fast_dllm`` and
+``num_steps > 1``, :meth:`~actfold.models.base.DiffusionLLM.generate` dispatches
+to a model-family-specific reference sampler.  These samplers are aligned with
+the official recipes and accept a ``sampler_config`` argument or individual
+kwargs forwarded to the config dataclass.
+
+### LLaDA (`LLaDASamplerConfig`)
+
+```python
+from actfold.models import load_model
+from actfold.models.llada_sampler import LLaDASamplerConfig
+
+model = load_model("your-org/llada-8b", model_family="llada")
+config = LLaDASamplerConfig(
+    num_steps=128,
+    num_tokens=128,
+    block_size=128,
+    remasking="low_confidence",  # or "random"
+    scheduler=None,              # None -> Linear; pass CosineMaskingScheduler()
+    temperature=0.0,
+    top_p=1.0,
+    top_k=0,
+    cfg_scale=0.0,
+)
+output = model.generate(
+    prompt_tokens,
+    max_new_tokens=128,
+    num_steps=128,
+    sampler_config=config,
+)
+```
+
+Key hyperparameters:
+
+| Parameter | Default | Description |
+|---|---|---|
+| ``num_steps`` | 128 | Total reverse-diffusion steps |
+| ``block_size`` | ``num_tokens`` | Decode generation region in blocks |
+| ``remasking`` | ``"low_confidence"`` | Rule for choosing which masks to keep |
+| ``temperature`` | 0.0 | 0 = greedy + Gumbel-Max; >0 samples |
+| ``cfg_scale`` | 0.0 | Classifier-free guidance scale (0 = disabled) |
+
+### Dream (`DreamSamplerConfig`)
+
+```python
+from actfold.models.dream_sampler import DreamSamplerConfig
+
+config = DreamSamplerConfig(
+    num_steps=512,
+    num_tokens=256,
+    alg="maskgit_plus",       # "topk_margin" | "entropy"
+    temperature=1.0,
+    top_p=1.0,
+    top_k=50,
+    right_shift_logits=True,  # AR alignment used by Dream
+)
+```
+
+### Fast-dLLM (`FastDLLMSamplerConfig`)
+
+```python
+from actfold.models.fast_dllm_sampler import FastDLLMSamplerConfig
+
+config = FastDLLMSamplerConfig(
+    num_steps=128,
+    num_tokens=256,
+    block_size=32,
+    small_block_size=32,
+    threshold=0.95,
+    temperature=0.0,
+    top_p=0.95,
+)
+```
+
+> **Note:** The samplers require the tokenizer to expose ``mask_token_id`` and
+> ``eos_token_id`` (and ``pad_token_id`` for Fast-dLLM).  Final published
+> results should be validated against the official implementation for the
+> target checkpoint.
+
+---
+
+## 8. Programmatic Real Model Benchmark
 
 ```python
 from actfold.eval.benchmark_runner import BenchmarkRunner
@@ -283,7 +366,7 @@ for task, metrics in results.items():
 
 ---
 
-## 7. Reproducibility Checklist
+## 9. Reproducibility Checklist
 
 - [ ] `requirements.txt` and `requirements-bench.txt` installed with pinned versions
 - [ ] `torch.manual_seed(42)` in every entry point
@@ -294,7 +377,7 @@ for task, metrics in results.items():
 
 ---
 
-## 8. Extending to New Diffusion LLMs
+## 10. Extending to New Diffusion LLMs
 
 To evaluate a new Diffusion LLM family:
 
@@ -343,7 +426,7 @@ model_family: "my_family"
 
 ---
 
-## 9. Troubleshooting
+## 11. Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|

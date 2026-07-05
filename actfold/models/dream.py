@@ -7,16 +7,17 @@ from typing import Any
 import torch
 
 from actfold.models.diffusion_sampler import DiffusionSampler
-from actfold.models.dream_sampler import DreamSampler
+from actfold.models.dream_sampler import DreamSampler, DreamSamplerConfig
 from actfold.models.generic import GenericDiffusionLLM
 
 
 class DreamModel(GenericDiffusionLLM):
     """Wrapper for the Dream Diffusion LLM family.
 
-    When the official Dream implementation is available, this class can be
-    extended to call its native diffusion sampling routine. By default it
-    falls back to the generic AutoModel wrapper.
+    Uses the reference masked diffusion sampler from
+    :class:`~actfold.models.dream_sampler.DreamSampler`, which follows the
+    official Dream recipe.  If a native Dream sampler is installed it can be
+    bound via ``_native_sampler``.
 
     Args:
         model_name_or_path: Hugging Face model identifier or local path.
@@ -35,9 +36,19 @@ class DreamModel(GenericDiffusionLLM):
         self,
         num_steps: int,
         num_tokens: int,
+        **kwargs: Any,
     ) -> DiffusionSampler | None:
-        """Return the reference Dream continuous diffusion sampler."""
-        return DreamSampler(self, num_steps=num_steps, num_tokens=num_tokens)
+        """Return the Dream masked diffusion sampler."""
+        config = kwargs.pop("sampler_config", None)
+        if config is None:
+            config = DreamSamplerConfig(
+                num_steps=num_steps,
+                num_tokens=num_tokens,
+                **kwargs,
+            )
+        if not isinstance(config, DreamSamplerConfig):
+            raise TypeError("DreamModel expects DreamSamplerConfig")
+        return DreamSampler(self, config=config)
 
     def generate(
         self,

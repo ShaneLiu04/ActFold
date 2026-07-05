@@ -21,6 +21,17 @@ All notable changes to this project will be documented in this file.
 - `DiffusionLLM.generate()` now supports an optional `folded_model` argument and dispatches to native samplers when `num_steps > 1`.
 - Tests for LASP, chunked cache, cost model, folded generation, adaptive draft growth, and diffusion samplers.
 
+### Improved
+
+- **Diffusion samplers aligned with official recipes**:
+  - Added `actfold/models/sampling_utils.py` with shared masking schedulers (`LinearMaskingScheduler`, `CosineMaskingScheduler`), `get_num_transfer_tokens`, Gumbel-Max noise, top-p/top-k filtering, canvas builders, and AR logit shifting.
+  - Rewrote `LLaDASampler` to follow the official LLaDA/MDLM recipe: right-padded canvas, block-wise decoding, masking schedule, `low_confidence`/`random` remasking, CFG, temperature/top-p/top-k, and Gumbel-Max noise.
+  - Rewrote `DreamSampler` to follow the official Dream recipe: left-padded canvas, MaskGIT-style iterative decoding with `maskgit_plus`/`topk_margin`/`entropy` confidence rules, optional CFG, and `alg_temp` soft selection.
+  - Rewrote `FastDLLMSampler` to follow the Fast-dLLM v2 recipe: block-wise masked decoding, small-block threshold unmasking, top-p/temperature sampling, stop-token early termination, and autoregressive block extension.
+  - `DiffusionSampler` base class now uses config dataclasses (`SamplerConfig`), returns `SamplerOutput`, supports `attention_mask`/`position_ids`, and forwards `folded_model` through every denoising step.
+  - `LLaDAModel`, `DreamModel`, and `FastDLLMModel` accept a `sampler_config` kwarg and forward sampler kwargs to their native configs.
+  - README, `docs/EXPERIMENTS.md`, and `AGENTS.md` updated to describe the new sampler capabilities and hyperparameters.
+
 ### Changed
 
 - `ActFoldVerificationEngine._estimate_stable_ratio` now prefers the mean per-layer stable ratio from LASP over the embedding-level proxy.

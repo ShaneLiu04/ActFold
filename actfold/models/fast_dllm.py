@@ -8,16 +8,17 @@ import torch
 
 from actfold.models.causal_lm import CausalLMDiffusionLLM
 from actfold.models.diffusion_sampler import DiffusionSampler
-from actfold.models.fast_dllm_sampler import FastDLLMSampler
+from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerConfig
 
 
 class FastDLLMModel(CausalLMDiffusionLLM):
     """Wrapper for the Fast-dLLM (Fast Diffusion LLM) family.
 
     Fast-dLLM models are typically published as causal LMs with custom
-    speculative decoding support. This wrapper uses
-    ``AutoModelForCausalLM`` and can be extended to use the official
-    Fast-dLLM sampler when installed.
+    speculative decoding support.  This wrapper uses
+    :class:`~actfold.models.fast_dllm_sampler.FastDLLMSampler` as the
+    reference discrete diffusion sampler, which follows the Fast-dLLM v2
+    block-wise masked decoding recipe.
 
     Args:
         model_name_or_path: Hugging Face model identifier or local path.
@@ -36,9 +37,19 @@ class FastDLLMModel(CausalLMDiffusionLLM):
         self,
         num_steps: int,
         num_tokens: int,
+        **kwargs: Any,
     ) -> DiffusionSampler | None:
-        """Return the reference Fast-dLLM discrete diffusion sampler."""
-        return FastDLLMSampler(self, num_steps=num_steps, num_tokens=num_tokens)
+        """Return the Fast-dLLM discrete diffusion sampler."""
+        config = kwargs.pop("sampler_config", None)
+        if config is None:
+            config = FastDLLMSamplerConfig(
+                num_steps=num_steps,
+                num_tokens=num_tokens,
+                **kwargs,
+            )
+        if not isinstance(config, FastDLLMSamplerConfig):
+            raise TypeError("FastDLLMModel expects FastDLLMSamplerConfig")
+        return FastDLLMSampler(self, config=config)
 
     def generate(
         self,

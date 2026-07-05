@@ -17,7 +17,7 @@ ActFold is a research framework for reducing verification-phase FLOPs in Diffusi
 - **Layer-aware profiling**: `actfold/profiler/stability_profiler.py` records real per-layer stable ratios. `ActFoldVerificationEngine` prefers these over the embedding-level proxy when available.
 - **Compute-bandwidth cost model**: `actfold/utils/cost_model.py` estimates wall-clock latency by accounting for both compute FLOPs and memory bandwidth; use it alongside the FLOPs counter.
 - **Chunked cache**: `actfold/core/chunked_cache.py` provides a drop-in, more memory-efficient alternative to `ActivationCache`; enable it via `ActFoldConfig.use_chunked_cache`.
-- **Diffusion-native samplers**: Reference samplers for LLaDA, Dream, and Fast-dLLM live in `actfold/models/*_sampler.py`. They are illustrative and must be validated against official recipes before production use.
+- **Diffusion-native samplers**: High-quality reference samplers for LLaDA, Dream, and Fast-dLLM live in `actfold/models/*_sampler.py`. They are aligned with the official LLaDA/MDLM, Dream, and Fast-dLLM v2 recipes (masking schedules, block decoding, confidence-based unmasking). Final published numbers should still be validated against the official implementation for the target checkpoint.
 
 ## Coding Conventions
 
@@ -66,7 +66,7 @@ benchmark dependencies are installed.
 18. **`FoldedModel` kwargs propagation**: `FoldedModel` forwards `branch_id` / `parent_branch_id` / `step_idx` to the base model. If the base model's `forward` does not propagate these kwargs to the wrapped layers (common for standard Hugging Face models), folding will not activate and a custom folded forward path is required.
 19. **`FoldedModel` modifies the base model in place**: Once a raw `nn.Module` is wrapped by `FoldedModel`, its Transformer layers are replaced by `FoldedTransformerLayer`. Calling the raw module directly without branch context will raise an error. Always route inference through the `FastDLLMAdapter` or `FoldedModel` with proper branch identifiers.
 20. **`folded_generate` requires a `FoldedModel` for actual folding**: If the adapter has no `folded_model`, `folded_generate` falls back to greedy autoregressive decoding and reports a stable ratio of `0.0`.
-21. **Reference diffusion samplers**: `LLaDASampler`, `DreamSampler`, and `FastDLLMSampler` are reference implementations. Do not treat their outputs as authoritative for a model family without validating against the official sampler.
+21. **Reference diffusion samplers**: `LLaDASampler`, `DreamSampler`, and `FastDLLMSampler` are high-quality reference implementations aligned with the official recipes. They remain reference code, so validate final published numbers against the official sampler for the exact checkpoint.
 22. **`ActivationCache` vs `ChunkedActivationCache`**: Both implement the same public API. `ChunkedActivationCache` stores contiguous tensor chunks and is generally more memory-efficient for long sequences, but either can be passed to `FoldedModel` and `ActFoldVerificationEngine`.
 
 ## Adding a New Model Family

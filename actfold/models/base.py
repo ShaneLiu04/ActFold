@@ -79,7 +79,10 @@ class DiffusionLLM(ABC, nn.Module):
             max_new_tokens: Number of tokens to generate.
             num_steps: Number of diffusion steps.
             folded_model: Optional folded model for activation reuse.
-            **kwargs: Model-specific sampling arguments.
+            **kwargs: Model-specific sampling arguments, forwarded to the
+                native sampler (e.g. ``block_size``, ``remasking``,
+                ``temperature``).  A ``sampler_config`` key may be used to pass
+                a fully built config dataclass.
 
         Returns:
             Generated token ids ``[batch, seq_len + max_new_tokens]``.
@@ -92,13 +95,18 @@ class DiffusionLLM(ABC, nn.Module):
                 **kwargs,
             )
 
-        sampler = self.get_native_sampler(num_steps=num_steps, num_tokens=max_new_tokens)
+        sampler = self.get_native_sampler(
+            num_steps=num_steps,
+            num_tokens=max_new_tokens,
+            **kwargs,
+        )
         if sampler is None:
             raise RuntimeError(
                 f"{self.__class__.__name__} does not implement a native diffusion sampler; "
                 "set num_steps=1 for autoregressive fallback."
             )
-        return sampler.sample(prompt_ids=prompt_tokens, folded_model=folded_model)
+        output = sampler.sample(prompt_ids=prompt_tokens, folded_model=folded_model)
+        return output.sequences
 
     def _autoregressive_generate(
         self,
@@ -121,6 +129,7 @@ class DiffusionLLM(ABC, nn.Module):
         self,
         num_steps: int,
         num_tokens: int,
+        **kwargs: Any,
     ) -> "DiffusionSampler" | None:
         """Return a native diffusion sampler for this model family.
 
@@ -132,6 +141,7 @@ class DiffusionLLM(ABC, nn.Module):
         Args:
             num_steps: Number of diffusion timesteps.
             num_tokens: Number of tokens to generate.
+            **kwargs: Additional sampler-specific arguments.
 
         Returns:
             Optional diffusion sampler.

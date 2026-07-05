@@ -54,7 +54,7 @@ The decision is made independently per layer and per token, so even branches tha
 | **Layer-Aware Stability Profiler** | Records real per-layer stable ratios instead of estimating from input embeddings. |
 | **Chunked Activation Cache** | Optional contiguous tensor-block cache that lowers memory fragmentation vs. per-token dict storage. |
 | **Compute-Bandwidth Cost Model** | Estimates wall-clock latency from both compute FLOPs and memory bandwidth, not just FLOPs. |
-| **Diffusion-Native Samplers** | Reference samplers for LLaDA, Dream, and Fast-dLLM that apply folding across diffusion timesteps. |
+| **Diffusion-Native Samplers** | High-quality reference samplers for LLaDA, Dream, and Fast-dLLM aligned with official recipes (masking schedules, block decoding, confidence-based unmasking). |
 | **Real Evaluation Backends** | Integrated `lm-eval` and `evalplus` judges; no mock fallbacks. |
 | **Optional Triton Kernel** | Fused stable/divergent merge on CUDA with a verified PyTorch fallback on CPU. |
 
@@ -284,21 +284,34 @@ print(result.estimated_latency_ms)  # compute-bandwidth-aware estimate
 
 ### Diffusion-native sampling
 
-When `num_steps > 1`, `DiffusionLLM.generate()` dispatches to a model-family-specific sampler. Reference implementations are provided for LLaDA, Dream, and Fast-dLLM:
+When `num_steps > 1`, `DiffusionLLM.generate()` dispatches to a model-family-specific sampler. The samplers are now high-quality reference implementations aligned with the official recipes:
+
+- **LLaDA** (`LLaDASampler`): right-padded canvas, block-wise decoding, masking schedule (`linear`/`cosine`), `low_confidence` / `random` remasking, optional CFG, temperature/top-p/top-k, and Gumbel-Max noise.
+- **Dream** (`DreamSampler`): left-padded canvas, MaskGIT-style iterative decoding with `maskgit_plus` / `topk_margin` / `entropy` confidence rules, optional CFG, and `alg_temp` soft selection.
+- **Fast-dLLM** (`FastDLLMSampler`): block-wise masked decoding with small-block threshold unmasking, top-p/temperature sampling, stop-token early termination, and autoregressive block extension.
 
 ```python
 from actfold.models import load_model
+from actfold.models.llada_sampler import LLaDASamplerConfig
 
 model = load_model("path/to/llada", model_family="llada")
+config = LLaDASamplerConfig(
+    num_steps=128,
+    num_tokens=128,
+    block_size=128,
+    remasking="low_confidence",
+    temperature=0.0,
+)
 output = model.generate(
     prompt_tokens,
-    max_new_tokens=16,
-    num_steps=64,
+    max_new_tokens=128,
+    num_steps=128,
     folded_model=folded,
+    sampler_config=config,
 )
 ```
 
-> These samplers are reference implementations intended to demonstrate the folding-diffusion integration. Validate them against the official model recipes before reporting results.
+> These samplers closely follow the official LLaDA/MDLM, Dream, and Fast-dLLM v2 recipes. Always validate final published numbers against the official implementation for the exact checkpoint you are using.
 
 ### Configuration-driven benchmarks
 
@@ -455,7 +468,7 @@ python -m pytest tests/ -q -m slow
 
 ## Current Limitations & Roadmap
 
-1. **Diffusion samplers are reference implementations**. LLaDA, Dream, and Fast-dLLM samplers demonstrate the folding-diffusion integration; aligning them with official recipes is ongoing work.
+1. **Diffusion samplers are high-quality reference implementations**. They closely follow the official LLaDA/MDLM, Dream, and Fast-dLLM v2 recipes, but final published numbers should still be validated against the official implementation for the exact checkpoint.
 2. **No trained draft model**. `DraftGenerator` supports random/perturb/copy_flip modes, and `AdaptiveDraftGrowthController` varies branch count based on runtime stability. A dedicated draft model (e.g. Medusa/Eagle) is on the roadmap.
 3. **Per-model YAML configs are templates**. You must supply the actual Hugging Face identifier or local checkpoint path.
 4. **Real-model demo wiring is architecture-specific**. The `--model` demo supports GPT2-like architectures; other families need equivalent model-specific integration.
