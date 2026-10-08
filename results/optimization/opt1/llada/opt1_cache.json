@@ -1,0 +1,96 @@
+{
+  "meta": {
+    "model_key": "llada",
+    "label": "LLaDA-8B-Instruct",
+    "hidden_dim": 4096,
+    "num_layers": 32,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "torch": "2.8.0+cu128"
+  },
+  "micro": {
+    "34": {
+      "seq_len": 34,
+      "legacy_put_ms": 0.2280517170826594,
+      "legacy_get_ms": 0.5950657029946645,
+      "chunked_put_ms": 0.00653254489103953,
+      "chunked_get_ms": 0.05485850075880687,
+      "vectorized_put_ms": 0.016325091322263084,
+      "vectorized_get_ms": 0.020268186926841736,
+      "put_speedup_legacy_over_vec": 13.969399164809417,
+      "get_speedup_legacy_over_vec": 29.359592209335812
+    },
+    "41": {
+      "seq_len": 41,
+      "legacy_put_ms": 0.23243017494678497,
+      "legacy_get_ms": 0.7040855785210927,
+      "chunked_put_ms": 0.0064294785261154175,
+      "chunked_get_ms": 0.055305783947308854,
+      "vectorized_put_ms": 0.016095240910847984,
+      "vectorized_get_ms": 0.01986039181550344,
+      "put_speedup_legacy_over_vec": 14.440925503024316,
+      "get_speedup_legacy_over_vec": 35.451746625233675
+    },
+    "96": {
+      "seq_len": 96,
+      "legacy_put_ms": 0.5386898914972942,
+      "legacy_get_ms": 1.5808413426081338,
+      "chunked_put_ms": 0.014029939969380695,
+      "chunked_get_ms": 0.0721074640750885,
+      "vectorized_put_ms": 0.016164779663085938,
+      "vectorized_get_ms": 0.019696975747744244,
+      "put_speedup_legacy_over_vec": 33.32491396263521,
+      "get_speedup_legacy_over_vec": 80.25807427768075
+    },
+    "256": {
+      "seq_len": 256,
+      "legacy_put_ms": 1.4189895242452621,
+      "legacy_get_ms": 4.171703631679217,
+      "chunked_put_ms": 0.026623035470644634,
+      "chunked_get_ms": 0.10236501693725586,
+      "vectorized_put_ms": 0.06084367632865906,
+      "vectorized_get_ms": 0.019729509949684143,
+      "put_speedup_legacy_over_vec": 23.321889962406477,
+      "get_speedup_legacy_over_vec": 211.4448682363752
+    },
+    "512": {
+      "seq_len": 512,
+      "legacy_put_ms": 2.942935998241107,
+      "legacy_get_ms": 8.30482728779316,
+      "chunked_put_ms": 0.051394104957580566,
+      "chunked_get_ms": 0.16250312328338623,
+      "vectorized_put_ms": 0.016128023465474445,
+      "vectorized_get_ms": 0.0197270264228185,
+      "put_speedup_legacy_over_vec": 182.47344471820145,
+      "get_speedup_legacy_over_vec": 420.98728464148354
+    }
+  },
+  "e2e": {
+    "legacy": {
+      "self_fold_ms": 51.146881103515625,
+      "partial_ms": 81.453564453125,
+      "self_fold_mse": 0.0,
+      "partial_mse": 1.127040982246399,
+      "self_fold_stable": 1.0,
+      "num_cache_entries": 3264
+    },
+    "chunked": {
+      "self_fold_ms": 8.568022155761719,
+      "partial_ms": 40.81733703613281,
+      "self_fold_mse": 0.0,
+      "partial_mse": 1.127040982246399,
+      "self_fold_stable": 1.0,
+      "num_cache_entries": 96
+    },
+    "vectorized": {
+      "self_fold_ms": 6.370534515380859,
+      "partial_ms": 42.93551330566406,
+      "self_fold_mse": 0.0,
+      "partial_mse": 1.127040982246399,
+      "self_fold_stable": 1.0,
+      "num_cache_entries": 3264
+    },
+    "speedup_self_fold_legacy_over_vec": 8.02866399672239,
+    "speedup_partial_legacy_over_vec": 1.8971140247758405,
+    "baseline_forward_ms": 17.24068603515625
+  }
+}
