@@ -1,0 +1,48 @@
+# Ablation: threshold sensitivity.
+
+# Similarity gating
+tau: 0.95
+metric: "cosine"
+
+# Activation cache
+max_entries_per_layer: 1024
+
+# Dynamic threshold scheduling
+enable_dynamic_tau: false
+
+# Device and seed
+device: "cuda"
+seed: 42
+
+# Model dimensions (used when no real model is loaded).
+num_layers: 12
+hidden_dim: 768
+num_heads: 12
+seq_len: 128
+vocab_size: 32000
+num_steps: 10
+
+# Real model configuration.  Ablation studies require a real model identifier;
+# the default uses GPT-2 as a lightweight stand-in.
+model_name_or_path: "gpt2"
+model_family: "causal_lm"
+trust_remote_code: true
+use_fast_tokenizer: true
+load_in_8bit: false
+load_in_4bit: false
+torch_dtype: null
+device_map: null
+
+# Evaluation backend configuration.
+use_real_eval: true
+eval_backend: "auto"
+eval_batch_size: 1
+eval_num_fewshot: null
+eval_limit: null
+eval_base_only: false
+
+# NOTE: the "ablation" block is not consumed by ActFoldConfig and is retained
+# here for documentation. load_config() will emit a warning for unknown keys.
+ablation:
+  name: "threshold_sensitivity"
+  taus: [0.90, 0.95, 0.99]

@@ -1,0 +1,42 @@
+# Configuration for Fast-dLLM-v2 1.5B.
+
+# Similarity gating
+tau: 0.95
+metric: "cosine"
+
+# Activation cache
+max_entries_per_layer: 1024
+
+# Dynamic threshold scheduling
+enable_dynamic_tau: true
+
+# Device and seed
+device: "cuda"
+seed: 42
+
+# Architecture (overridden when model_name_or_path is loaded).
+num_layers: 24
+hidden_dim: 2048
+num_heads: 32
+seq_len: 256
+vocab_size: 32000
+num_steps: 10
+
+# Real model configuration.
+# Replace with the actual Fast-dLLM-v2 1.5B checkpoint path or HF identifier.
+model_name_or_path: null
+model_family: "fast_dllm"
+trust_remote_code: true
+use_fast_tokenizer: true
+load_in_8bit: false
+load_in_4bit: false
+torch_dtype: null
+device_map: null
+
+# Evaluation backend configuration.
+use_real_eval: true
+eval_backend: "auto"
+eval_batch_size: 1
+eval_num_fewshot: null
+eval_limit: null
+eval_base_only: false
