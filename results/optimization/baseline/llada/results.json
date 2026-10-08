@@ -1,0 +1,567 @@
+{
+  "meta": {
+    "model_key": "llada",
+    "label": "LLaDA-8B-Instruct",
+    "repo": "GSAI-ML/LLaDA-8B-Instruct",
+    "family": "llada",
+    "num_layers": 32,
+    "hidden_dim": 4096,
+    "num_heads": 32,
+    "vocab_size": 126464,
+    "dtype": "bfloat16",
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "torch": "2.8.0+cu128",
+    "python": "3.12.3",
+    "prompt_len": 34
+  },
+  "similarity": {
+    "flip0": {
+      "mean_sim": 0.9986284971237183,
+      "median_sim": 1.0,
+      "p05_sim": 0.9935547113418579,
+      "shape": [
+        32,
+        34
+      ]
+    },
+    "flip1": {
+      "mean_sim": 0.9386510252952576,
+      "median_sim": 0.9921875,
+      "p05_sim": 0.6029297113418579,
+      "shape": [
+        32,
+        34
+      ]
+    },
+    "flip8": {
+      "mean_sim": 0.8194866180419922,
+      "median_sim": 0.908203125,
+      "p05_sim": 0.39453125,
+      "shape": [
+        32,
+        34
+      ]
+    }
+  },
+  "tau_sweep": [
+    {
+      "tau": 0.5,
+      "mean_stable": 0.9990808833390474,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.96875,
+      "mse": 1.2178521156311035,
+      "rel_mse": 0.2743659743440918,
+      "cosine": 0.9681721925735474,
+      "top1_agreement": 0.9117646813392639,
+      "latency_ms": 50.70854187011719
+    },
+    {
+      "tau": 0.8,
+      "mean_stable": 0.9954044166952372,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.84375,
+      "mse": 1.2178521156311035,
+      "rel_mse": 0.2743659743440918,
+      "cosine": 0.9681721925735474,
+      "top1_agreement": 0.9117646813392639,
+      "latency_ms": 54.32239532470703
+    },
+    {
+      "tau": 0.9,
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 1.127040982246399,
+      "rel_mse": 0.25390742706023356,
+      "cosine": 0.9707314372062683,
+      "top1_agreement": 0.9117646813392639,
+      "latency_ms": 80.52323913574219
+    },
+    {
+      "tau": 0.95,
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 1.127040982246399,
+      "rel_mse": 0.25390742706023356,
+      "cosine": 0.9707314372062683,
+      "top1_agreement": 0.9117646813392639,
+      "latency_ms": 80.43682098388672
+    },
+    {
+      "tau": 0.99,
+      "mean_stable": 0.9687500298023224,
+      "min_stable": 0.9411764740943909,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1267645359039307,
+      "rel_mse": 0.2538451473555538,
+      "cosine": 0.9707323312759399,
+      "top1_agreement": 0.9117646813392639,
+      "latency_ms": 80.32536315917969
+    },
+    {
+      "tau": 0.995,
+      "mean_stable": 0.5827205926179886,
+      "min_stable": 0.3529411852359772,
+      "all_stable_fraction": 0.0,
+      "mse": 0.8640412092208862,
+      "rel_mse": 0.19465705663161492,
+      "cosine": 0.9775958061218262,
+      "top1_agreement": 0.9705882668495178,
+      "latency_ms": 80.29524230957031
+    },
+    {
+      "tau": 0.999,
+      "mean_stable": 0.0,
+      "min_stable": 0.0,
+      "all_stable_fraction": 0.0,
+      "mse": 0.0,
+      "rel_mse": 0.0,
+      "cosine": 1.0,
+      "top1_agreement": 1.0,
+      "latency_ms": 61.72010803222656
+    },
+    {
+      "tau": 1.0,
+      "mean_stable": 0.0,
+      "min_stable": 0.0,
+      "all_stable_fraction": 0.0,
+      "mse": 0.0,
+      "rel_mse": 0.0,
+      "cosine": 1.0,
+      "top1_agreement": 1.0,
+      "latency_ms": 62.113487243652344
+    }
+  ],
+  "invariants": {
+    "self_fold": {
+      "mse": 0.0,
+      "rel_mse": 0.0,
+      "cosine": 1.0,
+      "top1_agreement": 1.0,
+      "mean_stable": 1.0,
+      "min_stable": 1.0,
+      "all_stable_fraction": 13.0,
+      "baseline_ms": 17.254608154296875,
+      "folded_fast_path_ms": 50.369851684570314,
+      "measured_speedup": 0.3425582481828598
+    },
+    "all_divergent": {
+      "mse": 0.0,
+      "rel_mse": 0.0,
+      "cosine": 1.0,
+      "top1_agreement": 1.0,
+      "mean_stable": 0.0,
+      "min_stable": 0.0,
+      "all_stable_fraction": 0.0
+    }
+  },
+  "layer_ablation": {
+    "all": {
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1118319034576416,
+      "rel_mse": 0.2504810227643466,
+      "cosine": 0.9713334441184998,
+      "top1_agreement": 0.9117646813392639
+    },
+    "early_only": {
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 0.6061369180679321,
+      "rel_mse": 0.13655463087605926,
+      "cosine": 0.9841858744621277,
+      "top1_agreement": 0.9705882668495178
+    },
+    "late_only": {
+      "mean_stable": 0.7529411613941193,
+      "min_stable": 0.7352941036224365,
+      "all_stable_fraction": 0.0,
+      "mse": 0.2533283233642578,
+      "rel_mse": 0.05707152073449552,
+      "cosine": 0.9936494827270508,
+      "top1_agreement": 0.9705882668495178
+    },
+    "none": {
+      "mean_stable": 0.0,
+      "min_stable": 0.0,
+      "all_stable_fraction": 0.0,
+      "mse": 0.0,
+      "rel_mse": 0.0,
+      "cosine": 1.0,
+      "top1_agreement": 1.0
+    }
+  },
+  "cache_budget": {
+    "1": {
+      "mean_stable": 0.029411764815449715,
+      "min_stable": 0.029411764815449715,
+      "all_stable_fraction": 0.0,
+      "mse": 0.18735432624816895,
+      "rel_mse": 0.042208451756083565,
+      "cosine": 0.9951329231262207,
+      "top1_agreement": 0.9705882668495178
+    },
+    "4": {
+      "mean_stable": 0.0882352963089943,
+      "min_stable": 0.0882352963089943,
+      "all_stable_fraction": 0.0,
+      "mse": 0.49336087703704834,
+      "rel_mse": 0.11114768040730444,
+      "cosine": 0.987131655216217,
+      "top1_agreement": 1.0
+    },
+    "16": {
+      "mean_stable": 0.4402573565021157,
+      "min_stable": 0.4117647111415863,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1190011501312256,
+      "rel_mse": 0.252096159219475,
+      "cosine": 0.9712726473808289,
+      "top1_agreement": 0.9117646813392639
+    },
+    "64": {
+      "mean_stable": 0.9687500298023224,
+      "min_stable": 0.9411764740943909,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1267645359039307,
+      "rel_mse": 0.2538451473555538,
+      "cosine": 0.9707323312759399,
+      "top1_agreement": 0.9117646813392639
+    },
+    "256": {
+      "mean_stable": 0.9687500298023224,
+      "min_stable": 0.9411764740943909,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1267645359039307,
+      "rel_mse": 0.2538451473555538,
+      "cosine": 0.9707323312759399,
+      "top1_agreement": 0.9117646813392639
+    },
+    "65536": {
+      "mean_stable": 0.9687500298023224,
+      "min_stable": 0.9411764740943909,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1267645359039307,
+      "rel_mse": 0.2538451473555538,
+      "cosine": 0.9707323312759399,
+      "top1_agreement": 0.9117646813392639
+    }
+  },
+  "dynamic_tau": {
+    "fixed_0.95": {
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 1.127040982246399,
+      "rel_mse": 0.25390742706023356,
+      "cosine": 0.9707314372062683,
+      "top1_agreement": 0.9117646813392639
+    },
+    "scheduler": {
+      "mean_stable": 0.9705882668495178,
+      "min_stable": 0.9705882668495178,
+      "all_stable_fraction": 0.0,
+      "mse": 1.1118319034576416,
+      "rel_mse": 0.2504810227643466,
+      "cosine": 0.9713334441184998,
+      "top1_agreement": 0.9117646813392639,
+      "tau_per_layer": [
+        0.94,
+        0.9381,
+        0.9361,
+        0.9342,
+        0.9323,
+        0.9303,
+        0.9284,
+        0.9265,
+        0.9245,
+        0.9226,
+        0.9206,
+        0.9187,
+        0.9168,
+        0.9148,
+        0.9129,
+        0.911,
+        0.909,
+        0.9071,
+        0.9052,
+        0.9032,
+        0.9013,
+        0.8994,
+        0.8974,
+        0.8955,
+        0.8935,
+        0.8916,
+        0.8897,
+        0.8877,
+        0.8858,
+        0.8839,
+        0.8819
+      ]
+    }
+  },
+  "merge_bench": {
+    "seq_len": 34,
+    "hidden_dim": 4096,
+    "triton_ms": 0.024265599250793458,
+    "torch_ms": 0.007546240091323852,
+    "speedup": 0.3109851116113318,
+    "max_abs_err": 0.0
+  },
+  "sampling": {
+    "num_tokens": 32,
+    "num_steps": 32,
+    "baseline_ms": 636.8378177285194,
+    "folded_ms": 3716.904476284981,
+    "token_match_rate": 0.7272727489471436,
+    "num_folded_steps": 31,
+    "mean_step_stable": 0.9886211007833481,
+    "step_stats": [
+      {
+        "branch": "llada_2",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_3",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_4",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_5",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_6",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_7",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_8",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_9",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_10",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_11",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_12",
+        "mean_stable": 0.9976325780153275,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_13",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_14",
+        "mean_stable": 0.9976325780153275,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_15",
+        "mean_stable": 0.9985795468091965,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_16",
+        "mean_stable": 0.9971590936183929,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_17",
+        "mean_stable": 0.9971590936183929,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_18",
+        "mean_stable": 0.9976325780153275,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_19",
+        "mean_stable": 0.9995265156030655,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_20",
+        "mean_stable": 0.9985795468091965,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_21",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_22",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_23",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_24",
+        "mean_stable": 0.9966856092214584,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 1.0
+      },
+      {
+        "branch": "llada_25",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_26",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_27",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_28",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_29",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_30",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_31",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      },
+      {
+        "branch": "llada_32",
+        "mean_stable": 0.9848484992980957,
+        "min_stable": 0.9848484992980957,
+        "final_stable": 0.9848484992980957
+      }
+    ],
+    "baseline_text": "user\n\nThe theory of relativity describes how space and time are linked. Explain the key ideas in a few sentences:assistant\n\nThe theory of relativity states that space and time are interwoven, and that the speed of light is constant regardless of the observer's frame of reference.",
+    "folded_text": "user\n\nThe theory of relativity describes how space and time are linked. Explain the key ideas in a few sentences:assistant\n\nThe theory of relativity states that space and time are are..... and. and and and and and and and relative speed of gravity."
+  },
+  "cost_model": {
+    "measured_compute_tflops": 302.12172042763996,
+    "measured_bandwidth_gb_s": 1459.1756179919958,
+    "predictions": [
+      {
+        "tau": 0.5,
+        "stable_ratio": 0.9990808833390474,
+        "predicted_ms": 0.02559459650870017,
+        "measured_ms": 50.70854187011719
+      },
+      {
+        "tau": 0.8,
+        "stable_ratio": 0.9954044166952372,
+        "predicted_ms": 0.029947216634074517,
+        "measured_ms": 54.32239532470703
+      },
+      {
+        "tau": 0.9,
+        "stable_ratio": 0.9705882668495178,
+        "predicted_ms": 0.05932740248035132,
+        "measured_ms": 80.52323913574219
+      },
+      {
+        "tau": 0.95,
+        "stable_ratio": 0.9705882668495178,
+        "predicted_ms": 0.05932740248035132,
+        "measured_ms": 80.43682098388672
+      },
+      {
+        "tau": 0.99,
+        "stable_ratio": 0.9687500298023224,
+        "predicted_ms": 0.06150371695346163,
+        "measured_ms": 80.32536315917969
+      },
+      {
+        "tau": 0.995,
+        "stable_ratio": 0.5827205926179886,
+        "predicted_ms": 0.518529350547697,
+        "measured_ms": 80.29524230957031
+      },
+      {
+        "tau": 0.999,
+        "stable_ratio": 0.0,
+        "predicted_ms": 1.2084203857810394,
+        "measured_ms": 61.72010803222656
+      },
+      {
+        "tau": 1.0,
+        "stable_ratio": 0.0,
+        "predicted_ms": 1.2084203857810394,
+        "measured_ms": 62.113487243652344
+      }
+    ]
+  }
+}

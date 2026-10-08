@@ -1,0 +1,16 @@
+{
+  "model": "Fast-dLLM-v2-1.5B",
+  "seq_len": 41,
+  "hidden_dim": 1536,
+  "num_layers": 28,
+  "baseline_full_forward_ms": 15.390491739908855,
+  "original_layer_ms": 0.5273952007293701,
+  "folded_all_stable_ms": 1.786400032043457,
+  "folded_all_divergent_ms": 2.0919055938720703,
+  "gate_ms": 0.06400959968566894,
+  "cache_put_ms": 0.22589120864868165,
+  "cache_get_ms": 0.6816895961761474,
+  "merge_triton_ms": 0.025435519218444825,
+  "merge_torch_ms": 0.007338879704475403,
+  "estimated_model_speedup_at_full_reuse": null
+}
