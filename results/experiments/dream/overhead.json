@@ -1,0 +1,16 @@
+{
+  "model": "Dream-7B-Instruct",
+  "seq_len": 41,
+  "hidden_dim": 3584,
+  "num_layers": 28,
+  "baseline_full_forward_ms": 16.553695678710938,
+  "original_layer_ms": 0.6056352138519288,
+  "folded_all_stable_ms": 1.8246368408203124,
+  "folded_all_divergent_ms": 2.081345558166504,
+  "gate_ms": 0.0657043218612671,
+  "cache_put_ms": 0.23022079467773438,
+  "cache_get_ms": 0.697433614730835,
+  "merge_triton_ms": 0.02449023962020874,
+  "merge_torch_ms": 0.007375360131263733,
+  "estimated_model_speedup_at_full_reuse": null
+}

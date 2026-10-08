@@ -1,0 +1,9 @@
+# Optional benchmark backends (real model evaluation).
+#
+# The constraints file pins the evalplus -> google-generativeai
+# gRPC/protobuf transitive stack so pip does not backtrack for minutes.
+-c constraints-bench.txt
+-r requirements.txt
+
+lm-eval>=0.4.0
+evalplus>=0.1.0
