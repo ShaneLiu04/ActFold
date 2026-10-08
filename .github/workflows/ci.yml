@@ -1,0 +1,80 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-dev.txt
+            requirements-bench.txt
+            constraints-bench.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-dev.txt
+
+      - name: Check formatting with black
+        run: python -m black --check actfold tests demo.py scripts
+
+      - name: Check imports with isort
+        run: python -m isort --check-only actfold tests demo.py scripts
+
+      - name: Lint with pyflakes
+        run: python -m pyflakes actfold tests demo.py scripts
+
+      - name: Type check with mypy
+        run: python -m mypy actfold --ignore-missing-imports
+
+      - name: Run fast tests
+        run: python -m pytest tests/ -q -m "not slow"
+
+      - name: Run demo
+        run: python demo.py
+
+  bench-backends:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            requirements-bench.txt
+            constraints-bench.txt
+
+      # requirements-bench.txt pins the evalplus -> google-generativeai
+      # gRPC/protobuf stack through constraints-bench.txt, which keeps pip from
+      # backtracking for minutes over grpcio-status / proto-plus metadata.
+      - name: Install benchmark backends
+        run: |
+          python -m pip install --upgrade pip
+          pip install --prefer-binary -r requirements-dev.txt -r requirements-bench.txt
+
+      - name: Run slow backend tests
+        run: python -m pytest tests/ -q -m slow

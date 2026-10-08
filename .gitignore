@@ -1,0 +1,63 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+
+# Generated artifacts that are intentionally tracked in this repository:
+# figures/ (report figures) and results/ (benchmark artifacts).
+
+# Local-only analysis documents (kept locally, not distributed)
+/202675.md
+/202675创新.md
+
+# pytest
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Model weights and data (only top-level directories)
+/models/
+/data/
+checkpoints/
+*.safetensors
+*.bin
+*.pt
+*.pth
