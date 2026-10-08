@@ -1,0 +1,286 @@
+{
+  "meta": {
+    "model_key": "llada",
+    "label": "LLaDA-8B-Instruct",
+    "seq_len": 34,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "baseline_forward_ms": 17.117433675130208
+  },
+  "fixed": {
+    "tau": [
+      1.0,
+      0.999,
+      0.995,
+      0.99,
+      0.95,
+      0.8,
+      0.5
+    ],
+    "target": null,
+    "conditions": {
+      "1": [
+        {
+          "stable_ratio": 0.0,
+          "min_layer_stable": 0.0,
+          "latency_ms": 30.37752342224121,
+          "top1_agreement": 1.0,
+          "rel_mse": 0.0,
+          "tau": 1.0
+        },
+        {
+          "stable_ratio": 0.0,
+          "min_layer_stable": 0.0,
+          "latency_ms": 30.38853645324707,
+          "top1_agreement": 1.0,
+          "rel_mse": 0.0,
+          "tau": 0.999
+        },
+        {
+          "stable_ratio": 0.4963235384784639,
+          "min_layer_stable": 0.20588235557079315,
+          "latency_ms": 34.27809143066406,
+          "top1_agreement": 0.9705882668495178,
+          "rel_mse": 0.10307087380512255,
+          "tau": 0.995
+        },
+        {
+          "stable_ratio": 0.9687500298023224,
+          "min_layer_stable": 0.9411764740943909,
+          "latency_ms": 34.70546340942383,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.20714986180736256,
+          "tau": 0.99
+        },
+        {
+          "stable_ratio": 0.9705882668495178,
+          "min_layer_stable": 0.9705882668495178,
+          "latency_ms": 34.471492767333984,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.20740719690721937,
+          "tau": 0.95
+        },
+        {
+          "stable_ratio": 0.9963235333561897,
+          "min_layer_stable": 0.9705882668495178,
+          "latency_ms": 9.901740074157715,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.2398436161718374,
+          "tau": 0.8
+        },
+        {
+          "stable_ratio": 0.9990808833390474,
+          "min_layer_stable": 0.9705882668495178,
+          "latency_ms": 7.390600204467773,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.2398436161718374,
+          "tau": 0.5
+        }
+      ],
+      "8": [
+        {
+          "stable_ratio": 0.0,
+          "min_layer_stable": 0.0,
+          "latency_ms": 32.32355499267578,
+          "top1_agreement": 1.0,
+          "rel_mse": 0.0,
+          "tau": 1.0
+        },
+        {
+          "stable_ratio": 0.0,
+          "min_layer_stable": 0.0,
+          "latency_ms": 31.96241569519043,
+          "top1_agreement": 1.0,
+          "rel_mse": 0.0,
+          "tau": 0.999
+        },
+        {
+          "stable_ratio": 0.10294117842568085,
+          "min_layer_stable": 0.0,
+          "latency_ms": 34.466068267822266,
+          "top1_agreement": 0.9117646813392639,
+          "rel_mse": 0.10005118054972544,
+          "tau": 0.995
+        },
+        {
+          "stable_ratio": 0.7417279351502657,
+          "min_layer_stable": 0.7058823704719543,
+          "latency_ms": 35.43770980834961,
+          "top1_agreement": 0.7941176295280457,
+          "rel_mse": 0.7224031649920966,
+          "tau": 0.99
+        },
+        {
+          "stable_ratio": 0.7647058963775635,
+          "min_layer_stable": 0.7647058963775635,
+          "latency_ms": 36.09613037109375,
+          "top1_agreement": 0.8235294222831726,
+          "rel_mse": 0.6730978559631149,
+          "tau": 0.95
+        },
+        {
+          "stable_ratio": 0.9264705888926983,
+          "min_layer_stable": 0.7647058963775635,
+          "latency_ms": 34.83806228637695,
+          "top1_agreement": 0.7058823704719543,
+          "rel_mse": 0.9330469350613079,
+          "tau": 0.8
+        },
+        {
+          "stable_ratio": 0.9926470592617989,
+          "min_layer_stable": 0.7647058963775635,
+          "latency_ms": 7.588327884674072,
+          "top1_agreement": 0.6764705777168274,
+          "rel_mse": 1.094574034053018,
+          "tau": 0.5
+        }
+      ]
+    }
+  },
+  "adaptive": {
+    "tau": null,
+    "target": [
+      1.0,
+      0.995,
+      0.99,
+      0.97,
+      0.95,
+      0.9,
+      0.8,
+      0.5
+    ],
+    "conditions": {
+      "1": [
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 6.920547962188721,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.2398436161718374,
+          "target": 1.0
+        },
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 6.962900161743164,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.2398436161718374,
+          "target": 0.995
+        },
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 6.91867208480835,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.2398436161718374,
+          "target": 0.99
+        },
+        {
+          "stable_ratio": 0.9705882668495178,
+          "min_layer_stable": 0.9705882668495178,
+          "latency_ms": 37.54246139526367,
+          "top1_agreement": 0.8823529481887817,
+          "rel_mse": 0.20740719690721937,
+          "target": 0.97
+        },
+        {
+          "stable_ratio": 0.9411764740943909,
+          "min_layer_stable": 0.9411764740943909,
+          "latency_ms": 37.84044647216797,
+          "top1_agreement": 0.9117646813392639,
+          "rel_mse": 0.19252366702927165,
+          "target": 0.95
+        },
+        {
+          "stable_ratio": 0.9117646813392639,
+          "min_layer_stable": 0.9117646813392639,
+          "latency_ms": 37.67826843261719,
+          "top1_agreement": 0.9117646813392639,
+          "rel_mse": 0.19090298624472538,
+          "target": 0.9
+        },
+        {
+          "stable_ratio": 0.7941176295280457,
+          "min_layer_stable": 0.7941176295280457,
+          "latency_ms": 37.838871002197266,
+          "top1_agreement": 0.9705882668495178,
+          "rel_mse": 0.1807874153485638,
+          "target": 0.8
+        },
+        {
+          "stable_ratio": 0.5,
+          "min_layer_stable": 0.5,
+          "latency_ms": 38.53438949584961,
+          "top1_agreement": 0.9705882668495178,
+          "rel_mse": 0.09956935152995584,
+          "target": 0.5
+        }
+      ],
+      "8": [
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 7.043203830718994,
+          "top1_agreement": 0.6764705777168274,
+          "rel_mse": 1.094574034053018,
+          "target": 1.0
+        },
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 6.864716053009033,
+          "top1_agreement": 0.6764705777168274,
+          "rel_mse": 1.094574034053018,
+          "target": 0.995
+        },
+        {
+          "stable_ratio": 1.0,
+          "min_layer_stable": 1.0,
+          "latency_ms": 6.95714807510376,
+          "top1_agreement": 0.6764705777168274,
+          "rel_mse": 1.094574034053018,
+          "target": 0.99
+        },
+        {
+          "stable_ratio": 0.9705882668495178,
+          "min_layer_stable": 0.9705882668495178,
+          "latency_ms": 37.64434051513672,
+          "top1_agreement": 0.7058823704719543,
+          "rel_mse": 1.029225680916997,
+          "target": 0.97
+        },
+        {
+          "stable_ratio": 0.9411764740943909,
+          "min_layer_stable": 0.9411764740943909,
+          "latency_ms": 38.144134521484375,
+          "top1_agreement": 0.7058823704719543,
+          "rel_mse": 1.0108750965106414,
+          "target": 0.95
+        },
+        {
+          "stable_ratio": 0.9117646813392639,
+          "min_layer_stable": 0.9117646813392639,
+          "latency_ms": 38.038753509521484,
+          "top1_agreement": 0.6764705777168274,
+          "rel_mse": 0.9634706577740392,
+          "target": 0.9
+        },
+        {
+          "stable_ratio": 0.7941176295280457,
+          "min_layer_stable": 0.7941176295280457,
+          "latency_ms": 37.794456481933594,
+          "top1_agreement": 0.7647058963775635,
+          "rel_mse": 0.7439185661617963,
+          "target": 0.8
+        },
+        {
+          "stable_ratio": 0.5,
+          "min_layer_stable": 0.5,
+          "latency_ms": 37.812843322753906,
+          "top1_agreement": 0.8529411554336548,
+          "rel_mse": 0.44069017562409873,
+          "target": 0.5
+        }
+      ]
+    }
+  }
+}

@@ -1,0 +1,85 @@
+{
+  "meta": {
+    "model_key": "llada",
+    "label": "LLaDA-8B-Instruct",
+    "seq_len": 512,
+    "gpu": "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+    "baseline_forward_ms": 35.252899169921875
+  },
+  "conditions": {
+    "nosplit": {
+      "active_layers": 0,
+      "entries": [
+        {
+          "num_flips": 1,
+          "stable_ratio": 0.99713134765625,
+          "latency_ms": 49.83394241333008,
+          "speedup_vs_baseline": 0.707407390680214,
+          "top1_agreement": 0.96875,
+          "rel_mse": 0.13200016149738492
+        },
+        {
+          "num_flips": 8,
+          "stable_ratio": 0.98345947265625,
+          "latency_ms": 49.76433563232422,
+          "speedup_vs_baseline": 0.7083968613663858,
+          "top1_agreement": 0.9609375,
+          "rel_mse": 0.27299409593854634
+        },
+        {
+          "num_flips": 32,
+          "stable_ratio": 0.93597412109375,
+          "latency_ms": 49.81232833862305,
+          "speedup_vs_baseline": 0.7077143419250248,
+          "top1_agreement": 0.931640625,
+          "rel_mse": 0.4888850367346475
+        },
+        {
+          "num_flips": 128,
+          "stable_ratio": 0.7452392578125,
+          "latency_ms": 50.04035568237305,
+          "speedup_vs_baseline": 0.7044893804050213,
+          "top1_agreement": 0.8515625,
+          "rel_mse": 0.6983054357630606
+        }
+      ]
+    },
+    "split": {
+      "active_layers": 32,
+      "entries": [
+        {
+          "num_flips": 1,
+          "stable_ratio": 0.99713134765625,
+          "latency_ms": 40.85390853881836,
+          "speedup_vs_baseline": 0.8629015051626078,
+          "top1_agreement": 0.96875,
+          "rel_mse": 0.13200050712431838
+        },
+        {
+          "num_flips": 8,
+          "stable_ratio": 0.98345947265625,
+          "latency_ms": 42.47315216064453,
+          "speedup_vs_baseline": 0.830004305698485,
+          "top1_agreement": 0.9609375,
+          "rel_mse": 0.2730086462838309
+        },
+        {
+          "num_flips": 32,
+          "stable_ratio": 0.934814453125,
+          "latency_ms": 43.03199768066406,
+          "speedup_vs_baseline": 0.8192252526022599,
+          "top1_agreement": 0.927734375,
+          "rel_mse": 0.48822595167529675
+        },
+        {
+          "num_flips": 128,
+          "stable_ratio": 0.7452392578125,
+          "latency_ms": 45.974700927734375,
+          "speedup_vs_baseline": 0.7667890917949497,
+          "top1_agreement": 0.8515625,
+          "rel_mse": 0.6981589630359911
+        }
+      ]
+    }
+  }
+}
