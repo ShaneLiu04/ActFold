@@ -1,0 +1,16 @@
+{
+  "model": "LLaDA-8B-Instruct",
+  "seq_len": 34,
+  "hidden_dim": 4096,
+  "num_layers": 32,
+  "baseline_full_forward_ms": 17.577239990234375,
+  "original_layer_ms": 0.5332672119140625,
+  "folded_all_stable_ms": 1.5436287879943849,
+  "folded_all_divergent_ms": 1.807694435119629,
+  "gate_ms": 0.06527359962463379,
+  "cache_put_ms": 0.18979840278625487,
+  "cache_get_ms": 0.6522736072540283,
+  "merge_triton_ms": 0.025100159645080566,
+  "merge_torch_ms": 0.007259520292282104,
+  "estimated_model_speedup_at_full_reuse": null
+}
