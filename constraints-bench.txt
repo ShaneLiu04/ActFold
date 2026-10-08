@@ -1,0 +1,20 @@
+# Pinned constraints for the benchmark backends.
+#
+# `evalplus` depends on `google-generativeai`, whose gRPC/protobuf transitive
+# graph makes pip backtrack across hundreds of `grpcio-status`,
+# `googleapis-common-protos` and `proto-plus` releases (observed >10 minute
+# stalls and CI job cancellation). These constraints pin the stack that the
+# resolver itself converges to, keeping installation deterministic and fast.
+#
+# Install with:
+#     pip install -r requirements-bench.txt -c constraints-bench.txt
+# `requirements-bench.txt` already includes this file via `-c`.
+
+google-generativeai==0.8.6
+google-ai-generativelanguage==0.6.15
+google-api-core==2.33.0
+grpcio==1.84.0
+grpcio-status==1.71.2
+googleapis-common-protos==1.75.0
+proto-plus==1.28.2
+protobuf==5.29.6
