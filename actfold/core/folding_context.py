@@ -1,11 +1,15 @@
 """Thread-local context for propagating branch identifiers through base models.
 
-Standard Transformer implementations (e.g. Hugging Face) do not forward arbitrary
-keyword arguments from ``model.forward`` down to each individual layer. To let
-:class:`~actfold.core.model_wrapper.FoldedModel` communicate branch context to
-:class:`~actfold.core.folded_transformer.FoldedTransformerLayer` without
-modifying the base model, we store the current branch context in a
-``contextvars.ContextVar`` while the wrapped model is executing.
+.. deprecated:: AR002
+    This module exists only for the legacy
+    :class:`~actfold.core.model_wrapper.FoldedModel` code path, where standard
+    Transformer implementations (e.g. Hugging Face) do not forward arbitrary
+    keyword arguments from ``model.forward`` down to each individual layer.
+    The recommended path is ``ManualFoldedForward``
+    (:mod:`actfold.models.architecture_utils`), which threads branch context
+    through explicit ``branch_id`` / ``parent_branch_id`` / ``step_idx``
+    arguments and never touches this thread-local state.  New code must not
+    read ``FOLDING_CONTEXT``; route inference through the Manual path instead.
 """
 
 from __future__ import annotations

@@ -3,13 +3,14 @@
 from __future__ import annotations
 
 import warnings
-from typing import Any
+from typing import Any, Callable
 
 import pytest
 import torch
 import torch.nn as nn
 
 from actfold.core import ActivationCache, SimilarityGate
+from actfold.core import split_layer as split_layer_module
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.fused_ops import merge_stable_divergent
 from actfold.core.model_wrapper import FoldedModel
@@ -488,3 +489,455 @@ def test_t017_split_output_bit_exact_vs_baseline(dtype: torch.dtype) -> None:
     assert 0 < int(stable_mask.sum()) < stable_mask.numel()
     reference = merge_stable_divergent(layer(parent), layer(child), stable_mask)
     assert torch.equal(out, reference)
+
+
+# ---------------------------------------------------------------------------
+# AR002 / T001: nonzero-sync-free divergent indexing
+# ---------------------------------------------------------------------------
+
+
+def _exact_divergent_index() -> Callable[[torch.Tensor], torch.Tensor]:
+    """Lazily import the sync-free exact divergent-index helper.
+
+    ``_exact_divergent_index`` is a design deliverable of AR002/T001 in
+    ``actfold.core.split_layer``.  Importing it lazily keeps the
+    pre-implementation Red state scoped to the new tests instead of breaking
+    collection of the whole module.
+    """
+    from actfold.core.split_layer import _exact_divergent_index as fn
+
+    return fn
+
+
+def _padded_divergent_index() -> Callable[[torch.Tensor, int], torch.Tensor]:
+    """Lazily import the fixed-capacity padded divergent-index helper."""
+    from actfold.core.split_layer import _padded_divergent_index as fn
+
+    return fn
+
+
+def _ut001a_build_mask(batch: int, seq_len: int, case: str) -> torch.Tensor:
+    """Build a deterministic ``[batch, seq_len]`` bool mask for the given case.
+
+    Args:
+        batch: Batch size.
+        seq_len: Sequence length.
+        case: One of ``random``, ``all_false``, ``all_true``, ``single_true``
+            or ``single_false``.
+
+    Returns:
+        Boolean stability mask with the requested fill pattern.
+    """
+    torch.manual_seed(batch * 100 + seq_len)
+    if case == "random":
+        return torch.rand(batch, seq_len) > 0.5
+    flat = torch.ones(batch * seq_len, dtype=torch.bool)
+    if case == "all_false":
+        flat[:] = False
+    elif case == "single_true":
+        flat[:] = False
+        flat[flat.numel() // 2] = True
+    elif case == "single_false":
+        flat[flat.numel() // 2] = False
+    return flat.reshape(batch, seq_len)
+
+
+@pytest.mark.parametrize("batch, seq_len", [(1, 1), (1, 7), (2, 3), (3, 5), (4, 2)])
+@pytest.mark.parametrize(
+    "case", ["random", "all_false", "all_true", "single_true", "single_false"]
+)
+def test_ut001a_exact_divergent_index_matches_nonzero_reference(
+    batch: int, seq_len: int, case: str, device: str
+) -> None:
+    """UT-001a: ``_exact_divergent_index`` equals the ``nonzero`` reference.
+
+    Across several mask shapes, the degenerate fills (all-False, all-True,
+    single True, single False) and random masks, on CPU and the test device,
+    the helper must return the ascending flat divergent indices as an int64
+    tensor elementwise-identical to
+    ``(~mask).reshape(-1).nonzero(as_tuple=False).squeeze(-1)``.
+    """
+    exact = _exact_divergent_index()
+    mask_cpu = _ut001a_build_mask(batch, seq_len, case)
+    devices = ["cpu"] if device == "cpu" else ["cpu", device]
+    for dev in devices:
+        mask = mask_cpu.to(dev)
+        result = exact(mask)
+        expected = (~mask).reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+        assert result.dtype == torch.int64
+        assert result.shape == expected.shape
+        assert torch.equal(result, expected)
+
+
+def test_ut001b_mixed_split_path_eradicates_nonzero_sync(
+    monkeypatch: pytest.MonkeyPatch, device: str
+) -> None:
+    """UT-001b: mixed split forwards perform no ``nonzero`` host sync.
+
+    The only tolerated per-layer host readback is the three-way stable-count
+    check in ``FoldedTransformerLayer.forward`` (``int(stable_mask.sum())``,
+    dispatched through ``Tensor.__int__``; a Python-level ``Tensor.item``
+    patch cannot see ``int(...)``).  The ``nonzero`` flat-index call in
+    ``_recompute_merged`` is the synchronization point this AR eradicates:
+    its call count must be zero, where the legacy implementation calls it
+    once per split forward.
+    """
+    hidden_dim = 16
+    batch, seq_len = 2, 6
+    layer = LlamaLikeLayer(hidden_dim).to(device)
+    parent = torch.randn(batch, seq_len, hidden_dim, device=device)
+    child = parent.clone()
+    child[:, 0, :] = torch.randn(batch, hidden_dim, device=device)
+
+    counts = {"nonzero": 0, "readback": 0}
+    orig_nonzero = torch.Tensor.nonzero
+    orig_item = torch.Tensor.item
+
+    def counting_nonzero(self: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
+        counts["nonzero"] += 1
+        return orig_nonzero(self, *args, **kwargs)
+
+    def counting_item(self: torch.Tensor) -> Any:
+        counts["readback"] += 1
+        return orig_item(self)
+
+    def counting_int(self: torch.Tensor) -> Any:
+        counts["readback"] += 1
+        return orig_item(self)
+
+    monkeypatch.setattr(torch.Tensor, "nonzero", counting_nonzero)
+    monkeypatch.setattr(torch.Tensor, "item", counting_item)
+    monkeypatch.setattr(torch.Tensor, "__int__", counting_int)
+
+    cache = ActivationCache(max_entries_per_layer=64, device=device)
+    gate = SimilarityGate(tau=0.99)
+    split = SplitFoldedTransformerLayer(layer, cache, gate, layer_idx=0, min_split_tokens=4)
+    with torch.no_grad():
+        split(parent, branch_id="parent")
+        out = split(child, branch_id="child", parent_branch_id="parent")
+
+    assert out.shape == child.shape
+    # The split actually engaged on the mixed mask: the MLP saw only the two
+    # divergent rows (token 0 of each batch element).
+    assert len(layer.mlp.seen_shapes[-1]) == 2
+    assert layer.mlp.seen_shapes[-1][0] == 2
+    # The eradicated sync point: no nonzero call anywhere in the folded forward.
+    assert counts["nonzero"] == 0
+    # The retained three-way stable-count readback: exactly one per layer.
+    assert counts["readback"] == 1
+
+
+class _NonzeroReferenceSplitLayer(SplitFoldedTransformerLayer):
+    """Reference split layer pinned to the legacy ``nonzero`` index path.
+
+    AR002/T001 replaces the ``nonzero`` flat-index computation in
+    ``SplitFoldedTransformerLayer._recompute_merged`` with the sync-free
+    ``_exact_divergent_index`` helper.  This subclass copies the legacy
+    implementation verbatim so the old and new index paths can be compared
+    bit-exactly on identical inputs and weights.
+    """
+
+    def _recompute_merged(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        stable_mask: torch.Tensor,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        spec = self.split_spec
+        if not self._split_enabled or spec is None:
+            return self._recompute_all(hidden_states, attention_mask, **kwargs)
+        num_tokens = hidden_states.shape[0] * hidden_states.shape[1]
+        if num_tokens < self.min_split_tokens:
+            return self._recompute_all(hidden_states, attention_mask, **kwargs)
+        divergent = ~stable_mask
+        flat_index = divergent.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+        self._split_state = {
+            "flat_index": flat_index,
+            "input_shape": None,
+            "num_divergent": 0,
+        }
+        try:
+            return self._recompute_all(hidden_states, attention_mask, **kwargs)
+        except Exception as exc:  # pragma: no cover - defensive fallback
+            self._split_enabled = False
+            warnings.warn(
+                f"Split FFN disabled for layer {self.layer_idx} "
+                f"({type(exc).__name__}: {exc}); falling back to full recompute.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            return self._recompute_all(hidden_states, attention_mask, **kwargs)
+        finally:
+            self._split_state = None
+
+
+@pytest.mark.parametrize("divergent_positions", [(0, 1, 2), (1, 4)])
+def test_ut001c_split_bit_exact_vs_nonzero_reference(
+    divergent_positions: tuple[int, ...],
+) -> None:
+    """UT-001c: the sync-free index path is bit-exact vs the legacy one.
+
+    ``divergent_positions=(0, 1, 2)`` makes the divergent count D=3 equal a
+    representative fixed capacity; ``(1, 4)`` is a general mixed spread.  The
+    new path and the legacy ``nonzero`` reference subclass see identical
+    inputs and weights; their outputs must be ``torch.equal``.
+    """
+    hidden_dim = 16
+    seq_len = 8
+    torch.manual_seed(0)
+    parent = torch.randn(1, seq_len, hidden_dim)
+    child = parent.clone()
+    child[:, list(divergent_positions), :] = torch.randn(
+        1, len(divergent_positions), hidden_dim
+    )
+
+    # Precondition: the gate marks exactly the constructed positions divergent.
+    stable_mask = SimilarityGate(tau=0.99)(child, parent)
+    assert int((~stable_mask).sum()) == len(divergent_positions)
+
+    outputs: dict[str, torch.Tensor] = {}
+    for name, cls in (
+        ("new", SplitFoldedTransformerLayer),
+        ("reference", _NonzeroReferenceSplitLayer),
+    ):
+        torch.manual_seed(7)
+        layer = LlamaLikeLayer(hidden_dim)
+        cache = ActivationCache(max_entries_per_layer=64, device="cpu")
+        gate = SimilarityGate(tau=0.99)
+        folded = cls(layer, cache, gate, layer_idx=0, min_split_tokens=0)
+        with torch.no_grad():
+            folded(parent, branch_id="parent")
+            outputs[name] = folded(child, branch_id="child", parent_branch_id="parent")
+        # The split engaged in both layers: the MLP saw only the divergent rows.
+        assert len(layer.mlp.seen_shapes[-1]) == 2
+    assert torch.equal(outputs["new"], outputs["reference"])
+
+
+@pytest.mark.parametrize(
+    "batch, seq_len, num_divergent, capacity",
+    [
+        (1, 8, 3, 6),  # D < capacity: stable padding head + exact tail
+        (2, 5, 4, 4),  # D == capacity: equals the exact index
+        (1, 8, 6, 3),  # D > capacity: last `capacity` divergent ranks
+        (1, 6, 0, 4),  # D == 0: pure stable padding
+        (3, 4, 9, 5),  # D > capacity, batched
+        (1, 8, 8, 8),  # D == capacity == N: all divergent
+    ],
+)
+def test_ut001d_padded_divergent_index_contract(
+    batch: int, seq_len: int, num_divergent: int, capacity: int, device: str
+) -> None:
+    """UT-001d: the fixed-capacity padded index obeys the padding contract.
+
+    ``_padded_divergent_index`` always returns an int64 tensor of shape
+    ``[capacity]`` with ``capacity`` distinct flat positions.  For
+    D < capacity the head entries are stable positions and the tail equals
+    the exact divergent index; for D == capacity the result equals the exact
+    index; for D > capacity it holds the ascending divergent ranks
+    (D - capacity)..(D - 1), i.e. the last ``capacity`` exact indices.
+    """
+    exact = _exact_divergent_index()
+    padded_fn = _padded_divergent_index()
+
+    n = batch * seq_len
+    generator = torch.Generator().manual_seed(
+        batch * 1000 + seq_len * 10 + num_divergent
+    )
+    perm = torch.randperm(n, generator=generator)
+    flat = torch.ones(n, dtype=torch.bool)
+    flat[perm[:num_divergent]] = False
+
+    devices = ["cpu"] if device == "cpu" else ["cpu", device]
+    for dev in devices:
+        mask = flat.reshape(batch, seq_len).to(dev)
+        exact_ref = (~mask).reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+        assert exact_ref.numel() == num_divergent
+        assert torch.equal(exact(mask), exact_ref)
+
+        padded = padded_fn(mask, capacity)
+        assert padded.dtype == torch.int64
+        assert padded.shape == (capacity,)
+        # The argsort construction yields `capacity` distinct flat positions.
+        assert torch.unique(padded).numel() == capacity
+
+        if num_divergent < capacity:
+            head = padded[: capacity - num_divergent]
+            assert bool(mask.reshape(-1)[head].all())
+            if num_divergent > 0:
+                assert torch.equal(padded[capacity - num_divergent :], exact_ref)
+        elif num_divergent == capacity:
+            assert torch.equal(padded, exact_ref)
+        else:
+            assert torch.equal(padded, exact_ref[num_divergent - capacity :])
+
+
+def test_ut001e_all_stable_fast_path_skips_divergent_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-001e: the all-stable fast path never computes a divergent index.
+
+    With the child identical to the parent the mask is all-True and the fast
+    path returns the cached parent FFN output directly: no FFN recompute, no
+    divergent-index gather.
+    """
+    hidden_dim = 8
+    layer = LlamaLikeLayer(hidden_dim)
+    parent = torch.randn(1, 4, hidden_dim)
+
+    cache = ActivationCache(max_entries_per_layer=32, device="cpu")
+    gate = SimilarityGate(tau=0.99)
+    split = SplitFoldedTransformerLayer(layer, cache, gate, layer_idx=0, min_split_tokens=0)
+    with torch.no_grad():
+        split(parent, branch_id="parent")
+
+    child = parent.clone()
+    assert bool(gate(child, parent).all())
+
+    calls = {"n": 0}
+
+    def _forbidden(*args: Any, **kwargs: Any) -> torch.Tensor:
+        calls["n"] += 1
+        raise AssertionError(
+            "_exact_divergent_index must not be called on the all-stable fast path"
+        )
+
+    monkeypatch.setattr(split_layer_module, "_exact_divergent_index", _forbidden)
+    seen_before = len(layer.mlp.seen_shapes)
+    with torch.no_grad():
+        out = split(child, branch_id="child", parent_branch_id="parent")
+
+    parent_ffn = cache.fetch(branch_id="parent", layer_idx=0)["ffn_out"]
+    assert torch.equal(out, parent_ffn)
+    # No FFN compute and no divergent-index gather happened at all.
+    assert len(layer.mlp.seen_shapes) == seen_before
+    assert calls["n"] == 0
+    assert split._split_state is None
+
+
+def test_ut001f_all_divergent_full_recompute(monkeypatch: pytest.MonkeyPatch) -> None:
+    """UT-001f: an all-divergent mask (stable_count == 0) full-recomputes.
+
+    No token is stable, so the layer takes the full recompute path: the
+    output equals a direct call to the original layer and the split state
+    never activates.
+    """
+    hidden_dim = 8
+    layer = LlamaLikeLayer(hidden_dim)
+    parent = torch.randn(1, 5, hidden_dim)
+    child = torch.randn(1, 5, hidden_dim)
+
+    cache = ActivationCache(max_entries_per_layer=32, device="cpu")
+    # tau=1.0: the gate's `sim > tau` is never true, so every token diverges.
+    gate = SimilarityGate(tau=1.0)
+    split = SplitFoldedTransformerLayer(layer, cache, gate, layer_idx=0, min_split_tokens=0)
+
+    assert not bool(gate(child, parent).any())
+
+    calls = {"n": 0}
+
+    def _forbidden(*args: Any, **kwargs: Any) -> torch.Tensor:
+        calls["n"] += 1
+        raise AssertionError(
+            "_exact_divergent_index must not be called when no token is stable"
+        )
+
+    monkeypatch.setattr(split_layer_module, "_exact_divergent_index", _forbidden)
+    with torch.no_grad():
+        split(parent, branch_id="parent")
+        out = split(child, branch_id="child", parent_branch_id="parent")
+
+    # Full 3-D recompute through the original layer, no row slicing.
+    assert layer.mlp.seen_shapes[-1] == (1, 5, hidden_dim)
+    assert torch.equal(out, layer(child))
+    assert split._split_state is None
+    assert calls["n"] == 0
+
+
+def test_ut001g_min_split_boundary_and_exception_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """UT-001g: min_split_tokens boundary and the one-shot exception fallback.
+
+    ``N == min_split_tokens - 1`` stays on the full-recompute path (the exact
+    divergent index is never computed and the output equals the full
+    recompute); ``N == min_split_tokens`` enters the split with exactly one
+    index computation.  A single injected failure in the original layer
+    degrades with a ``RuntimeWarning`` and a correct fallback output.
+    """
+    hidden_dim = 8
+
+    def build(
+        seq_len: int, min_split_tokens: int
+    ) -> tuple[SplitFoldedTransformerLayer, LlamaLikeLayer, torch.Tensor, torch.Tensor]:
+        """Build a split layer over a fresh layer with one divergent token."""
+        torch.manual_seed(11)
+        layer = LlamaLikeLayer(hidden_dim)
+        parent = torch.randn(1, seq_len, hidden_dim)
+        child = parent.clone()
+        child[:, 2, :] = torch.randn(1, hidden_dim)
+        cache = ActivationCache(max_entries_per_layer=64, device="cpu")
+        gate = SimilarityGate(tau=0.99)
+        split = SplitFoldedTransformerLayer(
+            layer, cache, gate, layer_idx=0, min_split_tokens=min_split_tokens
+        )
+        with torch.no_grad():
+            split(parent, branch_id="parent")
+        return split, layer, parent, child
+
+    real_exact = split_layer_module._exact_divergent_index
+    calls = {"n": 0}
+
+    def counting_exact(*args: Any, **kwargs: Any) -> torch.Tensor:
+        calls["n"] += 1
+        return real_exact(*args, **kwargs)
+
+    monkeypatch.setattr(split_layer_module, "_exact_divergent_index", counting_exact)
+
+    # N == min_split_tokens - 1: no split, no divergent-index computation.
+    split, layer, parent, child = build(seq_len=7, min_split_tokens=8)
+    with torch.no_grad():
+        out = split(child, branch_id="child", parent_branch_id="parent")
+    stable_mask = SimilarityGate(tau=0.99)(child, parent)
+    expected = merge_stable_divergent(layer(parent), layer(child), stable_mask)
+    assert torch.equal(out, expected)
+    assert layer.mlp.seen_shapes[-1] == (1, 7, hidden_dim)
+    assert calls["n"] == 0
+
+    # N == min_split_tokens: the split engages with exactly one index computation.
+    calls["n"] = 0
+    split, layer, parent, child = build(seq_len=8, min_split_tokens=8)
+    stable_mask = SimilarityGate(tau=0.99)(child, parent)
+    expected = merge_stable_divergent(layer(parent), layer(child), stable_mask)
+    shapes_before = len(layer.mlp.seen_shapes)
+    with torch.no_grad():
+        out = split(child, branch_id="child", parent_branch_id="parent")
+    assert torch.allclose(out, expected, atol=1e-6)
+    # Only the single divergent row went through the MLP (shape [D, hidden]).
+    assert len(layer.mlp.seen_shapes) == shapes_before + 1
+    assert layer.mlp.seen_shapes[-1] == (1, hidden_dim)
+    assert calls["n"] == 1
+
+    # One-shot failure inside the split recompute: RuntimeWarning + fallback.
+    calls["n"] = 0
+    split, layer, parent, child = build(seq_len=8, min_split_tokens=4)
+    stable_mask = SimilarityGate(tau=0.99)(child, parent)
+    expected = merge_stable_divergent(layer(parent), layer(child), stable_mask)
+
+    orig_forward = layer.forward
+    failures = {"remaining": 1}
+
+    def flaky_forward(*args: Any, **kwargs: Any) -> torch.Tensor:
+        if failures["remaining"] > 0:
+            failures["remaining"] -= 1
+            raise RuntimeError("injected one-shot failure")
+        return orig_forward(*args, **kwargs)
+
+    monkeypatch.setattr(layer, "forward", flaky_forward)
+    with pytest.warns(RuntimeWarning):
+        with torch.no_grad():
+            out = split(child, branch_id="child", parent_branch_id="parent")
+    assert failures["remaining"] == 0
+    assert torch.allclose(out, expected, atol=1e-6)
+    assert split._split_state is None
+    assert split.split_enabled is False

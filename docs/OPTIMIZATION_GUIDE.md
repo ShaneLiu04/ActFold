@@ -188,9 +188,9 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 | # | 优化点 | 方案 | 预期收益 | 难度 |
 |---|---|---|---|---|
-| P2-1 | **单 kernel gate+gather+merge** | 每 program（token 行）：load parent/child hidden 行 → 寄存器 fp32 cosine → stable 判定 → 按 stable 单边读 ffn 行写出 + stable 位写 device-side mask buffer；host 端用 D2H copy + cudaEvent 异步读取统计，替代全部阻塞同步 | 整层 folding 辅助开销 2 读 1 写 + 0–1 次同步，对比现状 ~14 pass；**辅助开销 3–5×** | 中-高 |
-| P2-2 | nonzero 同步的根除（split 层） | 固定容量 padded gather（索引 clamp + mask 过滤），接受固定 divergent 预算的少量多余 FFN 行计算 | 消除每 layer 1 次同步；**CUDA graph 前置条件** | 中 |
-| P2-3 | **CUDA graph / torch.compile 捕获验证循环** | 前置：P0 全部 + P2-2 + branch 上下文改由编译期 kwargs 传递（弃用 contextvars/thread-local）；diffusion 验证阶段是"同 shape 反复前向"的典型可捕获负载 | 固定 shape 场景潜在 2–5×；launch 开销归零 | 高（战略价值最大） |
+| P2-1 | **单 kernel gate+gather+merge** | 每 program（token 行）：load parent/child hidden 行 → 寄存器 fp32 cosine → stable 判定 → 按 stable 单边读 ffn 行写出 + stable 位写 device-side mask buffer；host 端用 D2H copy + cudaEvent 异步读取统计，替代全部阻塞同步 | 整层 folding 辅助开销 2 读 1 写 + 0–1 次同步，对比现状 ~14 pass；**辅助开销 3–5×** | 中-高 **◐ AR002 M4a 完成 gate+mask+count 单 kernel（`fused_gate_mask_count`）；gate↔merge 间存在重计算依赖不可合并（design D3），merge 沿用既有单 kernel** |
+| P2-2 | nonzero 同步的根除（split 层） | 固定容量 padded gather（索引 clamp + mask 过滤），接受固定 divergent 预算的少量多余 FFN 行计算 | 消除每 layer 1 次同步；**CUDA graph 前置条件** | 中 **✅ AR002 T001（`_exact_divergent_index`/`_padded_divergent_index` + stable_count 转发）** |
+| P2-3 | **CUDA graph / torch.compile 捕获验证循环** | 前置：P0 全部 + P2-2 + branch 上下文改由编译期 kwargs 传递（弃用 contextvars/thread-local）；diffusion 验证阶段是"同 shape 反复前向"的典型可捕获负载 | 固定 shape 场景潜在 2–5×；launch 开销归零 | 高（战略价值最大）**✅ AR002 T006–T008（kwargs 化 + `FoldedGraphRunner` + `ManualFoldedForward(use_cuda_graph=True)`；本机实测 per-step -47.1%，见第九部分）** |
 | P2-4 | 生成循环 O(T²) 消除 | baseline 侧接 KV cache（HF `DynamicCache`）使对照公平；folded 路径明确其适用域是 diffusion 多分支验证（本无 KV cache），并在论文口径中区分 | baseline 5–20× 墙钟（长序列）；**方法学对照公平性** | 低（baseline）/高（共存设计） |
 | P2-5 | 真正的投机解码接受语义 | 当前 engine 只测激活相似度，无基于 logits 的接受率验证（draft 分布 vs target 分布）；升级为 EMA[r] 式接受率 + log-prob 分数 | 论文叙事成立的前提；`logits.float().mean().item()`（verification_engine.py:122）这类无意义分数一并替换 | 高 |
 
@@ -253,7 +253,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 | **M1 正确性清零**（~3 天） | B1–B13 全部修复 + 每项补回归测试；6.1 测试盲区中与将被优化路径相关的先补齐 | 204+ 测试全绿；threshold_sensitivity.csv 不同 τ 出现差异（B10 生效的可观测信号） |
 | **M2 同步清零**（~1 周） | P0-1 至 P0-12 | 每 layer 阻塞同步 ≤1（profiler 默认异步）；fastdllm 折叠前向同步计数可用 nsys 佐证 |
 | **M3 内存 pass 压缩**（~2 周） | P1-1/2/3/4/5（重点 P1-1 冗余 hidden_states 与 P1-3 gather_select 接入） | cache 显存 −50%；每 layer folding 辅助 pass ≤4；部分稳定 folded 前向与 baseline 的差距收窄到 <20% |
-| **M4 反超 baseline**（战略） | P2-1/2/3 | batch=1、seq≤512 下 folded 前向 **快于** no-folding baseline（项目核心矛盾的解决即 README 局限性 #2 的关闭） |
+| **M4 反超 baseline**（战略） | P2-1/2/3 | batch=1、seq≤512 下 folded 前向 **快于** no-folding baseline（项目核心矛盾的解决即 README 局限性 #2 的关闭） **◐ AR002 完成 M4a/M4b 机制与本机代理验证（graph vs eager per-step -47.1%）；与 no-folding baseline 的正式对拍需按 RERUN_CHECKLIST 在锁频机器上补跑** |
 | **M5 实验可信化**（与 M2-M4 并行） | M-1 至 M-9 + B10/M-2 真实 draft 分布 | 所有 published 数字带 CI；消融全部实测化；cost model 校准后预测/实测误差 <1.3× |
 | **M6 场景扩展** | P3 变量长折叠 / 多祖先 / 真 draft model / MoE | 解锁真实投机解码工作负载 |
 
@@ -293,6 +293,23 @@ AR001（`specs/changes/AR001-deep-optimization/`，T001–T026 全部 passing）
 **数据处置**：`results/` 全部历史产物已加 INVALIDATED.md 标注（不可引用）；重跑按 `docs/RERUN_CHECKLIST.md` 执行。合成 demo 基线修正为 FLOPs reduction **85.5%**（原 78.5% 为 embedding 双计数偏差，见 T022）、MSE 2.35e-03、stable ratio 93.75%。
 
 **变更登记**：全部变更与 breaking changes 见 `CHANGELOG.md` 的 AR001 章节；agent 约定新增见 `AGENTS.md` #31–#36。
+
+---
+
+## 第九部分 AR002 完成回链（2026-10-09）
+
+AR002（`specs/changes/AR002-m4-graph-capture/`，T001–T010 全部 passing）覆盖本指南 M4 里程碑与 P2-2/P2-3 战略条目；全量 624 passed + mypy --strict 全绿。
+
+| 指南条目 | AR002 任务 | 状态 |
+|---|---|---|
+| P2-2 nonzero 同步根除 | T001（`_exact_divergent_index`/`_padded_divergent_index`、`_recompute_merged` stable_count kwarg 转发免二次读回） | ✅ 完成 |
+| P2-3 前置：branch 上下文 kwargs 化 | T004（`FOLDING_CONTEXT` 毒化下 Manual 路径 bit-exact；contextvars 依赖仅剩 deprecated `FoldedModel`） | ✅ 完成 |
+| M4a 单 kernel gate+count | T006（`fused_gate_mask_count`：cosine+阈值+mask+count 单 pass；`_FUSED_GATE_MIN_TOKENS=1024`；fp32/fp16/bf16 bit-exact；gate↔merge 因重计算依赖保持两 kernel，design D3） | ✅ 完成 |
+| M4b CUDA graph 捕获验证循环 | T007/T008（`FoldedGraphRunner` 静态 buffer 组 + side-stream warmup 捕获；`ManualFoldedForward(use_cuda_graph=True)` 惰性捕获 + 全降级矩阵 + 每步 ≤1 readback 预算校验；`ActFoldConfig.use_cuda_graph/graph_capacity_ratio` opt-in） | ✅ 完成 |
+| B12 `ManualFoldedForward` 常态化 | T005（split 支持补齐、state_dict 零漂移、与 `FoldedModel` bit-exact 对拍；`FoldedModel` 标 deprecated 保留 legacy；`AblationStudy` 内部栈切 Manual） | ✅ 完成 |
+| M4 性能代理实测 | T009（`scripts/ar002_graph_bench.py`；本机 Quadro RTX 5000，B=2/T=512/4 层：eager 5.083 ms/step vs graph 2.687 ms/step，**-47.1%**，20/20 validated steps；产物 `results/optimization/ar002_graph_bench.json`） | ✅ 本机代理完成；CUPTI 机器补 launch 计数、锁频机器补正式 baseline 对拍 |
+
+**诚实性说明**：本机 torch 为 LIBKINETO_NOCUPTI 构建，无法记录 CUDA profiler 事件，kernel launch 计数以 `null` + 显式 note 记录（UT-006b launch 断言在无 CUPTI 主机自动 skip），不伪造数据；wall-clock 计时不受影响。
 
 ---
 

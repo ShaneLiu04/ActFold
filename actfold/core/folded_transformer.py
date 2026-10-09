@@ -11,7 +11,7 @@ import torch.nn as nn
 from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_context import FOLDING_CONTEXT
 from actfold.core.folding_scheduler import FoldingScheduler
-from actfold.core.fused_ops import gather_select, merge_stable_divergent
+from actfold.core.fused_ops import fused_gate_mask_count, gather_select, merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 
@@ -167,6 +167,15 @@ class FoldedTransformerLayer(nn.Module):
         except (KeyError, RuntimeError):
             h_parent = None
 
+        if h_parent is not None and h_parent.shape != hidden_states.shape:
+            # Variable-length folding is unsupported (README limitation #7):
+            # a parent whose sequence length differs from the child's cannot
+            # donate activations (e.g. ``folded_generate`` appends one token
+            # per step, so every child is one token longer than its parent).
+            # Treat the parent as absent and recompute everything — identical
+            # semantics to a cache miss, never a hard error.
+            h_parent = None
+
         if h_parent is None:
             output = self._recompute_all(hidden_states, attention_mask, **kwargs)
             self._store_activations(branch_id, output, hidden_states)
@@ -176,8 +185,30 @@ class FoldedTransformerLayer(nn.Module):
         # the similarity comparison.
         h_parent = h_parent.to(dtype=hidden_states.dtype, device=hidden_states.device)
 
-        # Compute stability mask entirely on GPU.
-        stable_mask = self.gate(hidden_states, h_parent)  # [batch, seq_len]
+        # Compute stability mask entirely on GPU.  When the layer runs the
+        # standard cosine gate, the mask and the stable count come out of the
+        # single fused kernel (AR002/T006): the count buffer replaces the
+        # separate ``mask.sum()`` reduction readback below.
+        stable_count_buf: torch.Tensor | None = None
+        if type(self.gate) is SimilarityGate and self.gate.metric == "cosine":
+            stable_mask = torch.empty(
+                hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
+            )
+            stable_count_buf = torch.empty((), dtype=torch.int64, device=hidden_states.device)
+            # ``fill_(0)`` instead of ``torch.zeros``: the split-merge path
+            # forbids fresh zero-fill allocations (T017) and the launch cost
+            # is identical (zeros is empty + fill internally).
+            stable_count_buf.fill_(0)
+            fused_gate_mask_count(
+                hidden_states,
+                h_parent,
+                self.gate.tau,
+                self.gate.eps,
+                stable_mask,
+                stable_count_buf,
+            )
+        else:
+            stable_mask = self.gate(hidden_states, h_parent)  # [batch, seq_len]
 
         # Record real layer-wise stability statistics for downstream consumers.
         GLOBAL_STABILITY_PROFILER.record(
@@ -192,8 +223,12 @@ class FoldedTransformerLayer(nn.Module):
 
         # Three-way split with a single host sync (F4a): one ``sum`` readback
         # covers all-stable / none-stable / mixed; the old ``.all()`` +
-        # ``.any()`` pair cost two syncs on the mixed path.
-        stable_count = int(stable_mask.sum())
+        # ``.any()`` pair cost two syncs on the mixed path.  The fused-gate
+        # path (AR002/T006) already carries the count in a scalar buffer, so
+        # no extra reduction kernel is launched at all.
+        stable_count = (
+            int(stable_count_buf) if stable_count_buf is not None else int(stable_mask.sum())
+        )
         num_tokens = stable_mask.numel()
 
         # Fast path: all tokens stable -> reuse the cached parent FFN output
@@ -231,12 +266,15 @@ class FoldedTransformerLayer(nn.Module):
         # Slow path: recompute divergent tokens using full child attention context,
         # then fuse cached parent activations with freshly computed outputs.
         # ``_recompute_merged`` is an extension point: the split-layer subclass
-        # uses it to skip the FFN for stable tokens.
+        # uses it to skip the FFN for stable tokens.  The already-synced
+        # ``stable_count`` is forwarded so the subclass derives the divergent
+        # row count for free (AR002/T001, no second host readback).
+        merged_kwargs = {**kwargs, "stable_count": stable_count}
         child_out = self._recompute_merged(
             hidden_states,
             attention_mask,
             stable_mask,
-            **kwargs,
+            **merged_kwargs,
         )
         h_out = self._merge_parent_child(parent_branch_id, stable_mask, child_out)
 
@@ -329,6 +367,7 @@ class FoldedTransformerLayer(nn.Module):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None,
         stable_mask: torch.Tensor,
+        stable_count: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         """Recompute the full layer for the merge step.
@@ -336,9 +375,10 @@ class FoldedTransformerLayer(nn.Module):
         The base implementation ignores the mask and recomputes every token.
         :class:`~actfold.core.split_layer.SplitFoldedTransformerLayer` overrides
         this to run the FFN only on divergent tokens while keeping the attention
-        pass on the full sequence.
+        pass on the full sequence.  ``stable_count`` carries the caller's
+        existing three-way readback so subclasses avoid a second host sync.
         """
-        del stable_mask
+        del stable_mask, stable_count
         return self._recompute_all(hidden_states, attention_mask, **kwargs)
 
     def _recompute_all(

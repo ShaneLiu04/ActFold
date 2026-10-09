@@ -483,3 +483,207 @@ def gather_cached_activations(
         output[name] = torch.where(expanded_mask, stacked, torch.zeros_like(stacked))
 
     return output
+
+
+# ---------------------------------------------------------------------------
+# Fused cosine gate + stable mask + stable count (AR002/T006, M4a)
+# ---------------------------------------------------------------------------
+_FUSED_GATE_MIN_TOKENS = 1024
+_TRITON_GATE_DISABLED = False
+
+
+if _HAS_TRITON:
+
+    @triton.jit  # type: ignore[untyped-decorator]
+    def _fused_gate_kernel(  # type: ignore[no-untyped-def]
+        child_ptr,
+        parent_ptr,
+        mask_ptr,
+        count_ptr,
+        child_batch_stride,
+        child_seq_stride,
+        child_hidden_stride,
+        parent_batch_stride,
+        parent_seq_stride,
+        parent_hidden_stride,
+        mask_batch_stride,
+        mask_seq_stride,
+        seq_len,
+        hidden_size,
+        tau,
+        eps,
+        BLOCK_H: tl.constexpr,
+    ) -> None:
+        """One program per token row: cosine similarity, threshold, count.
+
+        Matches ``SimilarityGate(metric="cosine")`` + ``mask.sum()`` exactly:
+        fp32 accumulation, denominator ``max(sqrt(n_c*n_p), eps)``, similarity
+        clamped to [-1, 1] (so ``tau=1.0`` does not misfire on fp noise), and
+        NaN similarity -> not stable (NaN > tau is false).  The stable flag is
+        atomically accumulated into the scalar ``count_ptr``.
+        """
+        pid = tl.program_id(0)
+        b = pid // seq_len
+        t = pid % seq_len
+
+        c_base = child_ptr + b * child_batch_stride + t * child_seq_stride
+        p_base = parent_ptr + b * parent_batch_stride + t * parent_seq_stride
+
+        dot = 0.0
+        norm_child = 0.0
+        norm_parent = 0.0
+        for h_off in range(0, hidden_size, BLOCK_H):
+            h = h_off + tl.arange(0, BLOCK_H)
+            lane = h < hidden_size
+            c = tl.load(c_base + h * child_hidden_stride, mask=lane, other=0.0).to(tl.float32)
+            p = tl.load(p_base + h * parent_hidden_stride, mask=lane, other=0.0).to(tl.float32)
+            dot += tl.sum(c * p)
+            norm_child += tl.sum(c * c)
+            norm_parent += tl.sum(p * p)
+
+        denom = tl.sqrt(tl.maximum(norm_child * norm_parent, eps * eps))
+        sim = dot / denom
+        sim = tl.minimum(tl.maximum(sim, -1.0), 1.0)
+        stable = sim > tau
+
+        mask_off = b * mask_batch_stride + t * mask_seq_stride
+        tl.store(mask_ptr + mask_off, stable.to(tl.int1))
+        tl.atomic_add(count_ptr, stable.to(count_ptr.dtype.element_ty))
+
+
+def _fused_gate_mask_count_torch(
+    h_child: torch.Tensor,
+    h_parent: torch.Tensor,
+    tau: float,
+    eps: float,
+    out_mask: torch.Tensor,
+    out_count: torch.Tensor,
+) -> None:
+    """PyTorch fallback: the plain ``SimilarityGate`` chain."""
+    from actfold.core.similarity_gate import SimilarityGate
+
+    gate = SimilarityGate(tau=tau, metric="cosine", eps=eps)
+    mask = gate(h_child, h_parent)
+    out_mask.copy_(mask)
+    out_count.add_(mask.sum().to(out_count.dtype))
+
+
+def fused_gate_mask_count(
+    h_child: torch.Tensor,
+    h_parent: torch.Tensor,
+    tau: float,
+    eps: float,
+    out_mask: torch.Tensor,
+    out_count: torch.Tensor,
+) -> None:
+    """Compute the cosine stability mask and stable count in one kernel.
+
+    Mathematically equivalent to ``SimilarityGate(metric="cosine", eps=eps)``
+    applied to ``(h_child, h_parent)`` followed by ``mask.sum()``: the mask is
+    ``sim.clamp(-1, 1) > tau`` and NaN similarities count as divergent.  Unlike
+    a fresh gate call this writes the mask into ``out_mask`` and ACCUMULATES the
+    stable count into ``out_count`` (callers zero it first), so the GPU path
+    needs no separate reduction kernel after the comparison.
+
+    Dispatches to a single Triton kernel when CUDA + Triton are available, the
+    dtype is fp32/fp16/bf16, and ``batch * seq >= _FUSED_GATE_MIN_TOKENS``;
+    otherwise it falls back to the PyTorch gate chain.  A compile/launch
+    failure permanently disables the Triton path with a single
+    ``RuntimeWarning`` (AGENTS #9).
+
+    Args:
+        h_child: Child hidden states ``[batch, seq, hidden]``.
+        h_parent: Parent hidden states, same shape/dtype/device as ``h_child``.
+        tau: Similarity threshold; a token is stable iff ``sim > tau``.
+        eps: Numerical stability constant; the per-dtype floor from
+            :class:`SimilarityGate` applies on top of it.
+        out_mask: Output boolean mask ``[batch, seq]`` (overwritten).
+        out_count: Output scalar integer tensor (accumulated into).
+
+    Raises:
+        ValueError: If shapes/dtypes/devices are inconsistent.
+    """
+    global _TRITON_GATE_DISABLED
+
+    if h_child.dim() != 3:
+        raise ValueError(
+            f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}"
+        )
+    if h_child.shape != h_parent.shape:
+        raise ValueError(
+            f"h_child shape {tuple(h_child.shape)} must match h_parent shape "
+            f"{tuple(h_parent.shape)}"
+        )
+    if out_mask.shape != h_child.shape[:2]:
+        raise ValueError(
+            f"out_mask shape {tuple(out_mask.shape)} must match "
+            f"[batch, seq] = {tuple(h_child.shape[:2])}"
+        )
+    if out_mask.dtype != torch.bool:
+        raise ValueError(f"out_mask must be bool, got {out_mask.dtype}")
+    if out_count.numel() != 1:
+        raise ValueError(f"out_count must be a scalar tensor, got {out_count.numel()} elements")
+    if out_count.is_floating_point():
+        raise ValueError(f"out_count must be an integer tensor, got {out_count.dtype}")
+    if h_child.dtype != h_parent.dtype:
+        raise ValueError(
+            f"h_child dtype {h_child.dtype} must match h_parent dtype {h_parent.dtype}"
+        )
+    if h_child.device != h_parent.device:
+        raise ValueError(
+            f"h_child device {h_child.device} must match h_parent device {h_parent.device}"
+        )
+
+    batch, seq_len, _ = h_child.shape
+    use_triton = (
+        _HAS_TRITON
+        and not _TRITON_GATE_DISABLED
+        and h_child.device.type == "cuda"
+        and out_mask.device.type == "cuda"
+        and out_count.device.type == "cuda"
+        and h_child.dtype in (torch.float32, torch.float16, torch.bfloat16)
+        and batch * seq_len >= _FUSED_GATE_MIN_TOKENS
+    )
+
+    if not use_triton:
+        _fused_gate_mask_count_torch(h_child, h_parent, float(tau), float(eps), out_mask, out_count)
+        return
+
+    # The kernel accumulates in fp32 and applies the same per-dtype eps floor
+    # as SimilarityGate.
+    from actfold.core.similarity_gate import SimilarityGate
+
+    floor = SimilarityGate._DTYPE_EPS_FLOOR.get(h_child.dtype, 0.0)
+    eff_eps = max(float(eps), floor)
+
+    block_h = 1024
+    grid = (batch * seq_len,)
+    try:
+        _fused_gate_kernel[grid](
+            h_child,
+            h_parent,
+            out_mask,
+            out_count,
+            h_child.stride(0),
+            h_child.stride(1),
+            h_child.stride(2),
+            h_parent.stride(0),
+            h_parent.stride(1),
+            h_parent.stride(2),
+            out_mask.stride(0),
+            out_mask.stride(1),
+            seq_len,
+            h_child.shape[2],
+            float(tau),
+            eff_eps,
+            BLOCK_H=block_h,
+        )
+    except Exception as exc:
+        _TRITON_GATE_DISABLED = True
+        warnings.warn(
+            f"Triton fused gate kernel unavailable on this Triton installation ({exc}); "
+            "falling back to the PyTorch gate chain.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        _fused_gate_mask_count_torch(h_child, h_parent, float(tau), float(eps), out_mask, out_count)

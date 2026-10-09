@@ -369,3 +369,60 @@ def test_benchmark_runner_passes_max_new_tokens_to_both_adapters() -> None:
         end = source.index(")", start)
         block = source[start:end]
         assert kwarg in block, f"{ctor} construction must pass {kwarg}"
+
+
+# ---------------------------------------------------------------------------
+# AR002 srs 3.7: per-task max_new_tokens default table
+
+def _make_code_adapter(adapter_cls: type[BaseEvalAdapter], **kwargs: Any) -> BaseEvalAdapter:
+    """Build an LMEval/EvalPlus adapter with mocked deps for length resolution."""
+    model = FastDLLMAdapter(
+        TinyTransformer(16, 32, 2),
+        num_layers=2,
+        hidden_dim=32,
+    )
+    return adapter_cls(
+        model=model,
+        baseline=MagicMock(),
+        engine=MagicMock(),
+        judge=MagicMock(),
+        tokenizer=MagicMock(),
+        vocab_size=16,
+        **kwargs,
+    )
+
+
+def test_per_task_max_new_tokens_humaneval_defaults_to_512() -> None:
+    """AR002 srs 3.7: code tasks default to 512 without an explicit length."""
+    from actfold.eval.evalplus_adapter import EvalPlusAdapter
+
+    adapter = _make_code_adapter(EvalPlusAdapter)
+    assert adapter.max_new_tokens == 256  # fallback until a task is evaluated
+    adapter._resolve_max_new_tokens("humaneval_plus", None)
+    assert adapter.max_new_tokens == 512
+    adapter._resolve_max_new_tokens("mbpp_plus", None)
+    assert adapter.max_new_tokens == 512
+
+
+def test_per_task_max_new_tokens_other_tasks_default_256() -> None:
+    from actfold.eval.lm_eval_adapter import LMEvalAdapter
+
+    adapter = _make_code_adapter(LMEvalAdapter)
+    adapter._resolve_max_new_tokens("gsm8k", None)
+    assert adapter.max_new_tokens == 256
+
+
+def test_explicit_max_new_tokens_beats_task_table() -> None:
+    from actfold.eval.evalplus_adapter import EvalPlusAdapter
+
+    adapter = _make_code_adapter(EvalPlusAdapter, max_new_tokens=128)
+    adapter._resolve_max_new_tokens("humaneval_plus", None)
+    assert adapter.max_new_tokens == 128
+
+
+def test_evaluate_time_override_beats_task_table() -> None:
+    from actfold.eval.evalplus_adapter import EvalPlusAdapter
+
+    adapter = _make_code_adapter(EvalPlusAdapter)
+    adapter._resolve_max_new_tokens("humaneval_plus", 64)
+    assert adapter.max_new_tokens == 64

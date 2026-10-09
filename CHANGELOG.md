@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR002: M4 Kernel Fusion & CUDA-Graph Verification Loop (P2-2/P2-3 sync elimination, B12 normalization)
+
+Spec: `specs/changes/AR002-m4-graph-capture/` (srs.md / design.md / tasks.md, T001–T010 all passing). 624 passed, mypy --strict clean; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged.
+
+#### Added
+
+- `actfold/core/split_layer.py`: `_exact_divergent_index(mask)` / `_padded_divergent_index(mask, C)` — device-side exact and fixed-capacity divergent index computation (P2-2: the `nonzero()` host sync is gone); `_recompute_merged` gains a `stable_count` kwarg so callers forward the count instead of a second readback.
+- `actfold/core/fused_ops.py`: `fused_gate_mask_count` (M4a) — a single Triton kernel computing cosine similarity, the stable mask, **and** the stable count in one pass (fp32 block accumulation, `denom=max(sqrt(nc*np), eps)`, clamp, NaN→divergent; count via atomic accumulation). Dispatches for `SimilarityGate` (exact type) + cosine metric at `B*T >= 1024` (`_FUSED_GATE_MIN_TOKENS`); 6 ValueError input checks; `_TRITON_GATE_DISABLED` escape hatch; PyTorch fallback bit-exact (fp32/fp16/bf16).
+- `actfold/core/cuda_graph.py`: `FoldedGraphRunner` (M4b) — static-buffer CUDA graph capture/replay for the fixed-shape folded child forward. Static buffer group: `tokens` / `parent_static[L+1]` (slot 0 = embedding) / `mask_buf[L]` / `count_buf[L]` (int32) / `child_buf[L]` / `logits`; side-stream warmup ×2 + `torch.cuda.graph` capture; replay prefetches the parent from cache on the host, zeroes counts, replays, and validates divergent budgets with the **single** allowed readback (`D == C` passes, `D == C+1` rejects). Capture preconditions raise `RuntimeError` (non-CUDA / scheduler / non-cosine gate / missing parent).
+- `ManualFoldedForward`: `split_layers` / `split_min_tokens` / `use_cuda_graph` / `graph_capacity_ratio` (0 < r ≤ 1 else ValueError) — the graph path is **opt-in** and lazily captured on the first eligible child step. Full degradation matrix: shape mismatch (one-time warning, no re-capture, checked before the parent), scheduler / non-cosine gate / non-CUDA (one-time warning), non-pinned mask object or incomplete parent cache (silent eager), exceeded budget (one-time warning + eager recompute). The validated replay publishes `child_buf` clones into the cache and returns `logits.clone()`.
+- `ActFoldConfig`: `use_cuda_graph=False` / `graph_capacity_ratio=0.5` (validated).
+- `scripts/ar002_graph_bench.py`: BS-007 evidence benchmark (`run_bench` / `write_results` / CLI; artifact `results/optimization/ar002_graph_bench.json`). Measured on Quadro RTX 5000 (B=2, T=512, 4 layers): eager 5.083 ms/step vs graph replay 2.687 ms/step (**-47.1%**), 20/20 budget-validated steps. Kernel-launch counts are recorded only on CUPTI-capable builds; this host's `LIBKINETO_NOCUPTI` torch records zero CUDA profiler events, so counts are `null` with an explicit note (never fabricated) and the launch-reduction test self-skips there.
+- `DraftGenerator`: dual local generators (cpu/dev RNG) — `generate(seed=...)` no longer touches the global RNG; identical seeds reproduce identical drafts.
+- `BaseEvalAdapter._resolve_max_new_tokens`: per-task generation-length table (override > explicit > table > 256); `EvalPlusAdapter` maps `humaneval_plus`/`mbpp_plus` → 512.
+
+#### Changed (breaking / legacy guidance)
+
+- **`ManualFoldedForward` is the supported folded-forward path** (B12 complete): it now carries `split_layers` support, zero state_dict drift, and is bit-exact against `FoldedModel`. `AblationStudy` builds its internal stack with `ManualFoldedForward` (no in-place mutation of your model, no restore needed). `folded_generate` / `FastDLLMAdapter` accept `FoldedModel | ManualFoldedForward | None`.
+- **`FoldedModel` is deprecated** (kept as legacy, behavior unchanged): it mutates the wrapped model in place (AGENTS #19) and depends on the deprecated contextvars branch context. Migrate by constructing `ManualFoldedForward(model, cache, gate, split_layers=True, ...)` and calling it with explicit `branch_id` / `parent_branch_id` kwargs — the kwargs path is bit-exact even under a poisoned contextvar, and is the only path the CUDA graph supports.
+- `FoldingScheduler`-managed layers and `AdaptiveQuantileGate` are **not** graph-capturable (data-dependent host decisions); they degrade to eager with a one-time warning.
+
+#### Known follow-ups
+
+- Kernel-launch counts for the bench artifact require a CUPTI-capable torch build; the formal folded-vs-no-folding baseline comparison per `docs/RERUN_CHECKLIST.md` (locked clocks) remains open.
+- Variable-length folding (P3) is out of scope: graph capacity is fixed at capture time (`graph_capacity_ratio`); longer divergent sets fall back to eager.
+
 ### AR001: Deep Optimization (M1 correctness / M2 sync / M3 memory / M5 methodology & portability)
 
 Spec: `specs/changes/AR001-deep-optimization/` (srs.md / design.md / tasks.md, T001–T026 all passing).

@@ -18,6 +18,7 @@ from uuid import uuid4
 import torch
 
 from actfold.core.model_wrapper import FoldedModel
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from actfold.speculative.acceptance_policy import AcceptancePolicy, GreedyAcceptancePolicy
 from actfold.speculative.branch_tree import BranchNode, BranchTree
@@ -57,7 +58,7 @@ def folded_generate(
     model: FastDLLMAdapter,
     input_ids: torch.Tensor,
     max_new_tokens: int,
-    folded_model: Optional[FoldedModel] = None,
+    folded_model: FoldedModel | ManualFoldedForward | None = None,
     draft_generator: Optional[DraftGenerator] = None,
     acceptance_policy: Optional[AcceptancePolicy] = None,
     num_branches_per_step: int = 1,
@@ -76,7 +77,8 @@ def folded_generate(
         model: Model adapter that exposes ``forward()`` and ``embed()``.
         input_ids: Prompt token IDs ``[batch, prompt_len]``.
         max_new_tokens: Number of new tokens to generate.
-        folded_model: Optional folded model used to resolve the folding context
+        folded_model: Optional folded model (FoldedModel or ManualFoldedForward)
+            used to resolve the folding context
             when the base model drops ActFold kwargs.
         draft_generator: Optional draft generator for producing multiple
             candidate continuations per step.  If ``None``, a single greedy
@@ -172,7 +174,7 @@ def _make_candidates(
     model: FastDLLMAdapter,
     parent: BranchNode,
     token_idx: int,
-    folded_model: Optional[FoldedModel],
+    folded_model: FoldedModel | ManualFoldedForward | None,
     draft_generator: Optional[DraftGenerator],
     num_branches: int,
     step_idx: int,
@@ -233,7 +235,7 @@ def _make_candidates(
 def _run_folded_forward(
     model: FastDLLMAdapter,
     node: BranchNode,
-    folded_model: Optional[FoldedModel],
+    folded_model: FoldedModel | ManualFoldedForward | None,
     step_idx: int,
 ) -> None:
     """Execute the forward pass for ``node`` and store its logits."""

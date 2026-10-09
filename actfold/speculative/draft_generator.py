@@ -130,11 +130,25 @@ class DraftGenerator:
         if max_new_tokens < 0:
             raise ValueError(f"max_new_tokens must be >= 0, got {max_new_tokens}")
 
+        # Seeded sampling runs on local torch.Generator objects so the global
+        # RNG state is never polluted (AR002 srs 3.6). Without a seed, sampling
+        # uses the global RNG exactly as before.  Two generators are seeded:
+        # CPU ops (``randperm`` without an explicit device) read ``cpu_rng``
+        # while device ops read ``dev_rng``; on CPU they are the same object.
         if seed is not None:
-            torch.manual_seed(seed)
+            cpu_rng = torch.Generator(device="cpu")
+            cpu_rng.manual_seed(seed)
+            if parent.tokens.device.type == "cpu":
+                dev_rng = cpu_rng
+            else:
+                dev_rng = torch.Generator(device=parent.tokens.device.type)
+                dev_rng.manual_seed(seed)
             # Reset the deterministic counter so repeated calls with the same
             # seed produce the same branch IDs.
             self._counter = 0
+        else:
+            cpu_rng = None
+            dev_rng = None
 
         batch_size, seq_len = parent.tokens.shape
         region_start, region_end = self._region(seq_len, flip_region)
@@ -168,19 +182,21 @@ class DraftGenerator:
                     size=(batch_size, seq_len + max_new_tokens),
                     dtype=parent.tokens.dtype,
                     device=parent.tokens.device,
+                    generator=dev_rng,
                 )
             elif self.mode == "copy_flip":
                 child_tokens = parent.tokens.clone()
                 if self.flip_ratio > 0 and seq_len > 0:
                     num_flips = max(1, int(seq_len * self.flip_ratio))
                     for b in range(batch_size):
-                        flip_positions = torch.randperm(seq_len)[:num_flips]
+                        flip_positions = torch.randperm(seq_len, generator=cpu_rng)[:num_flips]
                         new_tokens = torch.randint(
                             0,
                             self.vocab_size,
                             (num_flips,),
                             dtype=child_tokens.dtype,
                             device=child_tokens.device,
+                            generator=dev_rng,
                         )
                         child_tokens[b, flip_positions] = new_tokens
                 if max_new_tokens > 0:
@@ -190,6 +206,7 @@ class DraftGenerator:
                         (batch_size, max_new_tokens),
                         dtype=child_tokens.dtype,
                         device=child_tokens.device,
+                        generator=dev_rng,
                     )
                     child_tokens = torch.cat([child_tokens, appended], dim=1)
             else:  # suffix_append / logits_draft
@@ -197,7 +214,7 @@ class DraftGenerator:
                 if self.flip_ratio > 0 and region_len > 0:
                     num_flips = max(1, int(region_len * self.flip_ratio))
                     for b in range(batch_size):
-                        flip_offsets = torch.randperm(region_len)[:num_flips]
+                        flip_offsets = torch.randperm(region_len, generator=cpu_rng)[:num_flips]
                         flip_positions = flip_offsets + region_start
                         if self.mode == "suffix_append":
                             new_tokens = torch.randint(
@@ -206,11 +223,12 @@ class DraftGenerator:
                                 (num_flips,),
                                 dtype=child_tokens.dtype,
                                 device=child_tokens.device,
+                                generator=dev_rng,
                             )
                         elif parent_logits is not None:  # logits_draft
                             new_tokens = torch.tensor(
                                 [
-                                    self._sample_from_topk(parent_logits[b, pos])
+                                    self._sample_from_topk(parent_logits[b, pos], generator=dev_rng)
                                     for pos in flip_positions.tolist()
                                 ],
                                 dtype=child_tokens.dtype,
@@ -230,13 +248,16 @@ class DraftGenerator:
                             (batch_size, max_new_tokens),
                             dtype=child_tokens.dtype,
                             device=child_tokens.device,
+                            generator=dev_rng,
                         )
                     elif parent_logits is not None:
                         # logits_draft: sample from the last position's top-k
                         appended = torch.tensor(
                             [
                                 [
-                                    self._sample_from_topk(parent_logits[b, seq_len - 1])
+                                    self._sample_from_topk(
+                                        parent_logits[b, seq_len - 1], generator=dev_rng
+                                    )
                                     for _ in range(max_new_tokens)
                                 ]
                                 for b in range(batch_size)

@@ -351,12 +351,36 @@ def build_manual_folded_forward(
 class ManualFoldedForward(nn.Module):
     """Architecture-agnostic folded forward path for HF models.
 
-    Similar to :class:`~actfold.core.model_wrapper.FoldedModel`, but explicitly
-    extracts the embedding, layer stack, and language modeling head using
-    :func:`detect_architecture` and runs the layers through
-    :class:`~actfold.core.folded_transformer.FoldedTransformerLayer`. This is
-    useful as a fallback for models whose internal layout does not match the
-    auto-discovery heuristics in :class:`~actfold.core.model_wrapper.FoldedModel`.
+    This is the recommended, **non-mutating** folded forward: it discovers the
+    embedding, layer stack, and language modeling head via
+    :func:`detect_architecture` and routes tokens through wrapped
+    :class:`~actfold.core.folded_transformer.FoldedTransformerLayer` modules
+    WITHOUT replacing anything on the base model — the base module tree,
+    parameters, and ``state_dict()`` keys are untouched and the raw model stays
+    directly callable at all times.  Branch context is threaded through
+    explicit ``branch_id`` / ``parent_branch_id`` / ``step_idx`` arguments, so
+    the thread-local ``FOLDING_CONTEXT`` fallback is never consulted.
+
+    Use this instead of the legacy in-place
+    :class:`~actfold.core.model_wrapper.FoldedModel`.
+
+    Args:
+        model: The base model to fold (never mutated).
+        cache: Activation cache shared across branches.
+        gate: Similarity gate.
+        scheduler: Optional folding scheduler.
+        split_layers: Wrap layers with
+            :class:`~actfold.core.split_layer.SplitFoldedTransformerLayer` so
+            stable tokens skip the FFN on recompute.  Layers without a
+            detectable FFN chain silently fall back to full recompute.
+        split_min_tokens: Minimum ``batch * seq`` for the split path to engage
+            (below it the per-layer gather sync outweighs the FFN savings).
+        use_cuda_graph: Opt in to CUDA-graph capture/replay of the folded
+            verification forward (requires CUDA; wired up by the graph runner,
+            ignored otherwise).
+        graph_capacity_ratio: Fraction of tokens per layer reserved for
+            divergent recompute under graph replay; must satisfy
+            ``0 < ratio <= 1``.
     """
 
     def __init__(
@@ -365,18 +389,50 @@ class ManualFoldedForward(nn.Module):
         cache: Any,
         gate: Any,
         scheduler: Any | None = None,
+        split_layers: bool = False,
+        split_min_tokens: int = 512,
+        use_cuda_graph: bool = False,
+        graph_capacity_ratio: float = 0.5,
     ) -> None:
         super().__init__()
+        if not 0.0 < graph_capacity_ratio <= 1.0:
+            raise ValueError(
+                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got "
+                f"{graph_capacity_ratio}"
+            )
         self.profile = detect_architecture(model)
         self.cache = cache
         self.gate = gate
         self.scheduler = scheduler
+        self.split_layers = bool(split_layers)
+        self.split_min_tokens = int(split_min_tokens)
+        self.use_cuda_graph = bool(use_cuda_graph)
+        self.graph_capacity_ratio = float(graph_capacity_ratio)
+        # Lazily created by the CUDA graph path (AR002/T007); ``None`` on
+        # the eager path.
+        self.graph_runner: Any = None
+        self._graph_mask: Any = None
+        self._graph_degraded_warned = False
+        self._graph_shape_warned = False
+        self._graph_budget_warned = False
+        self._graph_capture_failed = False
         self._wrapped_layers = nn.ModuleList(
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
 
     def _wrap_layer(self, layer: nn.Module, idx: int) -> nn.Module:
-        """Wrap a single Transformer layer with FoldedTransformerLayer."""
+        """Wrap a single Transformer layer with a folded layer wrapper."""
+        if self.split_layers:
+            from actfold.core.split_layer import SplitFoldedTransformerLayer
+
+            return SplitFoldedTransformerLayer(
+                original_layer=layer,
+                cache=self.cache,
+                gate=self.gate,
+                layer_idx=idx,
+                scheduler=self.scheduler,
+                min_split_tokens=self.split_min_tokens,
+            )
         from actfold.core.folded_transformer import FoldedTransformerLayer
 
         return FoldedTransformerLayer(
@@ -407,6 +463,15 @@ class ManualFoldedForward(nn.Module):
         Returns:
             Output of the language modeling head, typically logits.
         """
+        # Opt-in CUDA graph fast path (AR002/T008): replay the captured
+        # static folded forward when every precondition holds; any miss falls
+        # back to the eager body below.
+        if self.use_cuda_graph:
+            graph_out = self._graph_forward_or_none(
+                tokens, branch_id, parent_branch_id, attention_mask, step_idx
+            )
+            if graph_out is not None:
+                return graph_out
         emb_fn: Callable[..., Any] = self.profile.embed_module
         x = emb_fn(tokens)
 
@@ -435,6 +500,195 @@ class ManualFoldedForward(nn.Module):
             stacklevel=2,
         )
         return x
+
+    def _warn_graph_degraded_once(self, reason: str) -> None:
+        """Emit the one-time degradation warning for the graph path."""
+        if self._graph_degraded_warned:
+            return
+        self._graph_degraded_warned = True
+        warnings.warn(
+            f"ManualFoldedForward CUDA graph path unavailable: {reason}; "
+            "falling back to the eager path.",
+            UserWarning,
+            stacklevel=2,
+        )
+
+    def _parent_cache_complete(self, parent_branch_id: str, tokens: Any) -> bool:
+        """Check the parent branch has every activation the capture needs.
+
+        Every cached activation must also match ``tokens``' batch/seq shape:
+        a parent cached at a different sequence length (e.g. the AR
+        ``folded_generate`` growth) cannot be copied into the static buffers,
+        so it counts as incomplete and the step stays eager.
+        """
+        try:
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get(
+                "embedding"
+            )
+            if embedding is None:
+                return False
+            if tuple(embedding.shape[:2]) != tuple(tokens.shape):
+                return False
+            for layer_idx in range(len(self._wrapped_layers)):
+                ffn_out = self.cache.fetch(
+                    branch_id=parent_branch_id, layer_idx=layer_idx
+                ).get("ffn_out")
+                if ffn_out is None:
+                    return False
+                if tuple(ffn_out.shape[:2]) != tuple(tokens.shape):
+                    return False
+        except (KeyError, RuntimeError):
+            return False
+        return True
+
+    def _graph_forward_or_none(
+        self,
+        tokens: Any,
+        branch_id: str,
+        parent_branch_id: str | None,
+        attention_mask: Any,
+        step_idx: int,
+    ) -> Any:
+        """Try the CUDA graph fast path; return logits or ``None`` for eager.
+
+        Degradation matrix (design AR002/T008): once a runner exists, a token
+        shape other than the captured one warns once and never re-captures;
+        scheduler / non-cosine gate / non-CUDA warn once; a mask other than
+        the one pinned at capture silently uses the eager path; an incomplete
+        parent cache silently uses eager without disabling future captures;
+        an exceeded divergent budget discards the replay output (one-time
+        warning) and recomputes eagerly; a failed capture permanently disables
+        the graph path (EX-002, one-time warning, no retry) — correctness
+        first.
+        """
+        from actfold.core.similarity_gate import SimilarityGate
+
+        runner = self.graph_runner
+        if self._graph_capture_failed:
+            # EX-002: a failed capture permanently disables the graph path
+            # (the failure already warned once); never retry — capture is
+            # expensive and its failure mode is not transient.
+            return None
+        if runner is not None and tuple(tokens.shape) != tuple(
+            runner.tokens_static.shape
+        ):
+            if not self._graph_shape_warned:
+                self._graph_shape_warned = True
+                warnings.warn(
+                    "ManualFoldedForward graph path captured shape "
+                    f"{tuple(runner.tokens_static.shape)}; tokens of shape "
+                    f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return None
+        if parent_branch_id is None:
+            # Parent passes always run eager: they populate the cache.
+            return None
+        if self.scheduler is not None:
+            self._warn_graph_degraded_once("a folding scheduler is attached")
+            return None
+        if type(self.gate) is not SimilarityGate or self.gate.metric != "cosine":
+            self._warn_graph_degraded_once(
+                "the gate is not an exact-type cosine SimilarityGate"
+            )
+            return None
+        if not tokens.is_cuda:
+            self._warn_graph_degraded_once("CUDA is unavailable")
+            return None
+
+        if runner is None:
+            # First graph-eligible call: capture once. An incomplete parent
+            # cache is a normal transient (e.g. after eviction), so it falls
+            # back silently without disabling future captures.
+            if not self._parent_cache_complete(parent_branch_id, tokens):
+                return None
+            if attention_mask is not None and not attention_mask.is_cuda:
+                return None
+            from actfold.core.cuda_graph import FoldedGraphRunner
+
+            new_runner = FoldedGraphRunner(
+                wrapped_layers=self._wrapped_layers,
+                embed_fn=self.profile.embed_module,
+                final_norm_fn=self.profile.final_norm,
+                head_fn=self.profile.head_module,
+                cache=self.cache,
+                gate_tau=self.gate.tau,
+                gate_eps=self.gate.eps,
+                capacity_ratio=self.graph_capacity_ratio,
+                attention_mask_static=attention_mask,
+            )
+            try:
+                new_runner.capture(tokens, branch_id, parent_branch_id)
+            except RuntimeError as exc:
+                self._warn_graph_degraded_once(f"CUDA graph capture failed ({exc})")
+                self._graph_capture_failed = True
+                return None
+            self.graph_runner = new_runner
+            self._graph_mask = attention_mask
+            runner = new_runner
+        elif attention_mask is not self._graph_mask:
+            # The captured graph bakes the attention mask in; a different
+            # mask object must not silently reuse it.
+            return None
+
+        logits = runner.replay(tokens, parent_branch_id, branch_id)
+        if logits is None:
+            # Parent cache incomplete for this step: plain eager fallback.
+            return None
+        if runner.budget_exceeded:
+            if not self._graph_budget_warned:
+                self._graph_budget_warned = True
+                warnings.warn(
+                    "CUDA graph replay exceeded the divergent budget; "
+                    "discarding the replay output and recomputing eagerly "
+                    "(correctness first).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return None
+        self._publish_graph_child(runner, tokens, branch_id, parent_branch_id, step_idx)
+        return logits.clone()
+
+    def _publish_graph_child(
+        self,
+        runner: Any,
+        tokens: Any,
+        branch_id: str,
+        parent_branch_id: str,
+        step_idx: int,
+    ) -> None:
+        """Publish a validated replay into the cache and the profiler.
+
+        Mirrors what the eager path stores: per-layer ``ffn_out`` (plus the
+        layer-0 ``embedding`` = embed(tokens)) cloned from the runner's static
+        buffers, and per-layer stability records derived from the static mask
+        buffers (device-side sums, no extra host readback).
+        """
+        from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
+
+        embedding = self.profile.embed_module(tokens)
+        num_layers = len(self._wrapped_layers)
+        for layer_idx in range(num_layers):
+            activations: dict[str, Any] = {
+                "ffn_out": runner.child_buf[layer_idx].clone()
+            }
+            if layer_idx == 0:
+                activations["embedding"] = embedding
+            self.cache.put(
+                branch_id=branch_id,
+                layer_idx=layer_idx,
+                activations=activations,
+            )
+            GLOBAL_STABILITY_PROFILER.record(
+                branch_id=branch_id,
+                parent_branch_id=parent_branch_id,
+                layer_idx=layer_idx,
+                step_idx=step_idx,
+                stable_mask=runner.mask_buf[layer_idx],
+                tau=self.gate.tau,
+                metric="cosine",
+            )
 
     @property
     def folding_applied(self) -> bool:

@@ -293,3 +293,20 @@ def test_run_all_saves_measured_csvs(tmp_path: Path) -> None:
     layerwise = pd.read_csv(tmp_path / "layerwise_folding.csv")
     # The linear extrapolation column is kept alongside the measured values.
     assert "linear_estimate_pct" in layerwise.columns
+
+
+def test_t005_ablation_uses_manual_not_folded_model() -> None:
+    """After the T005 switch, AblationStudy folds via ManualFoldedForward.
+
+    The module-level ``FoldedModel`` import is removed from
+    ``actfold.eval.ablation_study`` once ``measure_folding`` builds its
+    internal stack with ``ManualFoldedForward``, and the measurement itself
+    keeps reporting real per-layer stability.
+    """
+    import actfold.eval.ablation_study as ab_mod
+
+    assert not hasattr(ab_mod, "FoldedModel")
+
+    study = _make_study(num_layers=4)
+    m: FoldedMeasurement = study.measure_folding(tau=0.90)
+    assert m.per_layer_stable

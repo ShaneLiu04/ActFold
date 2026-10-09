@@ -202,3 +202,39 @@ when the identifiers are not supplied as explicit keyword arguments. If the base
 model rejects the ActFold kwargs, the wrapper falls back to a normal forward
 while the context remains active, so folding still occurs for supported
 architectures.
+
+> **Deprecation (AR002)**: the contextvar path is deprecated together with
+> `FoldedModel`. The supported `ManualFoldedForward` path threads `branch_id` /
+> `parent_branch_id` / `step_idx` as explicit keyword arguments and is
+> bit-exact even when a stale contextvar is active — explicit kwargs are also
+> the form the CUDA-graph capture below requires.
+
+## 10. Fixed-Shape CUDA-Graph Verification Loop (AR002)
+
+The diffusion verification phase repeats the *same-shape* folded child forward
+every step, which is the canonical CUDA-graph workload. `ManualFoldedForward(
+use_cuda_graph=True)` (opt-in; `ActFoldConfig.use_cuda_graph /
+graph_capacity_ratio`) captures the folded child forward on the first eligible
+step via `actfold.core.cuda_graph.FoldedGraphRunner`:
+
+1. **Static buffers** — tokens, per-layer parent activations (slot 0 =
+   embedding), attention masks, counts, and child outputs are preallocated
+   once; replay copies the new inputs in and replays the captured graph.
+2. **Sync-free capture** — the captured region contains no cache writes, no
+   profiler hooks, and no host readbacks; the exact divergent set is replaced
+   by a fixed-capacity padded gather (§4, P2-2) so no `nonzero()` sync exists
+   inside the graph.
+3. **Budget validation** — after each replay, per-layer divergent counts are
+   read back exactly once; `D == C` (capacity) validates and `D == C + 1`
+   rejects, discarding the replay output and falling back to the eager folded
+   forward for that step (one-time warning).
+4. **Degradation matrix** — scheduler-managed layers, non-cosine gates, CPU
+   tensors, shape changes, a different attention-mask object, or an incomplete
+   parent cache each degrade that step to the eager path (one-time warnings
+   where user-visible); capture preconditions raise `RuntimeError` instead.
+
+Measured on a Quadro RTX 5000 (batch=2, seq=512, 4 layers), graph replay cuts
+the folded child step from 5.083 ms to 2.687 ms (**-47.1%**) with all budget
+validations passing — see `scripts/ar002_graph_bench.py` and the artifact
+`results/optimization/ar002_graph_bench.json`.
+

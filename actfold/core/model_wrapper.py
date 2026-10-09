@@ -20,6 +20,14 @@ from actfold.core.split_layer import SplitFoldedTransformerLayer
 class FoldedModel(nn.Module):
     """Wrap an existing model so its Transformer layers use Branch Folding.
 
+    .. deprecated:: AR002
+        ``FoldedModel`` mutates the base model in place (replacing its layers)
+        and relies on the thread-local ``FOLDING_CONTEXT`` fallback.  Prefer
+        the non-mutating :class:`~actfold.models.architecture_utils.ManualFoldedForward`,
+        which leaves the base module tree, parameters, and ``state_dict()`` keys
+        untouched and threads branch context through explicit arguments.
+        ``FoldedModel`` is kept as legacy with unchanged behavior.
+
     The wrapper attempts to find the layer stack via common Hugging Face
     attribute names (``layers``, ``model.layers``, ``transformer.h``,
     ``encoder.layer``, ``gpt_neox.layers``) and replaces each layer with a

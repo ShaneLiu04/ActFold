@@ -66,6 +66,75 @@ def detect_split_spec(layer: nn.Module) -> SplitSpec | None:
     return None
 
 
+def _exact_divergent_index(
+    stable_mask: torch.Tensor,
+    num_divergent: int | None = None,
+) -> torch.Tensor:
+    """Return the ascending flat indices of the divergent (unstable) positions.
+
+    Sync-free when ``num_divergent`` is supplied by the caller: the divergent
+    count is derived for free from the three-way stable-count readback in
+    :meth:`FoldedTransformerLayer.forward`, and a *stable* argsort preserves
+    the ascending original order among equal keys, so the result is
+    elementwise-identical to the legacy ``nonzero`` index without any
+    data-dependent host synchronization.  Without ``num_divergent`` the legacy
+    ``nonzero`` fallback is used (direct callers only; it synchronizes).
+
+    Args:
+        stable_mask: Boolean stability mask ``[batch, seq_len]`` (True=stable).
+        num_divergent: Host-side divergent count from the caller's existing
+            readback.  When ``None``, a data-dependent fallback is used.
+
+    Returns:
+        Flat divergent indices, ascending, dtype int64.
+
+    Raises:
+        ValueError: If ``num_divergent`` is negative or exceeds the token count.
+    """
+    flat = (~stable_mask).reshape(-1)
+    num_tokens = flat.numel()
+    if num_divergent is None:
+        return flat.nonzero(as_tuple=False).squeeze(-1)
+    if num_divergent < 0 or num_divergent > num_tokens:
+        raise ValueError(
+            f"num_divergent must be in [0, {num_tokens}], got {num_divergent}"
+        )
+    order = torch.argsort(flat.to(torch.int8), stable=True)
+    return order[num_tokens - num_divergent :]
+
+
+def _padded_divergent_index(stable_mask: torch.Tensor, capacity: int) -> torch.Tensor:
+    """Return a fixed-capacity index buffer of divergent-candidate positions.
+
+    Graph-capture variant (AR002 design 4.2.2): ``order[num_tokens - capacity:]``
+    always has shape ``[capacity]`` with distinct positions.  When the true
+    divergent count ``D < capacity`` the head entries are the highest-index
+    stable positions (harmless padding: the merge overwrites stable rows from
+    the parent cache) and the tail equals ``_exact_divergent_index``; when
+    ``D > capacity`` the buffer holds divergent ranks ``(D - capacity)..(D - 1)``
+    and the caller's budget validation must trigger an eager recompute.
+
+    Args:
+        stable_mask: Boolean stability mask ``[batch, seq_len]``.
+        capacity: Fixed buffer capacity, ``1 <= capacity <= batch * seq_len``.
+
+    Returns:
+        Flat index buffer of shape ``[capacity]``, dtype int64.
+
+    Raises:
+        ValueError: If ``capacity`` is out of range.
+    """
+    flat = (~stable_mask).reshape(-1)
+    num_tokens = flat.numel()
+    if capacity < 1 or capacity > num_tokens:
+        raise ValueError(
+            f"capacity must be in [1, {num_tokens}] for a mask of {num_tokens} tokens, "
+            f"got {capacity}"
+        )
+    order = torch.argsort(flat.to(torch.int8), stable=True)
+    return order[num_tokens - capacity :]
+
+
 class SplitFoldedTransformerLayer(FoldedTransformerLayer):
     """Folded layer that computes the FFN only for divergent tokens.
 
@@ -191,6 +260,7 @@ class SplitFoldedTransformerLayer(FoldedTransformerLayer):
         hidden_states: torch.Tensor,
         attention_mask: torch.Tensor | None,
         stable_mask: torch.Tensor,
+        stable_count: int | None = None,
         **kwargs: Any,
     ) -> torch.Tensor:
         spec = self.split_spec
@@ -203,8 +273,12 @@ class SplitFoldedTransformerLayer(FoldedTransformerLayer):
         if num_tokens < self.min_split_tokens:
             return self._recompute_all(hidden_states, attention_mask, **kwargs)
 
-        divergent = ~stable_mask
-        flat_index = divergent.reshape(-1).nonzero(as_tuple=False).squeeze(-1)
+        # The divergent count is derived for free from the caller's three-way
+        # stable-count readback (AR002/T001); only when it is unavailable does
+        # this path pay for its own (legacy-equivalent) readback.
+        if stable_count is None:
+            stable_count = int(stable_mask.sum())
+        flat_index = _exact_divergent_index(stable_mask, num_tokens - stable_count)
         self._split_state = {
             "flat_index": flat_index,
             "input_shape": None,

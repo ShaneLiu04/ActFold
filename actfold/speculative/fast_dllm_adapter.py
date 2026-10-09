@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 
 from actfold.core.model_wrapper import FoldedModel
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.models.base import DiffusionLLM
 
 
@@ -71,7 +72,8 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
         hidden_dim: Hidden dimension (ignored if model is DiffusionLLM).
         num_heads: Number of attention heads (ignored if model is DiffusionLLM).
         vocab_size: Vocabulary size (ignored if model is DiffusionLLM).
-        folded_model: Optional FoldedModel that provides a branch-aware forward
+        folded_model: Optional `FoldedModel` or `ManualFoldedForward` that
+            provides a branch-aware forward
             path. When provided and ``branch_id`` is passed in ``forward``,
             activations are reused across branches.
     """
@@ -83,7 +85,7 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
         hidden_dim: int | None = None,
         num_heads: int | None = None,
         vocab_size: int | None = None,
-        folded_model: FoldedModel | None = None,
+        folded_model: FoldedModel | ManualFoldedForward | None = None,
     ) -> None:
         self._model = model
         self._folded_model = folded_model
@@ -167,7 +169,7 @@ class FastDLLMAdapter(DiffusionLLMAdapter):
         return self._model
 
     @property
-    def folded_model(self) -> FoldedModel | None:
+    def folded_model(self) -> FoldedModel | ManualFoldedForward | None:
         """Return the optional folded model, if any."""
         return self._folded_model
 

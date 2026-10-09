@@ -1,0 +1,16 @@
+{
+  "batch": 2,
+  "capacity_ratio": 0.5,
+  "device": "Quadro RTX 5000",
+  "eager_kernel_launches": null,
+  "eager_per_step_ms": 5.08286000113003,
+  "graph_kernel_launches": null,
+  "graph_per_step_ms": 2.687145001254976,
+  "graph_validated_steps": 20,
+  "kernel_launch_note": "this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel-launch counts omitted rather than fabricated \u2014 rerun on a CUPTI-capable host to record them",
+  "kernel_launches_supported": false,
+  "measured_steps": 20,
+  "num_layers": 4,
+  "seq": 512,
+  "warmup_steps": 5
+}

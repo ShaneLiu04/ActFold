@@ -80,6 +80,8 @@ class ActFoldConfig:
     draft_flip_region: tuple[int, int] | None = None
     use_split_layers: bool = False
     split_min_tokens: int = 512
+    use_cuda_graph: bool = False
+    graph_capacity_ratio: float = 0.5
     cache_chunk_size: int = 64
     use_cost_model: bool = True
     use_folded_generation: bool = True
@@ -123,6 +125,11 @@ class ActFoldConfig:
                 )
         if self.load_in_8bit and self.load_in_4bit:
             raise ValueError("Cannot set both load_in_8bit and load_in_4bit.")
+        if not 0.0 < self.graph_capacity_ratio <= 1.0:
+            raise ValueError(
+                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got "
+                f"{self.graph_capacity_ratio}"
+            )
         if self.torch_dtype is not None and self.torch_dtype not in {
             "float32",
             "float16",

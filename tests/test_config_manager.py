@@ -164,3 +164,21 @@ def test_draft_flip_region_validation() -> None:
     # start < 0
     with pytest.raises(ValueError):
         ActFoldConfig(draft_flip_region=(-1, 2))
+
+
+# ---------------------------------------------------------------------------
+# AR002/T008: CUDA-graph opt-in configuration fields
+# ---------------------------------------------------------------------------
+
+
+def test_t008_config_fields_and_validation() -> None:
+    config = ActFoldConfig()
+    assert config.use_cuda_graph is False
+    assert config.graph_capacity_ratio == 0.5
+    with pytest.raises(ValueError):
+        ActFoldConfig(graph_capacity_ratio=0.0)
+    with pytest.raises(ValueError):
+        ActFoldConfig(graph_capacity_ratio=1.5)
+    enabled = ActFoldConfig(use_cuda_graph=True, graph_capacity_ratio=1.0)
+    assert enabled.use_cuda_graph is True
+    assert enabled.graph_capacity_ratio == 1.0

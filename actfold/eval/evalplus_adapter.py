@@ -29,6 +29,10 @@ class EvalPlusAdapter(BaseEvalAdapter):
 
     TASKS = ["humaneval_plus", "mbpp_plus"]
     _METRIC_KEY = "pass_at_1"
+    # Per-task generation-length defaults (AR002 srs 3.7): code-generation
+    # completions are longer than the library default of 256, matching the
+    # humaneval 512 recipe used by the AR001 experiment scripts.
+    _TASK_MAX_NEW_TOKENS: dict[str, int] = {"humaneval_plus": 512, "mbpp_plus": 512}
 
     def __init__(
         self,
@@ -38,7 +42,7 @@ class EvalPlusAdapter(BaseEvalAdapter):
         judge: Judge,
         tokenizer: Any | None = None,
         vocab_size: int = 1000,
-        max_new_tokens: int = 256,
+        max_new_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -73,7 +77,6 @@ class EvalPlusAdapter(BaseEvalAdapter):
             Dictionary with pass@1, latency, and TFLOPs metrics.
         """
         self._validate_task(task)
-        if max_new_tokens is not None:
-            self.max_new_tokens = max_new_tokens
+        self._resolve_max_new_tokens(task, max_new_tokens)
         eval_limit = limit if limit is not None else num_problems
         return self._evaluate(task, limit=eval_limit, seed=seed, item_key="num_problems")

@@ -285,3 +285,65 @@ def test_suffix_append_tau_sensitivity_distinguishable(device: str) -> None:
     # the gate uses a strict >).
     assert ratios[-1] == pytest.approx(0.0)
     assert ratios[-1] < ratios[1]
+
+
+def test_seed_does_not_pollute_global_rng(device: str) -> None:
+    """AR002 srs 3.6: generate(seed=...) must leave the global RNG state untouched."""
+    parent = Branch(
+        branch_id="p",
+        parent_id=None,
+        tokens=torch.randint(0, 10, (1, 8), device=device),
+    )
+    generator = DraftGenerator(vocab_size=10, mode="suffix_append", flip_ratio=0.2)
+    before = torch.get_rng_state()
+    generator.generate(parent, num_branches=2, seed=7)
+    after = torch.get_rng_state()
+    assert torch.equal(before, after)
+
+    # Also with appended tokens and the copy_flip mode (different sampling sites).
+    gen_flip = DraftGenerator(vocab_size=10, mode="copy_flip", flip_ratio=0.2)
+    before = torch.get_rng_state()
+    gen_flip.generate(parent, num_branches=2, seed=7, max_new_tokens=3)
+    assert torch.equal(before, torch.get_rng_state())
+
+
+def test_seed_isolation_still_reproducible(device: str) -> None:
+    """AR002 srs 3.6: local generator keeps same-seed reproducibility."""
+    parent = Branch(
+        branch_id="p",
+        parent_id=None,
+        tokens=torch.randint(0, 10, (2, 8), device=device),
+    )
+    generator = DraftGenerator(vocab_size=10, mode="suffix_append", flip_ratio=0.25)
+    first = generator.generate(parent, num_branches=2, seed=99)
+    second = generator.generate(parent, num_branches=2, seed=99)
+    assert [child.branch_id for child in first] == [child.branch_id for child in second]
+    for child_a, child_b in zip(first, second):
+        assert torch.equal(child_a.tokens, child_b.tokens)
+
+
+def test_seed_boundary_values(device: str) -> None:
+    """AR002 design UT-002c: seed=0, negative, and extreme int64 seeds.
+
+    Negative seeds pass through to ``manual_seed`` exactly like
+    ``torch.manual_seed`` (which wraps them into the uint64 domain), so
+    ``seed=-1`` must reproduce identically and equal ``seed=2**64 - 1``.
+    """
+    parent = Branch(
+        branch_id="p",
+        parent_id=None,
+        tokens=torch.randint(0, 10, (1, 8), device=device),
+    )
+    generator = DraftGenerator(vocab_size=10, mode="suffix_append", flip_ratio=0.2)
+    for seed in (0, -1, 2**63 - 1):
+        first = generator.generate(parent, num_branches=2, seed=seed)
+        second = generator.generate(parent, num_branches=2, seed=seed)
+        for child_a, child_b in zip(first, second):
+            assert torch.equal(child_a.tokens, child_b.tokens)
+
+    # torch.manual_seed(-1) wraps to 2**64 - 1; the local generator must
+    # share that semantics (same wrapped state -> identical children).
+    wrapped = generator.generate(parent, num_branches=2, seed=2**64 - 1)
+    negated = generator.generate(parent, num_branches=2, seed=-1)
+    for child_a, child_b in zip(wrapped, negated):
+        assert torch.equal(child_a.tokens, child_b.tokens)

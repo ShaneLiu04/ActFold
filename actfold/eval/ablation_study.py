@@ -21,7 +21,7 @@ import torch.nn as nn
 
 from actfold.core import ActivationCache, SimilarityGate
 from actfold.core.folding_scheduler import FoldingScheduler
-from actfold.core.model_wrapper import FoldedModel
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from actfold.speculative.branch import Branch
 from actfold.speculative.draft_generator import DraftGenerator
@@ -156,9 +156,10 @@ class AblationStudy:
     ) -> FoldedMeasurement:
         """Run one real folded measurement and return per-layer statistics.
 
-        The raw module is wrapped in a fresh :class:`FoldedModel` (restored
-        on exit), a parent forward populates the cache, and a folded child
-        forward records per-layer stability in the global profiler.
+        The raw module is wrapped in a fresh, non-mutating
+        :class:`~actfold.models.architecture_utils.ManualFoldedForward`, a
+        parent forward populates the cache, and a folded child forward
+        records per-layer stability in the global profiler.
 
         Args:
             tau: Base similarity threshold for the measurement gate.
@@ -195,34 +196,29 @@ class AblationStudy:
             )
             baseline_total, per_layer_reusable = self._flops_budget()
 
-            with FoldedModel(raw, cache, gate, scheduler=scheduler) as folded:
-                if not folded.folding_applied:
-                    raise RuntimeError(
-                        "AblationStudy could not discover a Transformer layer stack "
-                        "in the underlying model; layer-wise folding cannot be "
-                        "measured. Check that the model exposes a standard layer "
-                        "ModuleList (see FoldedModel._DEFAULT_LAYER_PATHS)."
-                    )
-                measure_adapter = FastDLLMAdapter(
-                    raw,
-                    num_layers=self.model.num_layers,
-                    hidden_dim=self.model.hidden_dim,
-                    num_heads=max(1, self.model.num_heads),
-                    vocab_size=self.model.vocab_size,
-                    folded_model=folded,
+            # Non-mutating folded stack (AR002/T005): the raw module is never
+            # modified in place, so no context-manager restore is needed.
+            folded = ManualFoldedForward(raw, cache, gate, scheduler=scheduler)
+            measure_adapter = FastDLLMAdapter(
+                raw,
+                num_layers=self.model.num_layers,
+                hidden_dim=self.model.hidden_dim,
+                num_heads=max(1, self.model.num_heads),
+                vocab_size=self.model.vocab_size,
+                folded_model=folded,
+            )
+            with torch.no_grad():
+                # Parent pass: populates every layer's cache with real
+                # activations (no folding, no profiler records).
+                measure_adapter.forward(parent.tokens, branch_id=parent.branch_id, step_idx=0)
+                # Child pass: folded layers record real per-layer stability.
+                GLOBAL_STABILITY_PROFILER.reset_branch(child.branch_id)
+                measure_adapter.forward(
+                    child.tokens,
+                    branch_id=child.branch_id,
+                    parent_branch_id=parent.branch_id,
+                    step_idx=0,
                 )
-                with torch.no_grad():
-                    # Parent pass: populates every layer's cache with real
-                    # activations (no folding, no profiler records).
-                    measure_adapter.forward(parent.tokens, branch_id=parent.branch_id, step_idx=0)
-                    # Child pass: folded layers record real per-layer stability.
-                    GLOBAL_STABILITY_PROFILER.reset_branch(child.branch_id)
-                    measure_adapter.forward(
-                        child.tokens,
-                        branch_id=child.branch_id,
-                        parent_branch_id=parent.branch_id,
-                        step_idx=0,
-                    )
 
             profile = GLOBAL_STABILITY_PROFILER.get_profile(child.branch_id)
             per_layer: dict[int, float] = {}

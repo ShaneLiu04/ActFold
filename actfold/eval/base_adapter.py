@@ -40,6 +40,12 @@ class BaseEvalAdapter:
     TASKS: list[str] = []
     _METRIC_KEY: str = ""
     _TASK_METRIC_KEYS: dict[str, str] = {}
+    # Per-task generation-length defaults (AR002 srs 3.7).  Consulted only when
+    # the adapter was constructed without an explicit ``max_new_tokens``; the
+    # table itself never overrides an explicit constructor argument, and an
+    # ``evaluate(max_new_tokens=...)`` override beats everything.
+    _TASK_MAX_NEW_TOKENS: dict[str, int] = {}
+    _DEFAULT_MAX_NEW_TOKENS: int = 256
 
     def __init__(
         self,
@@ -49,7 +55,7 @@ class BaseEvalAdapter:
         judge: Judge,
         tokenizer: Any | None = None,
         vocab_size: int = 1000,
-        max_new_tokens: int = 256,
+        max_new_tokens: int | None = 256,
     ) -> None:
         self.model = model
         self.baseline = baseline
@@ -57,7 +63,24 @@ class BaseEvalAdapter:
         self.judge = judge
         self.tokenizer = tokenizer
         self.vocab_size = vocab_size
-        self.max_new_tokens = max_new_tokens
+        self._max_new_tokens_explicit = max_new_tokens is not None
+        self.max_new_tokens = (
+            max_new_tokens if max_new_tokens is not None else self._DEFAULT_MAX_NEW_TOKENS
+        )
+
+    def _resolve_max_new_tokens(self, task: str, override: int | None) -> int:
+        """Resolve the generation length for ``task`` and cache it on the adapter.
+
+        Priority: ``evaluate(max_new_tokens=...)`` override > explicit
+        constructor argument > per-task default table > library default.
+        """
+        if override is not None:
+            self.max_new_tokens = override
+        elif not self._max_new_tokens_explicit:
+            self.max_new_tokens = self._TASK_MAX_NEW_TOKENS.get(
+                task, self._DEFAULT_MAX_NEW_TOKENS
+            )
+        return self.max_new_tokens
 
     def _validate_task(self, task: str) -> None:
         """Raise if ``task`` is not supported by this adapter."""

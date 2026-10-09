@@ -190,6 +190,26 @@ Outputs three tables:
 2. Layer-wise folding (early / late / all)
 3. Cache size impact (256, 512, 1024, 2048)
 
+### 4.6a CUDA-Graph Verification-Loop Benchmark (AR002)
+
+The fixed-shape folded verification loop can be captured as a CUDA graph
+(`ManualFoldedForward(use_cuda_graph=True)` / `ActFoldConfig.use_cuda_graph`).
+The BS-007 evidence benchmark measures eager vs graph replay per-step
+wall-clock on a synthetic LLaMA-layout model (batch=2, seq=512, 4 layers) and
+writes the artifact to `results/optimization/ar002_graph_bench.json`:
+
+```bash
+python -m scripts.ar002_graph_bench            # default path + 20 measured steps
+python -m scripts.ar002_graph_bench --steps 50 --warmup 10
+```
+
+Reference measurement (Quadro RTX 5000): eager 5.083 ms/step vs graph
+2.687 ms/step (**-47.1%**), 20/20 budget-validated steps. On
+`LIBKINETO_NOCUPTI` torch builds the kernel-launch counts are recorded as
+`null` with an explicit note (they cannot be measured there); rerun on a
+CUPTI-capable host to record them.
+
+
 ### 4.7 Generate Figures
 
 ```bash

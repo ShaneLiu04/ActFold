@@ -35,6 +35,9 @@ class LMEvalAdapter(BaseEvalAdapter):
         "math": "exact_match",
         "ifeval": "prompt_level_acc",
     }
+    # Per-task generation-length defaults (AR002 srs 3.7); these text tasks
+    # keep the library default of 256.
+    _TASK_MAX_NEW_TOKENS: dict[str, int] = {}
 
     def __init__(
         self,
@@ -44,7 +47,7 @@ class LMEvalAdapter(BaseEvalAdapter):
         judge: Judge,
         tokenizer: Any | None = None,
         vocab_size: int = 1000,
-        max_new_tokens: int = 256,
+        max_new_tokens: int | None = None,
     ) -> None:
         super().__init__(
             model=model,
@@ -79,7 +82,6 @@ class LMEvalAdapter(BaseEvalAdapter):
             Dictionary with accuracy, latency, and TFLOPs metrics.
         """
         self._validate_task(task)
-        if max_new_tokens is not None:
-            self.max_new_tokens = max_new_tokens
+        self._resolve_max_new_tokens(task, max_new_tokens)
         eval_limit = limit if limit is not None else num_samples
         return self._evaluate(task, limit=eval_limit, seed=seed, item_key="num_samples")
