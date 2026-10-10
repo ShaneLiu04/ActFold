@@ -20,6 +20,10 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/assets/cover.png" alt="ActFold — Cross-Branch Activation Reuse for Diffusion LLM Speculative Decoding" width="100%">
+</p>
+
 ---
 
 ## Overview
@@ -630,7 +634,6 @@ python -m pytest tests/ -q -m slow
 - [`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md) — two-phase deep experiment report (diagnosis + optimizations, real LLaDA/Dream/Fast-dLLM measurements).
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — academic-paper version of the two-phase study (abstract, problem formalization, method, experiments, references).
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — optimization-phase report (vectorized cache, split FFN, adaptive gate, fused kernel).
-- [`AGENTS.md`](AGENTS.md) — conventions and pitfalls for contributors and AI agents.
 - [`CHANGELOG.md`](CHANGELOG.md) — release history.
 
 ---
