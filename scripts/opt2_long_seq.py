@@ -80,9 +80,7 @@ def main() -> int:
             # 250+ MB for these vocabularies).
             baselines[k] = model.forward(child).detach()
 
-    baseline_ms = time_forward(
-        lambda: model.forward(children[FLIPS[0]]), warmup=3, reps=10
-    ).mean
+    baseline_ms = time_forward(lambda: model.forward(children[FLIPS[0]]), warmup=3, reps=10).mean
     payload: dict[str, Any] = {
         "meta": {
             "model_key": args.model,

@@ -334,9 +334,7 @@ def fig_sampling(models: dict[str, dict[str, Any]], out: Path) -> None:
             baseline_std / max(baseline_mean, 1e-9)
         ) ** 2
         ratio_std = float(np.sqrt(rel_var)) * ratio
-        axes[1].text(
-            idx, ratio * 1.02, f"{ratio:.2f}x ± {ratio_std:.2f}", ha="center", fontsize=9
-        )
+        axes[1].text(idx, ratio * 1.02, f"{ratio:.2f}x ± {ratio_std:.2f}", ha="center", fontsize=9)
     axes[1].tick_params(axis="x", rotation=15)
     fig.tight_layout()
     fig.savefig(out / "fig_sampling.png", dpi=160)

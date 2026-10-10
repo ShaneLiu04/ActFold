@@ -48,9 +48,7 @@ class LlamaLikeModelWithFinalNorm(nn.Module):
     so that skipping the final norm produces systematically biased logits.
     """
 
-    def __init__(
-        self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 2
-    ) -> None:
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 2) -> None:
         super().__init__()
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": vocab_size})()
         self.model = nn.Module()
@@ -270,9 +268,7 @@ def test_manual_path_never_reads_folding_context(
     class _PoisonedContext:
         @staticmethod
         def get(*args: object, **kwargs: object) -> dict[str, object] | None:
-            raise AssertionError(
-                "FOLDING_CONTEXT.get must not be called on the Manual path"
-            )
+            raise AssertionError("FOLDING_CONTEXT.get must not be called on the Manual path")
 
     torch.manual_seed(3)
     reference_model = LlamaLikeModel().to(device)
@@ -363,9 +359,7 @@ def test_t005_manual_split_fallback_without_chain(device: str) -> None:
     model = BertLikeModel().to(device)
     cache = ActivationCache(max_entries_per_layer=16, device=device)
     gate = SimilarityGate(tau=0.95, metric="cosine")
-    mff = ManualFoldedForward(
-        model, cache=cache, gate=gate, split_layers=True, split_min_tokens=64
-    )
+    mff = ManualFoldedForward(model, cache=cache, gate=gate, split_layers=True, split_min_tokens=64)
 
     tokens = torch.randint(0, 100, (1, 4), device=device)
     with torch.no_grad():
@@ -446,6 +440,4 @@ def test_t005_folded_generate_annotation_union() -> None:
     assert any(arg is ManualFoldedForward for arg in get_args(hints["folded_model"]))
 
     init_hints = get_type_hints(FastDLLMAdapter.__init__)
-    assert any(
-        arg is ManualFoldedForward for arg in get_args(init_hints["folded_model"])
-    )
+    assert any(arg is ManualFoldedForward for arg in get_args(init_hints["folded_model"]))

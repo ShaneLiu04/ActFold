@@ -82,9 +82,7 @@ class HardwareProfile:
     bytes_per_element: int = 4  # fp32=4, fp16/bf16=2.
 
     @classmethod
-    def from_device(
-        cls, device: torch.device | str, calibrate: bool = False
-    ) -> "HardwareProfile":
+    def from_device(cls, device: torch.device | str, calibrate: bool = False) -> "HardwareProfile":
         """Return a hardware profile for ``device``.
 
         For CUDA devices the profile is resolved by looking up the actual

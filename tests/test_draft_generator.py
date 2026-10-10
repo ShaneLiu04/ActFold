@@ -120,9 +120,7 @@ def test_suffix_append_flip_ratio_zero_is_control(device: str) -> None:
         parent_id=None,
         tokens=torch.randint(0, 50, (1, 8), device=device),
     )
-    generator = DraftGenerator(
-        vocab_size=50, mode="suffix_append", prompt_length=4, flip_ratio=0.0
-    )
+    generator = DraftGenerator(vocab_size=50, mode="suffix_append", prompt_length=4, flip_ratio=0.0)
     children = generator.generate(parent, num_branches=2, seed=0)
     for child in children:
         assert torch.equal(child.tokens, parent.tokens)
@@ -139,9 +137,7 @@ def test_suffix_append_flip_region_overrides_default(device: str) -> None:
         parent_id=None,
         tokens=torch.randint(0, 50, (1, 8), device=device),
     )
-    generator = DraftGenerator(
-        vocab_size=50, mode="suffix_append", prompt_length=4, flip_ratio=1.0
-    )
+    generator = DraftGenerator(vocab_size=50, mode="suffix_append", prompt_length=4, flip_ratio=1.0)
     children = generator.generate(parent, num_branches=2, seed=0, flip_region=(0, 2))
     for child in children:
         assert child.tokens.shape == (1, 8)
@@ -196,9 +192,7 @@ def test_logits_draft_samples_from_topk(device: str) -> None:
     generator = DraftGenerator(
         vocab_size=20, mode="logits_draft", top_k=1, flip_ratio=1.0, prompt_length=0
     )
-    children = generator.generate(
-        parent, num_branches=1, seed=0, parent_logits=parent_logits
-    )
+    children = generator.generate(parent, num_branches=1, seed=0, parent_logits=parent_logits)
     expected = torch.arange(6, device=device).unsqueeze(0)
     assert torch.equal(children[0].tokens, expected)
 

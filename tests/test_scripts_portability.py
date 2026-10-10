@@ -92,7 +92,11 @@ def test_hf_scripts_declare_hf_cli_arguments() -> None:
 
 def test_apply_hf_env_cli_space_form(monkeypatch) -> None:
     module = _load_hf_env_module()
-    monkeypatch.setattr(sys, "argv", ["prog", "--hf-endpoint", "https://example.custom/v1", "--hf-home", "D:/cache/hf"])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["prog", "--hf-endpoint", "https://example.custom/v1", "--hf-home", "D:/cache/hf"],
+    )
     monkeypatch.delenv("HF_ENDPOINT", raising=False)
     monkeypatch.delenv("HF_HOME", raising=False)
     module.apply_hf_env()
@@ -102,7 +106,9 @@ def test_apply_hf_env_cli_space_form(monkeypatch) -> None:
 
 def test_apply_hf_env_cli_equals_form(monkeypatch) -> None:
     module = _load_hf_env_module()
-    monkeypatch.setattr(sys, "argv", ["prog", "--hf-endpoint=https://a.example", "--hf-home=/tmp/x"])
+    monkeypatch.setattr(
+        sys, "argv", ["prog", "--hf-endpoint=https://a.example", "--hf-home=/tmp/x"]
+    )
     monkeypatch.delenv("HF_ENDPOINT", raising=False)
     monkeypatch.delenv("HF_HOME", raising=False)
     module.apply_hf_env()
@@ -183,6 +189,6 @@ def test_invalidated_markers_cover_all_results() -> None:
         ancestors = [results_root] + [
             results_root.joinpath(*rel.parts[:i]) for i in range(1, len(rel.parts))
         ]
-        assert any((a / "INVALIDATED.md").exists() for a in ancestors), (
-            f"no INVALIDATED.md covers {artifact}"
-        )
+        assert any(
+            (a / "INVALIDATED.md").exists() for a in ancestors
+        ), f"no INVALIDATED.md covers {artifact}"

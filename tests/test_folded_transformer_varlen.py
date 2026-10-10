@@ -89,9 +89,7 @@ def test_varlen_prefix_mixed_reference(device: str) -> None:
     # (always divergent by construction).
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
     child[:, :T_PARENT] = h_parent
-    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
+    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
 
     out = folded(child, branch_id="child", parent_branch_id="parent")
 
@@ -302,9 +300,7 @@ def test_varlen_prefix_all_divergent_full_recompute(device: str) -> None:
     _seed_parent_cache(cache, h_parent, ffn_seed)
 
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
-    child[:, :T_PARENT] = h_parent + 100.0 * torch.randn(
-        B, T_PARENT, HIDDEN_DIM, device=device
-    )
+    child[:, :T_PARENT] = h_parent + 100.0 * torch.randn(B, T_PARENT, HIDDEN_DIM, device=device)
 
     # Scenario sanity: no prefix token is stable, so stable_count == 0.
     ref_prefix_mask = gate(child[:, :T_PARENT], h_parent)
@@ -376,9 +372,7 @@ def test_varlen_chain_recursion_three_generations(device: str) -> None:
     # is partially perturbed, so the T6 reference mask is mixed as well.
     grandchild = torch.randn(b, t_grandchild, hidden, device=device)
     grandchild[:, :t_child] = child
-    grandchild[:, t_child - 2 : t_child] += 100.0 * torch.randn(
-        b, 2, hidden, device=device
-    )
+    grandchild[:, t_child - 2 : t_child] += 100.0 * torch.randn(b, 2, hidden, device=device)
 
     child_embedding = stored["embedding"]
     child_ffn = stored["ffn_out"]
@@ -396,9 +390,7 @@ def test_varlen_chain_recursion_three_generations(device: str) -> None:
         dim=1,
     )
     ref_aligned_gc = torch.cat([child_ffn, layer_grandchild[:, t_child:]], dim=1)
-    expected_grandchild = torch.where(
-        ref_mask_gc.unsqueeze(-1), ref_aligned_gc, layer_grandchild
-    )
+    expected_grandchild = torch.where(ref_mask_gc.unsqueeze(-1), ref_aligned_gc, layer_grandchild)
     assert torch.equal(out_grandchild, expected_grandchild)
 
     stored_gc = cache.fetch(branch_id="grandchild", layer_idx=0)
@@ -608,9 +600,7 @@ def test_varlen_parent_ffn_shape_mismatch_raises(device: str) -> None:
     # parent FFN shape is validated.
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
     child[:, :T_PARENT] = h_parent
-    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
+    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
     ref_prefix_mask = gate(child[:, :T_PARENT], h_parent)
     assert 0 < int(ref_prefix_mask.sum()) < ref_prefix_mask.numel()
 
@@ -641,9 +631,7 @@ def test_varlen_parent_ffn_missing_raises(device: str) -> None:
 
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
     child[:, :T_PARENT] = h_parent
-    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
+    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
     ref_prefix_mask = gate(child[:, :T_PARENT], h_parent)
     assert 0 < int(ref_prefix_mask.sum()) < ref_prefix_mask.numel()
 
@@ -690,9 +678,7 @@ def test_varlen_attention_mask_passthrough(device: str) -> None:
 
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
     child[:, :T_PARENT] = h_parent
-    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
+    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
     attention_mask = torch.ones(B, T_CHILD, dtype=torch.bool, device=device)
     attention_mask[:, -1] = False  # mask out the last suffix position
 
@@ -746,9 +732,7 @@ def test_varlen_cache_eviction_breaks_and_rebuilds_chain(device: str) -> None:
     # Generation 1: parent evicted -> cache miss -> full recompute, no error.
     child = torch.randn(B, T_CHILD, HIDDEN_DIM, device=device)
     child[:, :T_PARENT] = h_parent
-    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
+    child[:, T_PARENT - 2 : T_PARENT] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
     out_child = folded(child, branch_id="child", parent_branch_id="parent")
     assert torch.equal(out_child, layer(child))
 
@@ -756,12 +740,8 @@ def test_varlen_cache_eviction_breaks_and_rebuilds_chain(device: str) -> None:
     # child (its cache entry is the newest group and always survives).
     grandchild = torch.randn(B, T_CHILD + 1, HIDDEN_DIM, device=device)
     grandchild[:, :T_CHILD] = child
-    grandchild[:, T_CHILD - 2 : T_CHILD] += 100.0 * torch.randn(
-        B, 2, HIDDEN_DIM, device=device
-    )
-    out_grandchild = folded(
-        grandchild, branch_id="grandchild", parent_branch_id="child"
-    )
+    grandchild[:, T_CHILD - 2 : T_CHILD] += 100.0 * torch.randn(B, 2, HIDDEN_DIM, device=device)
+    out_grandchild = folded(grandchild, branch_id="grandchild", parent_branch_id="child")
 
     # Generation 2: the chain rebuilt — grandchild folds against the stored
     # child.  The reference parent states are the gen-1 input/output pair

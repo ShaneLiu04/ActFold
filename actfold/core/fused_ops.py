@@ -606,9 +606,7 @@ def fused_gate_mask_count(
     global _TRITON_GATE_DISABLED
 
     if h_child.dim() != 3:
-        raise ValueError(
-            f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}"
-        )
+        raise ValueError(f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}")
     if h_child.shape != h_parent.shape:
         raise ValueError(
             f"h_child shape {tuple(h_child.shape)} must match h_parent shape "

@@ -116,9 +116,7 @@ def _make_study(
 def test_default_draft_generator_is_suffix_append() -> None:
     """A study built without a draft generator defaults to suffix_append."""
     raw = _make_model()
-    adapter = FastDLLMAdapter(
-        raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100
-    )
+    adapter = FastDLLMAdapter(raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100)
     study = AblationStudy(
         model=adapter,
         baseline=None,

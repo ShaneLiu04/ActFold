@@ -18,7 +18,6 @@ from unittest.mock import MagicMock
 import pytest
 import torch
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -273,7 +272,9 @@ def test_exp_sampling_repeats_below_floor_raises_at_entry(tmp_path: Any) -> None
 # ---------------------------------------------------------------------------
 
 
-def test_fig_sampling_new_schema_renders_mean_std(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+def test_fig_sampling_new_schema_renders_mean_std(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     from scripts.make_experiment_figures import fig_sampling
 
     _, axes = _patched_axes(monkeypatch)
@@ -299,7 +300,9 @@ def test_fig_sampling_new_schema_renders_mean_std(monkeypatch: pytest.MonkeyPatc
     assert any("±" in s for s in annotation_strings)
 
 
-def test_fig_sampling_old_schema_backward_compat(monkeypatch: pytest.MonkeyPatch, tmp_path: Any) -> None:
+def test_fig_sampling_old_schema_backward_compat(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Any
+) -> None:
     from scripts.make_experiment_figures import fig_sampling
 
     _, axes = _patched_axes(monkeypatch)

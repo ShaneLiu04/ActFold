@@ -655,9 +655,7 @@ def test_t015_no_ones_mask_allocation(device: str) -> None:
     assert not hasattr(folded, "_full_masks"), "the ones-mask machinery must be deleted"
 
 
-def test_t015_all_stable_fast_path_uses_fetch(
-    device: str, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_t015_all_stable_fast_path_uses_fetch(device: str, monkeypatch: pytest.MonkeyPatch) -> None:
     """T015: the all-stable fast path reads the parent FFN via the new API.
 
     With every token stable the child output must equal the cached parent
@@ -690,17 +688,13 @@ def test_t015_all_stable_fast_path_uses_fetch(
 # ---------------------------------------------------------------------------
 
 
-def _t016_parent_cache_with(
-    p0: torch.Tensor, p1: torch.Tensor
-) -> VectorizedActivationCache:
+def _t016_parent_cache_with(p0: torch.Tensor, p1: torch.Tensor) -> VectorizedActivationCache:
     """Vectorized cache pre-populated per the T014 schema for a layer_idx=1 child.
 
     Layer 0 holds ``{"ffn_out": p0}`` (the parent's input to layer 1) and
     layer 1 holds ``{"ffn_out": p1}``.
     """
-    cache = VectorizedActivationCache(
-        max_entries_per_layer=p0.shape[1], max_branch_steps=0
-    )
+    cache = VectorizedActivationCache(max_entries_per_layer=p0.shape[1], max_branch_steps=0)
     cache.put("parent", 0, {"ffn_out": p0})
     cache.put("parent", 1, {"ffn_out": p1})
     return cache
@@ -710,9 +704,7 @@ def _t016_mixed_child(p0: torch.Tensor) -> torch.Tensor:
     """Child input that is stable on the first half, divergent on the second."""
     child = p0.clone()
     half = child.shape[1] // 2
-    child[:, half:] += 100.0 * torch.randn(
-        child.shape[0], child.shape[1] - half, child.shape[2]
-    )
+    child[:, half:] += 100.0 * torch.randn(child.shape[0], child.shape[1] - half, child.shape[2])
     return child
 
 
@@ -757,9 +749,7 @@ def test_t016_slow_path_fused_bit_exact_cpu() -> None:
     out_original = folded_original(child, branch_id="child", parent_branch_id="parent")
 
     # Fused path: thresholds lowered + CUDA requirement disabled.
-    folded_fused = FoldedTransformerLayer(
-        layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1
-    )
+    folded_fused = FoldedTransformerLayer(layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1)
     with pytest.MonkeyPatch.context() as mp:
         mp.setattr(folded_transformer_module, "_GATHER_SELECT_MIN_TOKENS", 0)
         mp.setattr(folded_transformer_module, "_GATHER_SELECT_MIN_HIDDEN", 0)
@@ -784,9 +774,7 @@ def test_t016_slow_path_fused_uses_gather_select() -> None:
     torch.manual_seed(162)
     p0 = torch.randn(batch, seq, hidden_dim)
     p1 = torch.randn(batch, seq, hidden_dim)
-    folded = FoldedTransformerLayer(
-        layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1
-    )
+    folded = FoldedTransformerLayer(layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1)
     child = _t016_mixed_child(p0)
 
     real_gather_select = fused_ops_module.gather_select

@@ -96,9 +96,7 @@ def _exact_divergent_index(
     if num_divergent is None:
         return flat.nonzero(as_tuple=False).squeeze(-1)
     if num_divergent < 0 or num_divergent > num_tokens:
-        raise ValueError(
-            f"num_divergent must be in [0, {num_tokens}], got {num_divergent}"
-        )
+        raise ValueError(f"num_divergent must be in [0, {num_tokens}], got {num_divergent}")
     order = torch.argsort(flat.to(torch.int8), stable=True)
     return order[num_tokens - num_divergent :]
 
@@ -182,9 +180,7 @@ class SplitFoldedTransformerLayer(FoldedTransformerLayer):
             self._pre_handle = self.split_spec.pre_module.register_forward_pre_hook(
                 self._pre_hook, with_kwargs=True
             )
-            self._post_handle = self.split_spec.post_module.register_forward_hook(
-                self._post_hook
-            )
+            self._post_handle = self.split_spec.post_module.register_forward_hook(self._post_hook)
 
     @property
     def split_enabled(self) -> bool:

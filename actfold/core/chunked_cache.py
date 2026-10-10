@@ -243,20 +243,14 @@ class ChunkedActivationCache:
         """
         self._ensure_layer(layer_idx)
         cache = self._caches[layer_idx]
-        chunks = [
-            cache[key]
-            for key in cache
-            if key[0] == branch_id and key[3] == step_idx
-        ]
+        chunks = [cache[key] for key in cache if key[0] == branch_id and key[3] == step_idx]
         if not chunks:
             raise KeyError(
                 f"No cache entry for branch={branch_id}, layer={layer_idx}, step={step_idx}"
             )
         chunks.sort(key=lambda c: c.start_token)
         for chunk in chunks:
-            cache.move_to_end(
-                self._key(branch_id, layer_idx, chunk.chunk_id, step_idx)
-            )
+            cache.move_to_end(self._key(branch_id, layer_idx, chunk.chunk_id, step_idx))
 
         first_chunk = chunks[0]
         max_end = max(c.start_token + c.num_valid for c in chunks)

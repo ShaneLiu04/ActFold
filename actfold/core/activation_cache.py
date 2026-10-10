@@ -43,7 +43,9 @@ class ActivationCache:
         # (branch_id, step_idx, layer_idx) -> number of tokens stored.
         self._counts: dict[tuple[Any, int, int], int] = {}
 
-    def _ensure_layer(self, layer_idx: int) -> OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]:
+    def _ensure_layer(
+        self, layer_idx: int
+    ) -> OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]:
         """Create the ordered group map for a layer if it does not exist."""
         if layer_idx not in self._layers:
             self._layers[layer_idx] = OrderedDict()
@@ -296,14 +298,11 @@ class ActivationCache:
         start = max(0, total - capacity)
 
         if start == 0:
-            return {
-                name: buffer[:total].transpose(0, 1) for name, buffer in store.items()
-            }
+            return {name: buffer[:total].transpose(0, 1) for name, buffer in store.items()}
         # Ring layout: gather the surviving rows (still no host sync).
         rows = torch.arange(start, total, device=sample.device) % capacity
         return {
-            name: buffer.index_select(0, rows).transpose(0, 1)
-            for name, buffer in store.items()
+            name: buffer.index_select(0, rows).transpose(0, 1) for name, buffer in store.items()
         }
 
     def fetch_masked(

@@ -113,9 +113,7 @@ def test_from_device_unknown_cuda_name_uses_conservative_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Unknown GPU names fall back to conservative defaults; calibrate kwarg exists."""
-    monkeypatch.setattr(
-        "torch.cuda.get_device_name", lambda *a, **k: "NVIDIA MYSTERY GPU 9000"
-    )
+    monkeypatch.setattr("torch.cuda.get_device_name", lambda *a, **k: "NVIDIA MYSTERY GPU 9000")
     profile = HardwareProfile.from_device("cuda", calibrate=False)
     assert profile.compute_tflops == pytest.approx(100.0)
     assert profile.memory_bw_gb_s == pytest.approx(600.0)

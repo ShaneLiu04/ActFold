@@ -132,15 +132,10 @@ def _cuda_profiler_supported() -> bool:
     try:
         x = torch.ones(4, device="cuda")
         torch.cuda.synchronize()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA]
-        ) as prof:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
             x = x + 1
             torch.cuda.synchronize()
-        return any(
-            evt.device_type == torch.profiler.DeviceType.CUDA
-            for evt in prof.key_averages()
-        )
+        return any(evt.device_type == torch.profiler.DeviceType.CUDA for evt in prof.key_averages())
     except Exception:  # noqa: BLE001 - probe must never raise
         return False
 
@@ -148,9 +143,7 @@ def _cuda_profiler_supported() -> bool:
 def _profiled_cuda_launch_count(step_fn: Callable[[], Any]) -> int:
     """Count CUDA kernel launches of one step under the profiler."""
     torch.cuda.synchronize()
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA]
-    ) as prof:
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
         step_fn()
         torch.cuda.synchronize()
     return sum(

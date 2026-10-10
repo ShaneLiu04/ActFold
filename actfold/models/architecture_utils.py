@@ -397,8 +397,7 @@ class ManualFoldedForward(nn.Module):
         super().__init__()
         if not 0.0 < graph_capacity_ratio <= 1.0:
             raise ValueError(
-                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got "
-                f"{graph_capacity_ratio}"
+                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got " f"{graph_capacity_ratio}"
             )
         self.profile = detect_architecture(model)
         self.cache = cache
@@ -522,17 +521,15 @@ class ManualFoldedForward(nn.Module):
         so it counts as incomplete and the step stays eager.
         """
         try:
-            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get(
-                "embedding"
-            )
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
             if embedding is None:
                 return False
             if tuple(embedding.shape[:2]) != tuple(tokens.shape):
                 return False
             for layer_idx in range(len(self._wrapped_layers)):
-                ffn_out = self.cache.fetch(
-                    branch_id=parent_branch_id, layer_idx=layer_idx
-                ).get("ffn_out")
+                ffn_out = self.cache.fetch(branch_id=parent_branch_id, layer_idx=layer_idx).get(
+                    "ffn_out"
+                )
                 if ffn_out is None:
                     return False
                 if tuple(ffn_out.shape[:2]) != tuple(tokens.shape):
@@ -569,9 +566,7 @@ class ManualFoldedForward(nn.Module):
             # (the failure already warned once); never retry — capture is
             # expensive and its failure mode is not transient.
             return None
-        if runner is not None and tuple(tokens.shape) != tuple(
-            runner.tokens_static.shape
-        ):
+        if runner is not None and tuple(tokens.shape) != tuple(runner.tokens_static.shape):
             if not self._graph_shape_warned:
                 self._graph_shape_warned = True
                 warnings.warn(
@@ -589,9 +584,7 @@ class ManualFoldedForward(nn.Module):
             self._warn_graph_degraded_once("a folding scheduler is attached")
             return None
         if type(self.gate) is not SimilarityGate or self.gate.metric != "cosine":
-            self._warn_graph_degraded_once(
-                "the gate is not an exact-type cosine SimilarityGate"
-            )
+            self._warn_graph_degraded_once("the gate is not an exact-type cosine SimilarityGate")
             return None
         if not tokens.is_cuda:
             self._warn_graph_degraded_once("CUDA is unavailable")
@@ -670,9 +663,7 @@ class ManualFoldedForward(nn.Module):
         embedding = self.profile.embed_module(tokens)
         num_layers = len(self._wrapped_layers)
         for layer_idx in range(num_layers):
-            activations: dict[str, Any] = {
-                "ffn_out": runner.child_buf[layer_idx].clone()
-            }
+            activations: dict[str, Any] = {"ffn_out": runner.child_buf[layer_idx].clone()}
             if layer_idx == 0:
                 activations["embedding"] = embedding
             self.cache.put(

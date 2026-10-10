@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-
 import math
 import warnings
 from dataclasses import dataclass
@@ -17,8 +16,8 @@ from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.vectorized_cache import VectorizedActivationCache
 from actfold.eval.base_adapter import BaseEvalAdapter
-from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.eval.generation_utils import greedy_generate
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from actfold.speculative.acceptance_policy import AcceptancePolicy
 from actfold.speculative.branch_tree import BranchNode
@@ -446,9 +445,9 @@ class CausalCumsumLayer(nn.Module):
         attention_mask: torch.Tensor | None = None,
     ) -> torch.Tensor:
         cum = torch.cumsum(hidden_states, dim=1)
-        denom = torch.arange(
-            1, hidden_states.shape[1] + 1, device=hidden_states.device
-        ).view(1, -1, 1)
+        denom = torch.arange(1, hidden_states.shape[1] + 1, device=hidden_states.device).view(
+            1, -1, 1
+        )
         return hidden_states + 0.1 * cum / denom
 
 
@@ -522,16 +521,12 @@ def test_folded_generate_causal_model_folds_and_matches_eager() -> None:
     parent branch.
     """
     raw, adapter, folded, cache = _make_causal_setup("cpu")
-    eager_adapter = FastDLLMAdapter(
-        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
-    )
+    eager_adapter = FastDLLMAdapter(raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN)
     prompt = torch.tensor(_CAUSAL_PROMPT)
     max_new_tokens = 4
 
     expected = greedy_generate(eager_adapter, prompt, max_new_tokens=max_new_tokens)
-    result = folded_generate(
-        adapter, prompt, max_new_tokens=max_new_tokens, folded_model=folded
-    )
+    result = folded_generate(adapter, prompt, max_new_tokens=max_new_tokens, folded_model=folded)
 
     assert result.tokens.shape == (1, prompt.shape[1] + max_new_tokens)
     assert result.num_folded_steps == max_new_tokens
@@ -560,9 +555,7 @@ def test_folded_generate_graph_zero_interference() -> None:
     raw, adapter, folded, _cache = _make_causal_setup(
         device, use_cuda_graph=True, graph_capacity_ratio=0.5
     )
-    eager_adapter = FastDLLMAdapter(
-        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
-    )
+    eager_adapter = FastDLLMAdapter(raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN)
     prompt = torch.tensor(_CAUSAL_PROMPT, device=device)
     max_new_tokens = 4
 
@@ -816,9 +809,7 @@ def test_folded_generate_default_policy_zero_regression_reports_rate() -> None:
     folded model, no draft generator) the token output matches the eager
     greedy baseline bit-for-bit and ``acceptance_rate`` is still reported."""
     raw, _adapter, _folded, _cache = _make_causal_setup("cpu")
-    plain_adapter = FastDLLMAdapter(
-        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
-    )
+    plain_adapter = FastDLLMAdapter(raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN)
     prompt = torch.tensor(_CAUSAL_PROMPT)
 
     expected = greedy_generate(plain_adapter, prompt, max_new_tokens=4)

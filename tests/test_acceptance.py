@@ -15,9 +15,7 @@ from actfold.speculative.acceptance import (
 )
 
 
-def _make_logits(
-    argmax_tokens: torch.Tensor, vocab_size: int, high: float = 10.0
-) -> torch.Tensor:
+def _make_logits(argmax_tokens: torch.Tensor, vocab_size: int, high: float = 10.0) -> torch.Tensor:
     """Build logits whose per-position argmax is exactly ``argmax_tokens``.
 
     Args:

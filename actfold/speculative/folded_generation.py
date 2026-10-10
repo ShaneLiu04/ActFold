@@ -130,9 +130,7 @@ def folded_generate(
 
             if not candidates:
                 # No candidates produced; fall back to appending an EOS-like token.
-                logger.warning(
-                    "No candidates produced at step %d; stopping generation.", token_idx
-                )
+                logger.warning("No candidates produced at step %d; stopping generation.", token_idx)
                 break
 
             # Register candidates in the tree and run the folded forward pass.
@@ -180,12 +178,8 @@ def folded_generate(
     # stable ratio is the mean over every folded step, not the last step's
     # value (each step overwrites node metadata, so the last-step read was a
     # silent bug that skewed downstream TFLOPs estimates).
-    stable_ratio = (
-        sum(step_ratios) / len(step_ratios) if step_ratios else 0.0
-    )
-    mean_acceptance = (
-        sum(step_acceptances) / len(step_acceptances) if step_acceptances else 0.0
-    )
+    stable_ratio = sum(step_ratios) / len(step_ratios) if step_ratios else 0.0
+    mean_acceptance = sum(step_acceptances) / len(step_acceptances) if step_acceptances else 0.0
     return FoldedGenerationResult(
         tokens=active.tokens,
         stable_ratio=float(stable_ratio),

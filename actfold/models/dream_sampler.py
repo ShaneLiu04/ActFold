@@ -176,9 +176,7 @@ class DreamSampler(DiffusionSampler):
                 if k_max > 0:
                     k_j = num_transfer_tokens_list[:, step]
                     _, top_idx = torch.topk(full_confidence, k=k_max, dim=-1)
-                    valid = (
-                        torch.arange(k_max, device=x.device).unsqueeze(0) < k_j.unsqueeze(1)
-                    )
+                    valid = torch.arange(k_max, device=x.device).unsqueeze(0) < k_j.unsqueeze(1)
                     transfer_index = torch.zeros_like(x, dtype=torch.bool)
                     transfer_index.scatter_(1, top_idx, valid)
                     x = torch.where(transfer_index, candidate, x)

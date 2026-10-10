@@ -198,9 +198,7 @@ class StabilityProfiler:
             return (sums / counts).tolist()
         except RuntimeError:
             # Mixed devices/dtypes: fall back to per-entry readback.
-            return [
-                float(e.stable_sum.float().item()) / max(e.num_tokens, 1) for e in entries
-            ]
+            return [float(e.stable_sum.float().item()) / max(e.num_tokens, 1) for e in entries]
 
     def get_profile(self, branch_id: Any) -> Optional[StabilityProfile]:
         """Return the stability profile for ``branch_id`` if one exists.

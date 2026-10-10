@@ -31,10 +31,7 @@ import torch.nn as nn
 
 from actfold.core.fused_ops import fused_gate_mask_count, merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
-from actfold.core.split_layer import (
-    SplitFoldedTransformerLayer,
-    _padded_divergent_index,
-)
+from actfold.core.split_layer import SplitFoldedTransformerLayer, _padded_divergent_index
 
 __all__ = ["FoldedGraphRunner"]
 
@@ -80,9 +77,7 @@ class FoldedGraphRunner:
         attention_mask_static: torch.Tensor | None,
     ) -> None:
         if not 0.0 < capacity_ratio <= 1.0:
-            raise ValueError(
-                f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}"
-            )
+            raise ValueError(f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}")
         if len(wrapped_layers) == 0:
             raise ValueError("wrapped_layers must contain at least one layer")
         self._layers = wrapped_layers
@@ -186,8 +181,7 @@ class FoldedGraphRunner:
         del branch_id
         if not tokens.is_cuda:
             raise RuntimeError(
-                "FoldedGraphRunner requires CUDA tensors; got "
-                f"tokens on {tokens.device}"
+                "FoldedGraphRunner requires CUDA tensors; got " f"tokens on {tokens.device}"
             )
         for layer in self._layers:
             if getattr(layer, "scheduler", None) is not None:
@@ -317,9 +311,7 @@ class FoldedGraphRunner:
     # ------------------------------------------------------------------
     def _require_captured(self) -> None:
         if self._graph is None:
-            raise RuntimeError(
-                "FoldedGraphRunner.capture() must succeed before this operation."
-            )
+            raise RuntimeError("FoldedGraphRunner.capture() must succeed before this operation.")
 
     def _prefill_parent(self, parent_branch_id: str) -> bool:
         """Copy the parent branch activations into the static buffers.
@@ -330,16 +322,14 @@ class FoldedGraphRunner:
         parent_static = self._parent_static
         assert parent_static is not None, "static buffers allocated in capture()"
         try:
-            embedding = self._cache.fetch(
-                branch_id=parent_branch_id, layer_idx=0
-            ).get("embedding")
+            embedding = self._cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
             if embedding is None:
                 return False
             parent_static[0].copy_(embedding)
             for layer_idx in range(self._num_layers):
-                ffn_out = self._cache.fetch(
-                    branch_id=parent_branch_id, layer_idx=layer_idx
-                ).get("ffn_out")
+                ffn_out = self._cache.fetch(branch_id=parent_branch_id, layer_idx=layer_idx).get(
+                    "ffn_out"
+                )
                 if ffn_out is None:
                     return False
                 parent_static[layer_idx + 1].copy_(ffn_out)

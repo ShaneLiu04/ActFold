@@ -72,9 +72,7 @@ class VectorizedActivationCache:
             oldest_key = next(iter(self._buffers))
             del self._buffers[oldest_key]
             branch_id, step_idx = oldest_key
-            for count_key in [
-                k for k in self._counts if k[0] == branch_id and k[1] == step_idx
-            ]:
+            for count_key in [k for k in self._counts if k[0] == branch_id and k[1] == step_idx]:
                 del self._counts[count_key]
 
     # ------------------------------------------------------------------
@@ -281,9 +279,7 @@ class VectorizedActivationCache:
         start = max(0, total - capacity)
 
         if start == 0:
-            return {
-                name: buffer[:total].transpose(0, 1) for name, buffer in layer_store.items()
-            }
+            return {name: buffer[:total].transpose(0, 1) for name, buffer in layer_store.items()}
         # Ring layout: gather the surviving rows (still no host sync).
         rows = torch.arange(start, total, device=sample.device) % capacity
         return {

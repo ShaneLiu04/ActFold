@@ -126,9 +126,7 @@ class LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": vocab_size})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(hidden_dim) for _ in range(num_layers)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(hidden_dim) for _ in range(num_layers)])
         self.model.norm = nn.LayerNorm(hidden_dim)
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
@@ -201,9 +199,7 @@ def _profiled_cuda_launch_count(step_fn: Any) -> int:
     launch count is the sum of event counts with CUDA device type.
     """
     torch.cuda.synchronize()
-    with torch.profiler.profile(
-        activities=[torch.profiler.ProfilerActivity.CUDA]
-    ) as prof:
+    with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
         step_fn()
         torch.cuda.synchronize()
     return sum(
@@ -226,15 +222,10 @@ def _cuda_profiler_supported() -> bool:
     try:
         x = torch.ones(4, device="cuda")
         torch.cuda.synchronize()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA]
-        ) as prof:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
             x = x + 1
             torch.cuda.synchronize()
-        return any(
-            evt.device_type == torch.profiler.DeviceType.CUDA
-            for evt in prof.key_averages()
-        )
+        return any(evt.device_type == torch.profiler.DeviceType.CUDA for evt in prof.key_averages())
     except Exception:  # noqa: BLE001 - probe must never raise
         return False
 
@@ -454,16 +445,15 @@ def test_bs005_demo_baseline_regression() -> None:
         timeout=300,
     )
     assert proc.returncode == 0, (
-        f"demo.py exited with {proc.returncode}\nstdout:\n{proc.stdout}\n"
-        f"stderr:\n{proc.stderr}"
+        f"demo.py exited with {proc.returncode}\nstdout:\n{proc.stdout}\n" f"stderr:\n{proc.stderr}"
     )
     stdout = proc.stdout
 
     reduction = re.search(r"Total FLOPs reduction: (\d+(?:\.\d+)?)%", stdout)
     assert reduction is not None, f"no FLOPs-reduction line in demo output:\n{stdout}"
-    assert 85.4 <= float(reduction.group(1)) <= 85.6, (
-        f"FLOPs reduction {reduction.group(1)}% outside the pinned [85.4, 85.6] band"
-    )
+    assert (
+        85.4 <= float(reduction.group(1)) <= 85.6
+    ), f"FLOPs reduction {reduction.group(1)}% outside the pinned [85.4, 85.6] band"
 
     mse = re.search(r"Output equivalence \(MSE\): (\d+\.\d+e-\d+)", stdout)
     assert mse is not None, f"no MSE line in demo output:\n{stdout}"
@@ -471,6 +461,6 @@ def test_bs005_demo_baseline_regression() -> None:
 
     ratio = re.search(r"Estimated stable token ratio: (\d+(?:\.\d+)?)%", stdout)
     assert ratio is not None, f"no stable-token-ratio line in demo output:\n{stdout}"
-    assert 93.5 <= float(ratio.group(1)) <= 94.0, (
-        f"stable token ratio {ratio.group(1)}% outside the pinned [93.5, 94.0] band"
-    )
+    assert (
+        93.5 <= float(ratio.group(1)) <= 94.0
+    ), f"stable token ratio {ratio.group(1)}% outside the pinned [93.5, 94.0] band"

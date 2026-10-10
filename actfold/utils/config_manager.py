@@ -104,9 +104,7 @@ class ActFoldConfig:
                 f"max_entries_per_layer must be positive, got {self.max_entries_per_layer}"
             )
         if self.max_branch_steps <= 0:
-            raise ValueError(
-                f"max_branch_steps must be positive, got {self.max_branch_steps}"
-            )
+            raise ValueError(f"max_branch_steps must be positive, got {self.max_branch_steps}")
         draft_modes = {"suffix_append", "logits_draft", "random", "perturb", "copy_flip"}
         if self.draft_mode not in draft_modes:
             raise ValueError(

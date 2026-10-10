@@ -160,8 +160,7 @@ class ActFoldVerificationEngine:
             self._ema_initialized = True
         else:
             self.ema_acceptance_rate = (
-                self.ema_alpha * rate
-                + (1.0 - self.ema_alpha) * self.ema_acceptance_rate
+                self.ema_alpha * rate + (1.0 - self.ema_alpha) * self.ema_acceptance_rate
             )
 
         child_branch.metadata["actfold_score"] = score

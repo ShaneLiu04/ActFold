@@ -138,7 +138,7 @@ class LLaDASampler(DiffusionSampler):
         prompt_lens_t = torch.where(any_mask, first_mask, torch.where(any_non_eos, full_len, zero))
         prompt_lens = prompt_lens_t.tolist()
         valid_end = (prompt_lens_t + max_new_tokens).clamp(max=T)
-        attention_mask = (torch.arange(T, device=x.device).unsqueeze(0) < valid_end.unsqueeze(1))
+        attention_mask = torch.arange(T, device=x.device).unsqueeze(0) < valid_end.unsqueeze(1)
         attention_mask = attention_mask.to(dtype=torch.long)
 
         # Tokens that are given at the start (non-mask, non-EOS, valid).
@@ -241,9 +241,7 @@ class LLaDASampler(DiffusionSampler):
                 if k_max > 0:
                     k_j = num_transfer_tokens[:, step]
                     _, top_idx = torch.topk(confidence, k=k_max, dim=-1)
-                    valid = (
-                        torch.arange(k_max, device=x.device).unsqueeze(0) < k_j.unsqueeze(1)
-                    )
+                    valid = torch.arange(k_max, device=x.device).unsqueeze(0) < k_j.unsqueeze(1)
                     transfer_index = torch.zeros_like(x, dtype=torch.bool)
                     transfer_index.scatter_(1, top_idx, valid)
                     x = torch.where(transfer_index, x0, x)

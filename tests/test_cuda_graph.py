@@ -115,9 +115,7 @@ class LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": vocab_size})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(hidden_dim) for _ in range(num_layers)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(hidden_dim) for _ in range(num_layers)])
         self.model.norm = nn.LayerNorm(hidden_dim)
         self.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
 
@@ -365,14 +363,10 @@ def test_replay_bit_exact_vs_eager() -> None:
     mff_eager = _make_mff(model, device)
     with torch.no_grad():
         mff_eager(parent_tokens, branch_id="parent")
-        logits_eager = mff_eager(
-            child_tokens, branch_id="child", parent_branch_id="parent"
-        ).clone()
+        logits_eager = mff_eager(child_tokens, branch_id="child", parent_branch_id="parent").clone()
 
     # Graph runner over a fresh cache/gate with the same weights.
-    runner, _ = _captured_runner(
-        model, profile, parent_tokens, child_tokens, capacity_ratio=0.5
-    )
+    runner, _ = _captured_runner(model, profile, parent_tokens, child_tokens, capacity_ratio=0.5)
 
     # White-box static-buffer contract (design §4.3.4 additional facts).
     assert tuple(runner.tokens_static.shape) == (batch, seq)
@@ -421,9 +415,7 @@ def test_replay_mask_none_and_static_forms() -> None:
         model, profile, parent_tokens, child_tokens, attention_mask=None
     )
     with torch.no_grad():
-        out_none = runner_none.replay(
-            child_tokens, parent_branch_id="parent", branch_id="child"
-        )
+        out_none = runner_none.replay(child_tokens, parent_branch_id="parent", branch_id="child")
     assert isinstance(out_none, torch.Tensor)
     assert torch.allclose(out_none, logits_eager_none, atol=1e-4, rtol=1e-4)
 
@@ -440,9 +432,7 @@ def test_replay_mask_none_and_static_forms() -> None:
         model, profile, parent_tokens, child_tokens, attention_mask=mask
     )
     with torch.no_grad():
-        out_mask = runner_mask.replay(
-            child_tokens, parent_branch_id="parent", branch_id="child"
-        )
+        out_mask = runner_mask.replay(child_tokens, parent_branch_id="parent", branch_id="child")
     assert isinstance(out_mask, torch.Tensor)
     assert torch.allclose(out_mask, logits_eager_mask, atol=1e-4, rtol=1e-4)
 
@@ -466,9 +456,7 @@ def test_validate_budgets_boundary() -> None:
     parent_tokens = torch.randint(0, _VOCAB, (batch, seq), device=device)
     child_tokens = parent_tokens.clone()  # all-stable child -> D = 0
 
-    runner, _ = _captured_runner(
-        model, profile, parent_tokens, child_tokens, capacity_ratio=0.5
-    )
+    runner, _ = _captured_runner(model, profile, parent_tokens, child_tokens, capacity_ratio=0.5)
     capacity = runner.capacity
     assert capacity == math.ceil(0.5 * num_tokens) == 4
 
@@ -495,9 +483,7 @@ def test_fully_divergent_child_exceeds_budget() -> None:
     parent_tokens = torch.randint(0, _VOCAB, (1, 8), device=device)
     child_tokens = (parent_tokens + 37) % _VOCAB  # every token id differs
 
-    runner, _ = _captured_runner(
-        model, profile, parent_tokens, child_tokens, capacity_ratio=0.5
-    )
+    runner, _ = _captured_runner(model, profile, parent_tokens, child_tokens, capacity_ratio=0.5)
     with torch.no_grad():
         out = runner.replay(child_tokens, parent_branch_id="parent", branch_id="child")
     assert isinstance(out, torch.Tensor)
@@ -526,9 +512,7 @@ def test_two_step_verification_loop() -> None:
     with torch.no_grad():
         mff_eager(parent_tokens, branch_id="parent")
         mff_eager(child1_tokens, branch_id="child1", parent_branch_id="parent")
-        logits_ref = mff_eager(
-            child2_tokens, branch_id="child2", parent_branch_id="child1"
-        ).clone()
+        logits_ref = mff_eager(child2_tokens, branch_id="child2", parent_branch_id="child1").clone()
 
     # Graph loop: parent pass eagerly, child1 via capture + replay.
     mff_graph = _make_mff(model, device)
@@ -547,14 +531,10 @@ def test_two_step_verification_loop() -> None:
     with torch.no_grad():
         child1_embedding = profile.embed_module(child1_tokens)
     for layer_idx in range(num_layers):
-        activations: dict[str, torch.Tensor] = {
-            "ffn_out": runner.child_buf[layer_idx].clone()
-        }
+        activations: dict[str, torch.Tensor] = {"ffn_out": runner.child_buf[layer_idx].clone()}
         if layer_idx == 0:
             activations["embedding"] = child1_embedding
-        mff_graph.cache.put(
-            branch_id="child1", layer_idx=layer_idx, activations=activations
-        )
+        mff_graph.cache.put(branch_id="child1", layer_idx=layer_idx, activations=activations)
 
     # Step 2: child2 with parent_branch_id="child1".
     with torch.no_grad():
@@ -580,9 +560,7 @@ def test_triton_path_in_graph() -> None:
     mff_eager = _make_mff(model, device, cache_budget=4096)
     with torch.no_grad():
         mff_eager(parent_tokens, branch_id="parent")
-        logits_eager = mff_eager(
-            child_tokens, branch_id="child", parent_branch_id="parent"
-        ).clone()
+        logits_eager = mff_eager(child_tokens, branch_id="child", parent_branch_id="parent").clone()
 
     runner, _ = _captured_runner(
         model, profile, parent_tokens, child_tokens, capacity_ratio=0.25, cache_budget=4096
@@ -703,9 +681,7 @@ def test_t008_graph_child_pass_end_to_end() -> None:
     with torch.no_grad():
         mff_eager(parent_tokens, branch_id="parent")
         ref1 = mff_eager(child_tokens, branch_id="child", parent_branch_id="parent").clone()
-        ref2 = mff_eager(
-            child2_tokens, branch_id="child2", parent_branch_id="parent"
-        ).clone()
+        ref2 = mff_eager(child2_tokens, branch_id="child2", parent_branch_id="parent").clone()
         child_embedding = profile.embed_module(child_tokens)
 
     mff = _make_mff(model, device, use_cuda_graph=True, graph_capacity_ratio=0.5)
@@ -836,15 +812,11 @@ def test_t008_scheduler_and_cpu_degrade_with_warning() -> None:
     eager_scheduler = FoldingScheduler(base_tau=_TAU, num_layers=_LAYERS, num_steps=2)
     graph_scheduler = FoldingScheduler(base_tau=_TAU, num_layers=_LAYERS, num_steps=2)
     mff_eager = _make_mff(model, device, scheduler=eager_scheduler)
-    mff_sched = _make_mff(
-        model, device, scheduler=graph_scheduler, use_cuda_graph=True
-    )
+    mff_sched = _make_mff(model, device, scheduler=graph_scheduler, use_cuda_graph=True)
     with torch.no_grad():
         mff_eager(parent_tokens, branch_id="parent")
         ref1 = mff_eager(child_tokens, branch_id="child", parent_branch_id="parent").clone()
-        ref2 = mff_eager(
-            child2_tokens, branch_id="child2", parent_branch_id="parent"
-        ).clone()
+        ref2 = mff_eager(child2_tokens, branch_id="child2", parent_branch_id="parent").clone()
 
         mff_sched(parent_tokens, branch_id="parent")
     with pytest.warns(UserWarning):
@@ -871,9 +843,7 @@ def test_t008_scheduler_and_cpu_degrade_with_warning() -> None:
     with torch.no_grad():
         cpu_eager(cpu_parent, branch_id="parent")
         cpu_ref1 = cpu_eager(cpu_child, branch_id="child", parent_branch_id="parent").clone()
-        cpu_ref2 = cpu_eager(
-            cpu_child2, branch_id="child2", parent_branch_id="parent"
-        ).clone()
+        cpu_ref2 = cpu_eager(cpu_child2, branch_id="child2", parent_branch_id="parent").clone()
 
         cpu_graph(cpu_parent, branch_id="parent")
     with pytest.warns(UserWarning):
@@ -885,9 +855,7 @@ def test_t008_scheduler_and_cpu_degrade_with_warning() -> None:
     with warnings.catch_warnings(record=True) as record:
         warnings.simplefilter("always")
         with torch.no_grad():
-            cpu_out2 = cpu_graph(
-                cpu_child2, branch_id="child2", parent_branch_id="parent"
-            )
+            cpu_out2 = cpu_graph(cpu_child2, branch_id="child2", parent_branch_id="parent")
     assert _count_user_warnings(record) == 0
     assert torch.allclose(cpu_out2, cpu_ref2, atol=1e-4, rtol=1e-4)
 
@@ -1034,9 +1002,7 @@ def test_bs001_folded_generate_graph_end_to_end() -> None:
         model, folded_model=mff_eager, num_layers=_LAYERS, hidden_dim=_HIDDEN
     )
     adapter_eager.underlying_model.eval()
-    result_eager = folded_generate(
-        adapter_eager, prompt, max_new_tokens=4, folded_model=mff_eager
-    )
+    result_eager = folded_generate(adapter_eager, prompt, max_new_tokens=4, folded_model=mff_eager)
 
     mff_graph = _make_mff(model, device, use_cuda_graph=True)
     adapter_graph = FastDLLMAdapter(
