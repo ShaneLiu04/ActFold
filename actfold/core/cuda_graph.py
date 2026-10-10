@@ -372,17 +372,18 @@ class FoldedGraphRunner:
                 count,
             )
             use_split = isinstance(layer, SplitFoldedTransformerLayer) and layer.split_enabled
+            layer_impl: Any = layer
             if use_split:
-                layer._split_state = {  # type: ignore[union-attr]
+                layer_impl._split_state = {
                     "flat_index": _padded_divergent_index(mask, self._capacity),
                     "input_shape": None,
                     "num_divergent": 0,
                 }
             try:
-                child_out = layer._recompute_all(x, self._attention_mask_static)
+                child_out = layer_impl._recompute_all(x, self._attention_mask_static)
             finally:
                 if use_split:
-                    layer._split_state = None  # type: ignore[union-attr]
+                    layer_impl._split_state = None
             merged = merge_stable_divergent(
                 parent_static[layer_idx + 1],
                 child_out,
