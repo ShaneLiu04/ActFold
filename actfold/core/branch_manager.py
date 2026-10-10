@@ -132,25 +132,44 @@ class BranchManager:
         parent: Branch,
         child: Branch,
     ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Return token-aligned parent and child hidden states.
+        """Return prefix-aligned parent and child hidden states.
 
-        For the first implementation, both branches are assumed to share the
-        same sequence length. Future versions may implement prefix matching for
-        variable-length branches.
+        append-only prefix semantics (AR003): when ``T_c >= T_p`` and the
+        batch matches, the pair is aligned on the parent's prefix —
+        ``(parent.hidden_states[0], child.hidden_states[0][:, :T_p])``,
+        both ``[batch, T_p, hidden_dim]``.  The caller derives the
+        unaligned suffix length ``T_c - T_p`` from the token shapes.
+        When ``T_p == T_c`` the return is bit-identical to the legacy
+        same-length behavior.
 
         Args:
             parent: Parent branch.
             child: Child branch.
 
         Returns:
-            Tuple ``(h_parent, h_child)`` both of shape
-            ``[batch, seq_len, hidden_dim]`` for a single layer (typically layer 0
-            input hidden states, or the caller slices the desired layer).
+            Tuple ``(h_parent, h_child)`` of layer-0 input hidden states,
+            both of shape ``[batch, T_p, hidden_dim]``.
+
+        Raises:
+            ValueError: If the child is shorter than the parent (not a
+                prefix extension — truncation is unsupported) or the batch
+                dimensions differ.
         """
-        if parent.tokens.shape[1] != child.tokens.shape[1]:
-            raise NotImplementedError("Variable sequence length alignment is not yet implemented.")
-        # Return the input hidden states at layer 0.
-        return parent.hidden_states[0], child.hidden_states[0]
+        if child.tokens.shape[0] != parent.tokens.shape[0]:
+            raise ValueError(
+                f"Batch mismatch: parent has batch {parent.tokens.shape[0]}, "
+                f"child has batch {child.tokens.shape[0]}; prefix alignment "
+                "requires identical batch sizes."
+            )
+        prefix_len = parent.tokens.shape[1]
+        if child.tokens.shape[1] < prefix_len:
+            raise ValueError(
+                f"Child sequence length {child.tokens.shape[1]} is shorter than "
+                f"parent length {prefix_len}; the child is not a prefix "
+                "extension (truncation reuse is unsupported)."
+            )
+        # Return the input hidden states at layer 0, aligned on the prefix.
+        return parent.hidden_states[0], child.hidden_states[0][:, :prefix_len, :]
 
     def prune_rejected(self, branch_id: str, include_subtree: bool = True) -> list[str]:
         """Remove a rejected branch and optionally its subtree.

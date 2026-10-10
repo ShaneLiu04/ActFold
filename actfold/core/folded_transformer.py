@@ -167,13 +167,18 @@ class FoldedTransformerLayer(nn.Module):
         except (KeyError, RuntimeError):
             h_parent = None
 
-        if h_parent is not None and h_parent.shape != hidden_states.shape:
-            # Variable-length folding is unsupported (README limitation #7):
-            # a parent whose sequence length differs from the child's cannot
-            # donate activations (e.g. ``folded_generate`` appends one token
-            # per step, so every child is one token longer than its parent).
-            # Treat the parent as absent and recompute everything — identical
-            # semantics to a cache miss, never a hard error.
+        if h_parent is not None and (
+            h_parent.dim() != 3
+            or h_parent.shape[0] != hidden_states.shape[0]
+            or h_parent.shape[2] != hidden_states.shape[2]
+            or h_parent.shape[1] == 0
+            or h_parent.shape[1] > hidden_states.shape[1]
+        ):
+            # The parent cannot donate a prefix-aligned activation: a batch
+            # or hidden-dim mismatch, a zero-length entry, or a parent
+            # LONGER than the child (append-only folding; truncation reuse
+            # is unsupported).  Treat the parent as absent and recompute —
+            # identical semantics to a cache miss, never a hard error.
             h_parent = None
 
         if h_parent is None:
@@ -185,30 +190,58 @@ class FoldedTransformerLayer(nn.Module):
         # the similarity comparison.
         h_parent = h_parent.to(dtype=hidden_states.dtype, device=hidden_states.device)
 
+        batch, seq_len, _ = hidden_states.shape
+        prefix_len = h_parent.shape[1]
+
         # Compute stability mask entirely on GPU.  When the layer runs the
         # standard cosine gate, the mask and the stable count come out of the
         # single fused kernel (AR002/T006): the count buffer replaces the
         # separate ``mask.sum()`` reduction readback below.
         stable_count_buf: torch.Tensor | None = None
-        if type(self.gate) is SimilarityGate and self.gate.metric == "cosine":
-            stable_mask = torch.empty(
-                hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
-            )
-            stable_count_buf = torch.empty((), dtype=torch.int64, device=hidden_states.device)
-            # ``fill_(0)`` instead of ``torch.zeros``: the split-merge path
-            # forbids fresh zero-fill allocations (T017) and the launch cost
-            # is identical (zeros is empty + fill internally).
-            stable_count_buf.fill_(0)
-            fused_gate_mask_count(
-                hidden_states,
-                h_parent,
-                self.gate.tau,
-                self.gate.eps,
-                stable_mask,
-                stable_count_buf,
-            )
+        if prefix_len == seq_len:
+            # Equal-length folding: the existing semantics, bit for bit.
+            if type(self.gate) is SimilarityGate and self.gate.metric == "cosine":
+                stable_mask = torch.empty(
+                    hidden_states.shape[:2], dtype=torch.bool, device=hidden_states.device
+                )
+                stable_count_buf = torch.empty((), dtype=torch.int64, device=hidden_states.device)
+                # ``fill_(0)`` instead of ``torch.zeros``: the split-merge path
+                # forbids fresh zero-fill allocations (T017) and the launch cost
+                # is identical (zeros is empty + fill internally).
+                stable_count_buf.fill_(0)
+                fused_gate_mask_count(
+                    hidden_states,
+                    h_parent,
+                    self.gate.tau,
+                    self.gate.eps,
+                    stable_mask,
+                    stable_count_buf,
+                )
+            else:
+                stable_mask = self.gate(hidden_states, h_parent)  # [batch, seq_len]
         else:
-            stable_mask = self.gate(hidden_states, h_parent)  # [batch, seq_len]
+            # Variable-length prefix folding (AR003): compare only the child's
+            # prefix against the parent and append an all-False suffix — the
+            # suffix has no parent activation to reuse, so it is divergent for
+            # every tau (an explicit False tail stays robust even for
+            # negative thresholds, unlike a zero-padded parent).  The plain
+            # gate is stride-aware and handles the non-contiguous prefix
+            # slice; the fused kernel's same-shape contiguous contract and
+            # the ``B*T >= 1024`` dispatch threshold are both inapplicable on
+            # variable-length steps (design decision D2).
+            prefix_mask = self.gate(hidden_states[:, :prefix_len], h_parent)
+            stable_mask = torch.cat(
+                [
+                    prefix_mask,
+                    torch.zeros(
+                        batch,
+                        seq_len - prefix_len,
+                        dtype=torch.bool,
+                        device=hidden_states.device,
+                    ),
+                ],
+                dim=1,
+            )
 
         # Record real layer-wise stability statistics for downstream consumers.
         GLOBAL_STABILITY_PROFILER.record(
@@ -276,7 +309,16 @@ class FoldedTransformerLayer(nn.Module):
             stable_mask,
             **merged_kwargs,
         )
-        h_out = self._merge_parent_child(parent_branch_id, stable_mask, child_out)
+        # ``prefix_len`` is None on the equal-length path (unchanged merge
+        # semantics); on variable-length steps it routes the parent FFN
+        # through prefix alignment before the merge (AR003).
+        merge_prefix_len = None if prefix_len == seq_len else prefix_len
+        h_out = self._merge_parent_child(
+            parent_branch_id,
+            stable_mask,
+            child_out,
+            prefix_len=merge_prefix_len,
+        )
 
         # Store child activations for future reuse.
         self._store_activations(branch_id, h_out, hidden_states)
@@ -302,6 +344,7 @@ class FoldedTransformerLayer(nn.Module):
         parent_branch_id: str,
         stable_mask: torch.Tensor,
         child_out: torch.Tensor,
+        prefix_len: int | None = None,
     ) -> torch.Tensor:
         """Merge the cached parent FFN output with the recomputed child output.
 
@@ -310,10 +353,22 @@ class FoldedTransformerLayer(nn.Module):
         met; otherwise falls back to ``fetch`` +
         ``merge_stable_divergent``.  Both paths produce bit-identical
         results.
+
+        Args:
+            parent_branch_id: Identifier of the parent branch.
+            stable_mask: Boolean stability mask ``[batch, seq_len]``.
+            child_out: Recomputed child layer output ``[batch, seq_len, hidden]``.
+            prefix_len: Parent prefix length for variable-length folding
+                (AR003).  ``None`` selects the equal-length path.  When set,
+                the ``gather_select`` fast path is skipped (``fetch_flat``
+                indexes parent rows by the child ``seq_len``, which does not
+                match a shorter parent) and the parent FFN is aligned to the
+                child length with the recomputed suffix before the merge.
         """
         batch, seq_len, hidden_dim = child_out.shape
         if (
-            seq_len >= _GATHER_SELECT_MIN_TOKENS
+            prefix_len is None
+            and seq_len >= _GATHER_SELECT_MIN_TOKENS
             and hidden_dim >= _GATHER_SELECT_MIN_HIDDEN
             and (not _GATHER_SELECT_REQUIRE_CUDA or child_out.is_cuda)
         ):
@@ -330,13 +385,22 @@ class FoldedTransformerLayer(nn.Module):
                             child_out,
                             stable_mask,
                         )
-        parent_ffn = self._get_parent_ffn_output(parent_branch_id, stable_mask)
+        parent_ffn = self._get_parent_ffn_output(
+            parent_branch_id, stable_mask, prefix_len=prefix_len
+        )
+        if prefix_len is not None:
+            # Variable-length prefix alignment: the suffix positions are
+            # divergent by construction, so the merge always takes the child
+            # value there — the suffix fill below only satisfies the
+            # same-shape contract of ``merge_stable_divergent``.
+            parent_ffn = torch.cat([parent_ffn, child_out[:, prefix_len:]], dim=1)
         return merge_stable_divergent(parent_ffn, child_out, stable_mask)
 
     def _get_parent_ffn_output(
         self,
         parent_branch_id: str,
         stable_mask: torch.Tensor,
+        prefix_len: int | None = None,
     ) -> torch.Tensor:
         """Retrieve the raw parent FFN output (no mask, no zero-fill).
 
@@ -344,6 +408,14 @@ class FoldedTransformerLayer(nn.Module):
         zero-filling them in the cache fetch would be a wasted allocation
         (F7).  The returned tensor may be a read-only view over the cache
         buffer.
+
+        Args:
+            parent_branch_id: Identifier of the parent branch.
+            stable_mask: Boolean stability mask ``[batch, seq_len]``.
+            prefix_len: Parent prefix length for variable-length folding
+                (AR003).  ``None`` selects the equal-length contract (the
+                FFN shape must match the mask shape); when set, the FFN
+                shape must match ``[batch, prefix_len]`` instead.
         """
         ffn_out = self.cache.fetch(
             branch_id=parent_branch_id,
@@ -354,10 +426,15 @@ class FoldedTransformerLayer(nn.Module):
                 f"Parent FFN output missing for branch={parent_branch_id}, "
                 f"layer={self.layer_idx}"
             )
-        if ffn_out.shape[:2] != stable_mask.shape:
+        expected_shape: torch.Size = (
+            torch.Size([stable_mask.shape[0], prefix_len])
+            if prefix_len is not None
+            else stable_mask.shape
+        )
+        if ffn_out.shape[:2] != expected_shape:
             raise RuntimeError(
                 f"Parent FFN output shape {tuple(ffn_out.shape[:2])} does not match "
-                f"the child mask shape {tuple(stable_mask.shape)} for "
+                f"the expected shape {tuple(expected_shape)} for "
                 f"branch={parent_branch_id}, layer={self.layer_idx}"
             )
         return ffn_out

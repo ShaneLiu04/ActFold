@@ -9,8 +9,10 @@ import pytest
 import torch
 import torch.nn as nn
 
+from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.eval.ablation_study import AblationStudy
 from actfold.eval.benchmark_runner import BenchmarkRunner
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.models.base import DiffusionLLM
 from actfold.speculative import DraftGenerator, FastDLLMAdapter
 from actfold.utils.config_manager import ActFoldConfig
@@ -197,3 +199,122 @@ def test_ablation_study_run_all_saves_results(tmp_path) -> None:
     assert "layerwise_folding" in summary
     assert "cache_size_impact" in summary
     assert any(tmp_path.iterdir())
+
+
+class _ModelBackedDummyDiffusionLLM(_DummyDiffusionLLM):
+    """_DummyDiffusionLLM exposing a detectable raw ``.model`` Transformer stack."""
+
+    def __init__(self, vocab_size: int, hidden_dim: int, num_layers: int) -> None:
+        super().__init__(vocab_size, hidden_dim, num_layers)
+        self.model = MockTransformer(vocab_size, hidden_dim, num_layers)
+
+
+class _BareModelDummyDiffusionLLM(_DummyDiffusionLLM):
+    """_DummyDiffusionLLM whose ``.model`` has no detectable layer stack or embedding."""
+
+    def __init__(self, vocab_size: int, hidden_dim: int, num_layers: int) -> None:
+        super().__init__(vocab_size, hidden_dim, num_layers)
+        self.model = nn.Linear(hidden_dim, hidden_dim)
+
+
+def _make_runner_config(**overrides: Any) -> ActFoldConfig:
+    """Build a CPU BenchmarkRunner config, applying optional keyword overrides."""
+    kwargs: dict[str, Any] = {
+        "model_name_or_path": "dummy/real-model",
+        "num_layers": 2,
+        "hidden_dim": 64,
+        "num_heads": 4,
+        "seq_len": 8,
+        "vocab_size": 100,
+        "device": "cpu",
+        "use_real_eval": True,
+        "eval_backend": "auto",
+    }
+    kwargs.update(overrides)
+    return ActFoldConfig(**kwargs)
+
+
+def test_benchmark_runner_builds_manual_folded_forward() -> None:
+    """IT-303 (srs §3.4 acceptance 1): detectable architecture builds a
+    ``ManualFoldedForward`` whose graph flags are propagated from the config."""
+    config = _make_runner_config(use_cuda_graph=False, graph_capacity_ratio=0.7)
+    stub = _ModelBackedDummyDiffusionLLM(
+        vocab_size=config.vocab_size,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=stub):
+        runner = BenchmarkRunner(config)
+    folded = runner.model.folded_model
+    assert isinstance(folded, ManualFoldedForward)
+    assert folded.use_cuda_graph is False
+    assert folded.graph_capacity_ratio == pytest.approx(0.7)
+
+    graph_config = _make_runner_config(use_cuda_graph=True, graph_capacity_ratio=0.3)
+    graph_stub = _ModelBackedDummyDiffusionLLM(
+        vocab_size=graph_config.vocab_size,
+        hidden_dim=graph_config.hidden_dim,
+        num_layers=graph_config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=graph_stub):
+        graph_runner = BenchmarkRunner(graph_config)
+    graph_folded = graph_runner.model.folded_model
+    assert isinstance(graph_folded, ManualFoldedForward)
+    assert graph_folded.use_cuda_graph is True
+    assert graph_folded.graph_capacity_ratio == pytest.approx(0.3)
+
+
+def test_benchmark_runner_undetectable_architecture_returns_none() -> None:
+    """IT-304 (srs §3.4 acceptance 2): undetectable architecture yields
+    ``folded_model is None`` without raising during runner construction."""
+    config = _make_runner_config()
+    stub = _BareModelDummyDiffusionLLM(
+        vocab_size=config.vocab_size,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=stub):
+        runner = BenchmarkRunner(config)
+    assert runner.model.folded_model is None
+
+
+def test_benchmark_runner_scheduler_strategy() -> None:
+    """IT-305 (D3 graph contract): ``use_cuda_graph=True`` builds no scheduler,
+    ``use_cuda_graph=False`` keeps a ``FoldingScheduler``."""
+    graph_config = _make_runner_config(use_cuda_graph=True)
+    graph_stub = _ModelBackedDummyDiffusionLLM(
+        vocab_size=graph_config.vocab_size,
+        hidden_dim=graph_config.hidden_dim,
+        num_layers=graph_config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=graph_stub):
+        graph_runner = BenchmarkRunner(graph_config)
+    graph_folded = graph_runner.model.folded_model
+    assert graph_folded is not None
+    assert graph_folded.scheduler is None
+
+    eager_config = _make_runner_config(use_cuda_graph=False)
+    eager_stub = _ModelBackedDummyDiffusionLLM(
+        vocab_size=eager_config.vocab_size,
+        hidden_dim=eager_config.hidden_dim,
+        num_layers=eager_config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=eager_stub):
+        eager_runner = BenchmarkRunner(eager_config)
+    eager_folded = eager_runner.model.folded_model
+    assert eager_folded is not None
+    assert isinstance(eager_folded.scheduler, FoldingScheduler)
+
+
+def test_benchmark_runner_raw_model_missing_returns_none() -> None:
+    """IT-306: a diffusion model without a ``.model`` attribute keeps the early
+    exit — ``folded_model is None``."""
+    config = _make_runner_config()
+    dummy_model = _DummyDiffusionLLM(
+        vocab_size=config.vocab_size,
+        hidden_dim=config.hidden_dim,
+        num_layers=config.num_layers,
+    )
+    with patch("actfold.eval.benchmark_runner.load_model", return_value=dummy_model):
+        runner = BenchmarkRunner(config)
+    assert runner.model.folded_model is None

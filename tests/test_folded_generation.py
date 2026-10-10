@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+import warnings
 from dataclasses import dataclass
 from typing import Any, Optional
 
@@ -15,6 +16,7 @@ from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.vectorized_cache import VectorizedActivationCache
 from actfold.eval.base_adapter import BaseEvalAdapter
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.eval.generation_utils import greedy_generate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from actfold.speculative.draft_generator import DraftGenerator
@@ -412,3 +414,169 @@ def test_cache_miss_recomputes_divergent() -> None:
     out = folded(x, branch_id="child", parent_branch_id="never_cached")
 
     assert torch.allclose(out, layer(x))
+
+
+# ---------------------------------------------------------------------------
+# AR003/T004 (IT-301 / IT-302): causal-model end-to-end folding
+# ---------------------------------------------------------------------------
+
+_CAUSAL_VOCAB = 16
+_CAUSAL_HIDDEN = 32
+_CAUSAL_LAYERS = 3
+_CAUSAL_SEED = 2026
+_CAUSAL_PROMPT = [[1, 5, 9, 13]]
+
+
+class CausalCumsumLayer(nn.Module):
+    """Causal synthetic layer whose prefix outputs depend only on prefix inputs.
+
+    ``torch.cumsum`` at position ``t`` accumulates only positions ``<= t``
+    and is bit-exact prefix-stable (the prefix of a longer scan equals the
+    shorter scan), so a child that extends a parent with suffix tokens
+    reproduces the parent's prefix hidden states bit-for-bit.  This is the
+    mathematical basis for prefix folding being fully stable on this model.
+    """
+
+    def forward(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        cum = torch.cumsum(hidden_states, dim=1)
+        denom = torch.arange(
+            1, hidden_states.shape[1] + 1, device=hidden_states.device
+        ).view(1, -1, 1)
+        return hidden_states + 0.1 * cum / denom
+
+
+class CausalCumsumModel(nn.Module):
+    """Causal synthetic decoder with a detectable embedding/layers/head layout.
+
+    The attribute names (``embedding`` / ``layers`` / ``head``) are all in the
+    :func:`detect_architecture` default path tables, so
+    :class:`ManualFoldedForward` auto-discovers the stack without explicit
+    wiring.  Unlike ``TinyTransformer`` above, this model is causal: a
+    non-causal full-attention layer would make the child prefix hidden states
+    differ from the parent's, so folding could never activate.
+    """
+
+    def __init__(self, vocab_size: int, hidden_dim: int, num_layers: int) -> None:
+        super().__init__()
+        self.embedding = nn.Embedding(vocab_size, hidden_dim)
+        self.layers = nn.ModuleList(CausalCumsumLayer() for _ in range(num_layers))
+        self.head = nn.Linear(hidden_dim, vocab_size)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        x = self.embedding(tokens)
+        for layer in self.layers:
+            x = layer(x)
+        return self.head(x)
+
+
+def _make_causal_setup(
+    device: str = "cpu",
+    use_cuda_graph: bool = False,
+    graph_capacity_ratio: float = 0.5,
+) -> tuple[nn.Module, FastDLLMAdapter, ManualFoldedForward, ActivationCache]:
+    """Build a causal model plus its Manual folded adapter on ``device``.
+
+    The eager comparison adapter wraps the SAME raw model (shared weights).
+    ``ManualFoldedForward`` is non-mutating (AR002), so the folded path can
+    never change what the eager run observes.
+    """
+    torch.manual_seed(_CAUSAL_SEED)
+    raw = CausalCumsumModel(_CAUSAL_VOCAB, _CAUSAL_HIDDEN, _CAUSAL_LAYERS).to(device)
+    raw.eval()
+    cache = ActivationCache(max_entries_per_layer=128, device=device)
+    gate = SimilarityGate(tau=0.95)
+    folded = ManualFoldedForward(
+        raw,
+        cache=cache,
+        gate=gate,
+        scheduler=None,
+        use_cuda_graph=use_cuda_graph,
+        graph_capacity_ratio=graph_capacity_ratio,
+    )
+    adapter = FastDLLMAdapter(
+        raw,
+        folded_model=folded,
+        num_layers=_CAUSAL_LAYERS,
+        hidden_dim=_CAUSAL_HIDDEN,
+    )
+    adapter.underlying_model.eval()
+    return raw, adapter, folded, cache
+
+
+def test_folded_generate_causal_model_folds_and_matches_eager() -> None:
+    """IT-301: causal-model folded_generate matches eager greedy and truly folds.
+
+    On a causal model the child's prefix hidden states equal the parent's
+    bit-for-bit, so every generation step's prefix is fully stable.  Over 4
+    steps (T: 4 -> 8) the folded output must (1) equal the all-eager greedy
+    run on the SAME raw weights bit-for-bit, (2) report a mean stable ratio
+    above 0.5, and (3) leave the chained branch recursion's cache entries at
+    the final token length — proof that each step really folded against its
+    parent branch.
+    """
+    raw, adapter, folded, cache = _make_causal_setup("cpu")
+    eager_adapter = FastDLLMAdapter(
+        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
+    )
+    prompt = torch.tensor(_CAUSAL_PROMPT)
+    max_new_tokens = 4
+
+    expected = greedy_generate(eager_adapter, prompt, max_new_tokens=max_new_tokens)
+    result = folded_generate(
+        adapter, prompt, max_new_tokens=max_new_tokens, folded_model=folded
+    )
+
+    assert result.tokens.shape == (1, prompt.shape[1] + max_new_tokens)
+    assert result.num_folded_steps == max_new_tokens
+    assert torch.equal(result.tokens, expected)
+    assert result.stable_ratio > 0.5
+
+    final_len = result.tokens.shape[1]
+    for layer_idx in range(_CAUSAL_LAYERS):
+        entry = cache.fetch(branch_id=result.final_branch_id, layer_idx=layer_idx)
+        assert tuple(entry["ffn_out"].shape) == (1, final_len, _CAUSAL_HIDDEN)
+        if layer_idx == 0:
+            assert tuple(entry["embedding"].shape) == (1, final_len, _CAUSAL_HIDDEN)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_folded_generate_graph_zero_interference() -> None:
+    """IT-302: graph-enabled folded_generate is inert on variable-length steps.
+
+    Every generation step appends one token, so the parent cache shape never
+    matches the child tokens shape: ``_parent_cache_complete`` marks the
+    parent as incomplete and the graph path must silently stay eager (no
+    capture, zero UserWarning) while the folded eager path still produces
+    tokens identical to the all-eager greedy run.
+    """
+    device = "cuda"
+    raw, adapter, folded, _cache = _make_causal_setup(
+        device, use_cuda_graph=True, graph_capacity_ratio=0.5
+    )
+    eager_adapter = FastDLLMAdapter(
+        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
+    )
+    prompt = torch.tensor(_CAUSAL_PROMPT, device=device)
+    max_new_tokens = 4
+
+    expected = greedy_generate(eager_adapter, prompt, max_new_tokens=max_new_tokens)
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        result = folded_generate(
+            adapter, prompt, max_new_tokens=max_new_tokens, folded_model=folded
+        )
+
+    user_warnings = [w for w in record if issubclass(w.category, UserWarning)]
+    assert not user_warnings, (
+        f"graph-enabled folded_generate must emit zero UserWarning, got: "
+        f"{[str(w.message) for w in user_warnings]}"
+    )
+    assert folded.graph_runner is None
+    assert result.num_folded_steps == max_new_tokens
+    assert result.tokens.shape == (1, prompt.shape[1] + max_new_tokens)
+    assert torch.equal(result.tokens, expected)

@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR003: Variable-Length Prefix Folding (P3-1) + BenchmarkRunner Graph Wiring (AR002 follow-up)
+
+Spec: `specs/changes/AR003-var-len-prefix-folding/` (srs.md / design.md / tasks.md, T001–T007 all passing). Equal-length folding is bit-identical to the previous behavior (demo baseline 85.5% / 2.35e-03 / 93.75% unchanged).
+
+#### Added
+
+- **Append-only prefix folding in `FoldedTransformerLayer`**: a parent cached at `T_p ≤ T_c` (same batch/hidden) now folds — the gate compares only the child prefix `child[:, :T_p]` against the parent, the appended suffix is always divergent via an explicit all-False mask tail (robust for any tau, unlike a zero-padded parent), and the mixed-path merge aligns the parent FFN with the recomputed suffix (`cat([parent_ffn, child_out[:, T_p:]])`) before the existing `merge_stable_divergent`. The all-stable fast path remains reachable only on the equal-length path (var-len `stable_count ≤ B*T_p < B*T_c` by construction); `gather_select` is skipped on var-len steps (its `fetch_flat` contract indexes parent rows by the child length); the fused gate kernel is equal-length-only by its same-shape contract and the `B*T ≥ 1024` threshold (design D2).
+- `folded_generate` **actually folds across steps**: each AR step's child is one token longer than its parent; a causal model's prefix is bit-identical to the parent's, so the prefix is all-stable and only the new token recomputes. Generated tokens are `torch.equal` to the eager full recompute; mean stable ratio ≈ 0.84 on the causal synthetic (4 growth steps, T 4→8). This supersedes the old "stable ratio 0.0, never folds" semantics.
+- `BranchManager.align_tokens`: prefix alignment implemented (was `NotImplementedError`) — returns `(parent.hidden_states[0], child.hidden_states[0][:, :T_p])`; `T_c < T_p` or a batch mismatch raises `ValueError`; equal-length returns are bit-identical to before. API-complete (no production consumer yet).
+- `BenchmarkRunner` now consumes `ActFoldConfig.use_cuda_graph` / `graph_capacity_ratio` (AR002 follow-up): `_build_folded_model` builds `ManualFoldedForward` (the supported non-mutating path) with both flags threaded through; architecture-detection failures map to `None` (the legacy `folding_applied` semantics).
+
+#### Changed
+
+- **`BenchmarkRunner` production path migrated from deprecated `FoldedModel` to `ManualFoldedForward`**: no in-place mutation, zero state_dict drift (behavioral equivalence was established bit-exact in AR002). When `use_cuda_graph=True` the runner attaches **no** `FoldingScheduler` (design D3): the graph contract (#37) forbids a scheduler, so attaching one would silently degrade every replay to eager — dynamic tau and graph replay are mutually exclusive.
+- Var-len graph behavior (contract, verified by test): variable-length steps never capture — `_parent_cache_complete`'s shape check routes them to a **silent** eager fallback (no warning, no disable) where prefix folding applies. The fixed-shape (diffusion verification) graph workload is unchanged.
+
+#### Known follow-ups
+
+- Multi-ancestor reuse (P3-2), a parent longer than the child (truncation reuse), and `Branch.hidden_states` lazy referencing remain open.
+- End-to-end wall-clock gains of prefix folding on a real speculative-decoding workload are to be measured on the target machine per `docs/RERUN_CHECKLIST.md`; this AR ships the mechanism plus synthetic-proxy evidence (stable ratio, token equality, graph non-interference).
+
 ### AR002: M4 Kernel Fusion & CUDA-Graph Verification Loop (P2-2/P2-3 sync elimination, B12 normalization)
 
 Spec: `specs/changes/AR002-m4-graph-capture/` (srs.md / design.md / tasks.md, T001–T010 all passing). 624 passed, mypy --strict clean; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged.

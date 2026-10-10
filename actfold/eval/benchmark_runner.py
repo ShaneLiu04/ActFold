@@ -9,13 +9,14 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from actfold.core import FoldedModel, SimilarityGate
+from actfold.core import SimilarityGate
 from actfold.core.cache_factory import make_activation_cache
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.eval.evalplus_adapter import EvalPlusAdapter
 from actfold.eval.judges import Judge, JudgeFactory
 from actfold.eval.lm_eval_adapter import LMEvalAdapter
 from actfold.models import load_model
+from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.models.utils import get_model_device, resolve_torch_dtype
 from actfold.speculative import (
     ActFoldVerificationEngine,
@@ -33,8 +34,9 @@ class BenchmarkRunner:
     The runner loads a real Diffusion LLM from the Hugging Face Hub or a local
     path according to ``config.model_name_or_path``.  Evaluation uses real
     ``lm-eval`` / ``evalplus`` backends. When the underlying model exposes a
-    recognizable Transformer layer stack, it is wrapped with :class:`FoldedModel`
-    so that the ActFold path reuses real parent activations.
+    recognizable Transformer layer stack, it is wrapped with
+    :class:`ManualFoldedForward` (the supported non-mutating folded path,
+    AR002) so that the ActFold path reuses real parent activations.
 
     Args:
         config: Experiment configuration.  Must provide ``model_name_or_path``
@@ -143,8 +145,24 @@ class BenchmarkRunner:
         )
         return diffusion_model
 
-    def _build_folded_model(self, diffusion_model: Any) -> FoldedModel | None:
-        """Wrap the underlying ``nn.Module`` with :class:`FoldedModel` if possible."""
+    def _build_folded_model(self, diffusion_model: Any) -> ManualFoldedForward | None:
+        """Wrap the underlying ``nn.Module`` with :class:`ManualFoldedForward`.
+
+        The supported folded path (AR002) never mutates the base model.  When
+        ``config.use_cuda_graph`` is enabled no folding scheduler is built:
+        the CUDA-graph contract requires an exact-type gate without a
+        scheduler, so attaching one would silently degrade every replay to
+        eager (dynamic tau and graph replay are mutually exclusive).
+
+        Returns:
+            A :class:`ManualFoldedForward` sharing the cache/gate/scheduler
+            with the verification engine, or ``None`` when the model exposes
+            no ``.model`` attribute or its architecture cannot be detected.
+
+        Raises:
+            Never: architecture-detection failures are mapped to ``None``
+                (the legacy ``folding_applied`` semantics).
+        """
         raw_model = getattr(diffusion_model, "model", None)
         if raw_model is None:
             return None
@@ -156,22 +174,31 @@ class BenchmarkRunner:
             use_vectorized=self.config.use_vectorized_cache,
         )
         gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
-        scheduler = FoldingScheduler(
-            base_tau=self.config.tau,
-            num_layers=getattr(diffusion_model, "num_layers", 1),
-            num_steps=self.config.num_steps,
-        )
-        folded = FoldedModel(
-            raw_model,
-            cache=cache,
-            gate=gate,
-            scheduler=scheduler,
-            split_layers=self.config.use_split_layers,
-            split_min_tokens=self.config.split_min_tokens,
-        )
-        if not folded.folding_applied:
+        if self.config.use_cuda_graph:
+            # D3 (AR003): the graph contract forbids a scheduler; attaching
+            # one would silently degrade every replay to eager.
+            scheduler: FoldingScheduler | None = None
+        else:
+            scheduler = FoldingScheduler(
+                base_tau=self.config.tau,
+                num_layers=getattr(diffusion_model, "num_layers", 1),
+                num_steps=self.config.num_steps,
+            )
+        try:
+            return ManualFoldedForward(
+                raw_model,
+                cache=cache,
+                gate=gate,
+                scheduler=scheduler,
+                split_layers=self.config.use_split_layers,
+                split_min_tokens=self.config.split_min_tokens,
+                use_cuda_graph=self.config.use_cuda_graph,
+                graph_capacity_ratio=self.config.graph_capacity_ratio,
+            )
+        except RuntimeError:
+            # detect_architecture found no layer stack / embedding module
+            # (AGENTS #23): folding stays off instead of raising.
             return None
-        return folded
 
     def _build_engine(self) -> ActFoldVerificationEngine:
         """Build the ActFold verification engine from config.

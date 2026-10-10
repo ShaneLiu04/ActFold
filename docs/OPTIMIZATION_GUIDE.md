@@ -196,7 +196,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 ### P3 算法/功能扩展（解锁真实场景）
 
-1. **变量长度折叠**：`BranchManager.align_tokens`（core/branch_manager.py:130-153）只支持等长、直接 `NotImplementedError`——而投机解码 child 天然变长（接受不同数量 draft token）。需实现前缀对齐 + 后缀 padding 语义。`Branch` 强制持有全量 `hidden_states [L,B,T,H]`（~512MB/branch @ 8B/T=1024）应改为惰性引用 cache。
+1. **变量长度折叠** ~~只支持等长、直接 `NotImplementedError`~~ **✅ AR003（append-only 前缀折叠）**：`FoldedTransformerLayer` 前缀对齐（gate 前缀比较、后缀恒 divergent、merge 前缀对齐），`BranchManager.align_tokens` 已实现（前缀对齐对），`folded_generate` 真正跨步折叠（因果合成模型 stable_ratio ≈0.84、tokens 与全重算逐位一致）。**遗留子项**：`Branch` 强制持有全量 `hidden_states [L,B,T,H]`（~512MB/branch @ 8B/T=1024）的惰性引用化仍未做；parent 更长的截断复用与多祖先见 P3-2。
 2. **多祖先复用**：README 局限性 #7 自认只支持单 parent。多 parent 激活树（类似 KV cache 的 paged 结构）可进一步提升复用率。
 3. **真实 draft 模型**：`DraftGenerator` 只有 random/perturb/copy_flip；接入 Medusa/Eagle 类小 draft model 是 roadmap 承诺项（与 B10 联动，suffix/logits-draft 是其前奏）。
 4. **MoE 支持**：`flops_counter` 硬编码 4h 中间维（utils/flops_counter.py:60-63），SwiGLU（LLaDA/Dream 均是，3 矩阵×3.375h）低估 FFN FLOPs ~26%；MoE 完全未覆盖。加 `ffn_type`/`intermediate_dim` 参数并从 `config.intermediate_size` 自动读取——**当前所有 TFLOPs 数字含 10–25% 系统偏差**。
@@ -255,7 +255,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 | **M3 内存 pass 压缩**（~2 周） | P1-1/2/3/4/5（重点 P1-1 冗余 hidden_states 与 P1-3 gather_select 接入） | cache 显存 −50%；每 layer folding 辅助 pass ≤4；部分稳定 folded 前向与 baseline 的差距收窄到 <20% |
 | **M4 反超 baseline**（战略） | P2-1/2/3 | batch=1、seq≤512 下 folded 前向 **快于** no-folding baseline（项目核心矛盾的解决即 README 局限性 #2 的关闭） **◐ AR002 完成 M4a/M4b 机制与本机代理验证（graph vs eager per-step -47.1%）；与 no-folding baseline 的正式对拍需按 RERUN_CHECKLIST 在锁频机器上补跑** |
 | **M5 实验可信化**（与 M2-M4 并行） | M-1 至 M-9 + B10/M-2 真实 draft 分布 | 所有 published 数字带 CI；消融全部实测化；cost model 校准后预测/实测误差 <1.3× |
-| **M6 场景扩展** | P3 变量长折叠 / 多祖先 / 真 draft model / MoE | 解锁真实投机解码工作负载 |
+| **M6 场景扩展** | P3 变量长折叠 ✅ AR003（append-only 前缀折叠）/ 多祖先 / 真 draft model / MoE | 解锁真实投机解码工作负载 |
 
 ### 7.2 与本机环境的配合
 
@@ -310,6 +310,22 @@ AR002（`specs/changes/AR002-m4-graph-capture/`，T001–T010 全部 passing）�
 | M4 性能代理实测 | T009（`scripts/ar002_graph_bench.py`；本机 Quadro RTX 5000，B=2/T=512/4 层：eager 5.083 ms/step vs graph 2.687 ms/step，**-47.1%**，20/20 validated steps；产物 `results/optimization/ar002_graph_bench.json`） | ✅ 本机代理完成；CUPTI 机器补 launch 计数、锁频机器补正式 baseline 对拍 |
 
 **诚实性说明**：本机 torch 为 LIBKINETO_NOCUPTI 构建，无法记录 CUDA profiler 事件，kernel launch 计数以 `null` + 显式 note 记录（UT-006b launch 断言在无 CUPTI 主机自动 skip），不伪造数据；wall-clock 计时不受影响。
+
+---
+
+## 第十部分 AR003 完成回链（2026-10-10）
+
+AR003（`specs/changes/AR003-var-len-prefix-folding/`，T001–T007 全部 passing）覆盖 P3-1 变量长度折叠与 AR002 遗留接线；等长折叠路径零回归（demo 基线 85.5% / 2.35e-03 / 93.75% 精确一致）。
+
+| 指南条目 | AR003 任务 | 状态 |
+|---|---|---|
+| P3-1 变量长度折叠（前缀对齐） | T001（`align_tokens` 实现）/ T002–T003（`FoldedTransformerLayer` 前缀分类 + 前缀 gate + 全 False 后缀 mask + merge 前缀对齐；全 stable 快路径仅等长可达；split 层在完整 mask 上含全部后缀行；`_store_activations` 链式递归） | ✅ 完成（append-only；parent 更长/多祖先不支持） |
+| P3-1 验收（folded_generate 真折叠） | T004（因果合成模型 4 步：tokens 与 eager 全重算 `torch.equal`、stable_ratio ≈0.84、链式 cache 递增；graph 模式零干扰——不捕获/零告警/不禁用） | ✅ 机制 + 合成代理完成；真实投机解码负载墙钟收益待目标机按 RERUN_CHECKLIST 测量 |
+| AR002 遗留：benchmark_runner 接线 | T005（`_build_folded_model` 迁 `ManualFoldedForward` + 消费 `use_cuda_graph`/`graph_capacity_ratio`；D3：graph 开启时不挂 `FoldingScheduler`；架构检测失败 → None） | ✅ 完成 |
+| P3-1 遗留子项 | `Branch.hidden_states [L,B,T,H]` 全量持有的惰性引用化 | ⏸ 未做（独立条目） |
+| 文档收口 | T006（README 局限性 #7 状态更新、AGENTS #19/#20 修订、CHANGELOG、本回链、ALGORITHM.md §11） | ✅ 完成 |
+
+**语义要点**：后缀恒 divergent 用显式 all-False mask tail 实现（对任意 tau 稳健，否决零填充方案——`tau<0` 时零向量 cosine=0 会被误判 stable）；var-len 不走 fused gate（同形连续契约 + 阈值不可达）与 `gather_select`（`fetch_flat` 按 child 长度索引 parent 行）；等长路径（`prefix_len == T_c`）逐位不变为最高不变量。
 
 ---
 

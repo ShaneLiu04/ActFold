@@ -238,3 +238,37 @@ the folded child step from 5.083 ms to 2.687 ms (**-47.1%**) with all budget
 validations passing — see `scripts/ar002_graph_bench.py` and the artifact
 `results/optimization/ar002_graph_bench.json`.
 
+## 11. Variable-Length Prefix Folding (AR003)
+
+The equal-length contract above is the `T_p == T_c` special case of a more
+general **append-only** rule: a parent cached at `T_p ≤ T_c` (same batch and
+hidden size) can donate activations for the child's *prefix*.
+
+1. **Prefix classification** — after fetching the parent gate activation, a
+   batch/hidden mismatch, a zero-length entry, or `T_p > T_c` (the child is
+   not a prefix extension; truncation reuse is unsupported) treats the parent
+   as absent (full recompute, cache-miss semantics, never an error).
+2. **Prefix gate + explicit False suffix** — the similarity gate compares
+   only `child[:, :T_p]` against the parent; the full mask is
+   `cat([prefix_mask, all-False suffix])`. The suffix has no parent activation
+   to reuse, so it is divergent for every τ — an explicit False tail stays
+   robust even for negative thresholds (a zero-padded parent would instead
+   compare cosine 0 > τ as "stable" and copy zeros). The fused gate kernel and
+   `gather_select` remain equal-length-only (their same-shape contracts).
+3. **Three-way split** — all-stable is unreachable on var-len steps by
+   construction (`stable_count ≤ B·T_p < B·T_c`), so the fast path stays an
+   equal-length property; zero-stable recomputes; the mixed path recomputes
+   the full child (attention context intact, §4) and merges with the parent
+   FFN aligned to the child length: `cat([parent_ffn, child_out[:, T_p:]])`
+   (the suffix fill never surfaces — the merge takes the child value at every
+   suffix position).
+4. **Chain recursion** — the child stores its activations at `T_c`, so the
+   next step (`T_c → T_c+1`) prefix-folds against it.
+
+For causal models the prefix is bit-identical to the parent's hidden states,
+so `folded_generate` folds at every step (prefix all-stable, only the new
+token recomputes) while remaining `torch.equal` to the eager full recompute
+(measured mean stable ratio ≈ 0.84 over 4 growth steps, T 4→8). Variable-
+length steps never enter the CUDA graph (§10): the parent-cache shape check
+routes them to a silent eager fallback where prefix folding applies.
+

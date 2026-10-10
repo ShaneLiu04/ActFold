@@ -155,3 +155,54 @@ def test_align_tokens(device: str) -> None:
     h_parent, h_child = manager.align_tokens(root, child)
     assert h_parent.shape == (1, 8, 32)
     assert h_child.shape == (1, 8, 32)
+
+
+def test_align_tokens_prefix_alignment(device: str) -> None:
+    """UT-102: T_c > T_p returns the prefix-aligned pair (srs §3.2, design 4.3.3)."""
+    manager = BranchManager()
+    root = manager.create_root(
+        torch.randint(0, 100, (1, 6), device=device),
+        torch.randn(2, 1, 6, 32, device=device),
+    )
+    child = manager.create_child(
+        root.branch_id,
+        torch.randint(0, 100, (1, 9), device=device),
+        torch.randn(2, 1, 9, 32, device=device),
+    )
+    h_parent, h_child = manager.align_tokens(root, child)
+    assert h_parent.shape == (1, 6, 32)
+    assert h_child.shape == (1, 6, 32)
+    assert torch.equal(h_parent, root.hidden_states[0])
+    assert torch.equal(h_child, child.hidden_states[0][:, :6, :])
+
+
+def test_align_tokens_child_shorter_raises(device: str) -> None:
+    """UT-103a: T_c < T_p is not a prefix extension and must raise ValueError."""
+    manager = BranchManager()
+    root = manager.create_root(
+        torch.randint(0, 100, (1, 9), device=device),
+        torch.randn(2, 1, 9, 32, device=device),
+    )
+    child = manager.create_child(
+        root.branch_id,
+        torch.randint(0, 100, (1, 4), device=device),
+        torch.randn(2, 1, 4, 32, device=device),
+    )
+    with pytest.raises(ValueError, match="prefix"):
+        manager.align_tokens(root, child)
+
+
+def test_align_tokens_batch_mismatch_raises(device: str) -> None:
+    """UT-103b: batch mismatch cannot be prefix-aligned and must raise ValueError."""
+    manager = BranchManager()
+    root = manager.create_root(
+        torch.randint(0, 100, (1, 6), device=device),
+        torch.randn(2, 1, 6, 32, device=device),
+    )
+    child = manager.create_child(
+        root.branch_id,
+        torch.randint(0, 100, (2, 8), device=device),
+        torch.randn(2, 2, 8, 32, device=device),
+    )
+    with pytest.raises(ValueError, match="batch"):
+        manager.align_tokens(root, child)
