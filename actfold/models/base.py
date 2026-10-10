@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import torch
 import torch.nn as nn
+
+from actfold.utils.flops_counter import _extract_ffn_geometry
 
 if TYPE_CHECKING:
     from actfold.core.model_wrapper import FoldedModel
@@ -171,6 +173,61 @@ class DiffusionLLM(ABC, nn.Module):
     def vocab_size(self) -> int:
         """Return the vocabulary size."""
         ...
+
+    @property
+    def config(self) -> Any:
+        """HF config of the loaded model, if available (``None`` otherwise).
+
+        Real subclasses keep the Hugging Face config on the wrapped module
+        (``self.model.config``), not on the wrapper itself; this forwarding
+        property gives the FFN geometry properties (and any consumer) a
+        single resolution chain (AR005 design D9).
+        """
+        model = getattr(self, "model", None)
+        return getattr(model, "config", None) if model is not None else None
+
+    @property
+    def ffn_intermediate_dim(self) -> int | None:
+        """FFN intermediate dimension from the HF config (``None`` if unknown)."""
+        return cast(
+            "int | None", _extract_ffn_geometry(self.config)["ffn_intermediate_dim"]
+        )
+
+    @property
+    def ffn_type(self) -> str:
+        """FFN activation topology: ``"swiglu"`` (3 matmuls) or ``"mlp"`` (2)."""
+        return cast("str", _extract_ffn_geometry(self.config)["ffn_type"])
+
+    @property
+    def moe_num_experts(self) -> int | None:
+        """Total routed experts from the HF config (``None`` for dense models)."""
+        return cast(
+            "int | None", _extract_ffn_geometry(self.config)["moe_num_experts"]
+        )
+
+    @property
+    def moe_top_k(self) -> int | None:
+        """Experts activated per token (``None`` for dense models)."""
+        return cast("int | None", _extract_ffn_geometry(self.config)["moe_top_k"])
+
+    @property
+    def moe_intermediate_dim(self) -> int | None:
+        """Expert FFN intermediate dimension (``None`` if unknown)."""
+        return cast(
+            "int | None", _extract_ffn_geometry(self.config)["moe_intermediate_dim"]
+        )
+
+    @property
+    def moe_shared_expert(self) -> bool:
+        """Whether the config declares an always-on shared expert."""
+        return cast("bool", _extract_ffn_geometry(self.config)["moe_shared_expert"])
+
+    @property
+    def moe_num_layers(self) -> int | None:
+        """Number of MoE layers (total minus dense prefix, ``None`` if unknown)."""
+        return cast(
+            "int | None", _extract_ffn_geometry(self.config)["moe_num_layers"]
+        )
 
     def get_device(self) -> torch.device:
         """Return the device of the underlying model."""

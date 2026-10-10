@@ -144,7 +144,7 @@ Expected output (synthetic model):
 | 2     | 100%     | 6%      | 0.969      |
 | 3     | 100%     | 6%      | 0.968      |
 +-------+----------+---------+------------+
- Total FLOPs reduction: 78.5%
+ Total FLOPs reduction: 85.5%   # corrected: input embedding is a lookup, only the LM head counts
  Output equivalence (MSE): 2.35e-03  [HIGH]
  Estimated stable token ratio: 93.75%
 =================================================================

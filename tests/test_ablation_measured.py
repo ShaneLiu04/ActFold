@@ -310,3 +310,88 @@ def test_t005_ablation_uses_manual_not_folded_model() -> None:
     study = _make_study(num_layers=4)
     m: FoldedMeasurement = study.measure_folding(tau=0.90)
     assert m.per_layer_stable
+
+
+def test_it412a_ablation_flops_budget_uses_config_geometry() -> None:
+    """IT-412a (AR005 design 6.2): ``_flops_budget`` consumes real config geometry.
+
+    The adapter wraps a DiffusionLLM stub whose geometry lives only on
+    ``model.config`` (the real checkpoint path); the budget must equal the
+    hand-computed estimate with the real SwiGLU/MoE geometry and differ from
+    the 4h-MLP default.
+    """
+    from types import SimpleNamespace
+
+    from actfold.models.base import DiffusionLLM
+    from actfold.utils.flops_counter import count_diffusion_llm_flops, model_ffn_flops_kwargs
+
+    class _GeometryOnlyModel(DiffusionLLM):
+        """DiffusionLLM stub exposing dims and geometry via ``model.config``."""
+
+        def __init__(self, config: SimpleNamespace) -> None:
+            super().__init__("geometry-stub")
+            self.model = SimpleNamespace(config=config)
+
+        def forward(self, tokens, attention_mask=None, **kwargs):
+            raise NotImplementedError
+
+        def embed(self, tokens):
+            raise NotImplementedError
+
+        @property
+        def num_layers(self):
+            return 2
+
+        @property
+        def hidden_dim(self):
+            return 16
+
+        @property
+        def num_heads(self):
+            return 2
+
+        @property
+        def vocab_size(self):
+            return 100
+
+    config = SimpleNamespace(
+        intermediate_size=48,
+        hidden_act="silu",
+        num_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=24,
+        shared_expert_intermediate_size=32,
+        num_hidden_layers=2,
+        first_k_dense_replace=1,
+    )
+    adapter = FastDLLMAdapter(_GeometryOnlyModel(config))
+    study = AblationStudy(model=adapter, baseline=None, vocab_size=100, seq_len=16)
+
+    baseline_total, per_layer_reusable = study._flops_budget()
+
+    kwargs = model_ffn_flops_kwargs(adapter)
+    expected = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=16,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=0.0,
+        **kwargs,
+    )
+    assert baseline_total == pytest.approx(expected.total_tflops, rel=1e-12)
+    assert per_layer_reusable == pytest.approx(
+        (expected.attention_tflops + expected.ffn_tflops) / 2, rel=1e-12
+    )
+
+    default_total = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=16,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=0.0,
+    ).total_tflops
+    assert baseline_total != pytest.approx(default_total)

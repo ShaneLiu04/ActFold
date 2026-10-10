@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -146,3 +147,92 @@ def test_evaluate_runs_baseline_and_actfold() -> None:
     assert result["baseline_accuracy"] == 1.0
     assert result["actfold_accuracy"] == 1.0
     assert result["actfold_tflops"] < result["baseline_tflops"]
+
+
+def test_it412b_base_adapter_tflops_use_config_geometry() -> None:
+    """IT-412b (AR005 design 6.2): TFLOPs estimation consumes real geometry.
+
+    ``_estimate_baseline_tflops`` picks the SwiGLU/MoE geometry from
+    ``model_ffn_flops_kwargs`` (reachable only via ``DiffusionLLM.model.config``,
+    the real checkpoint path) instead of the 4h-MLP default.
+    """
+    from types import SimpleNamespace
+
+    from actfold.models.base import DiffusionLLM
+    from actfold.utils.flops_counter import count_diffusion_llm_flops, model_ffn_flops_kwargs
+
+    class _GeometryOnlyModel(DiffusionLLM):
+        """DiffusionLLM stub exposing dims and geometry via ``model.config``."""
+
+        def __init__(self, config: SimpleNamespace) -> None:
+            super().__init__("geometry-stub")
+            self.model = SimpleNamespace(config=config)
+
+        def forward(self, tokens, attention_mask=None, **kwargs):
+            raise NotImplementedError
+
+        def embed(self, tokens):
+            raise NotImplementedError
+
+        @property
+        def num_layers(self):
+            return 2
+
+        @property
+        def hidden_dim(self):
+            return 16
+
+        @property
+        def num_heads(self):
+            return 2
+
+        @property
+        def vocab_size(self):
+            return 100
+
+    config = SimpleNamespace(
+        intermediate_size=48,
+        hidden_act="silu",
+        num_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=24,
+        shared_expert_intermediate_size=32,
+        num_hidden_layers=2,
+        first_k_dense_replace=1,
+    )
+    model_adapter = FastDLLMAdapter(_GeometryOnlyModel(config))
+    eval_adapter = BaseEvalAdapter(
+        model=model_adapter,
+        baseline=None,
+        engine=None,
+        judge=None,
+        tokenizer=None,
+        vocab_size=100,
+        max_new_tokens=4,
+    )
+
+    got = eval_adapter._estimate_baseline_tflops([torch.tensor([[1, 2, 3]])])
+
+    kwargs = model_ffn_flops_kwargs(model_adapter)
+    expected = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=3 + 4,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=0.0,
+        **kwargs,
+    ).total_tflops
+    assert got == pytest.approx(expected, rel=1e-12)
+
+    default_total = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=3 + 4,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=0.0,
+    ).total_tflops
+    assert got != pytest.approx(default_total)

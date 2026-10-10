@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+from typing import Any
+
 import pytest
 import torch
 import torch.nn as nn
 
 from actfold.core import ActivationCache, SimilarityGate
+from actfold.models.base import DiffusionLLM
 from actfold.speculative import ActFoldVerificationEngine, FastDLLMAdapter
 from actfold.speculative.branch import Branch
+from actfold.utils.flops_counter import count_diffusion_llm_flops, model_ffn_flops_kwargs
 
 
 class TinyModel(nn.Module):
@@ -481,3 +486,120 @@ def test_ex602_engine_propagates_batch_mismatch_value_error() -> None:
 
     with pytest.raises(ValueError):
         engine.verify_branch(parent, child, step_idx=0)
+
+
+# ---------------------------------------------------------------------------
+# AR005 T003: engine consumes real FFN/MoE geometry from the model config.
+# ---------------------------------------------------------------------------
+
+
+class _ConfigGeometryDiffusionModel(DiffusionLLM):
+    """DiffusionLLM stub whose geometry is only reachable via ``model.config``.
+
+    Mimics the real checkpoint path (IT-411): concrete subclasses keep the HF
+    config on the wrapped module, never on the wrapper itself.
+    """
+
+    def __init__(self, config: Any) -> None:
+        super().__init__("geometry-stub")
+        self.model = SimpleNamespace(config=config)
+        self._logits: torch.Tensor | None = None
+
+    def forward(
+        self,
+        tokens: torch.Tensor,
+        attention_mask: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor:
+        if self._logits is None:
+            raise AssertionError("_ConfigGeometryDiffusionModel._logits must be set")
+        return self._logits
+
+    def embed(self, tokens: torch.Tensor) -> torch.Tensor:
+        return torch.zeros(tokens.shape[0], tokens.shape[1], self.hidden_dim)
+
+    @property
+    def num_layers(self) -> int:
+        return 2
+
+    @property
+    def hidden_dim(self) -> int:
+        return 16
+
+    @property
+    def num_heads(self) -> int:
+        return 2
+
+    @property
+    def vocab_size(self) -> int:
+        return 100
+
+
+def _it411_config() -> SimpleNamespace:
+    """SwiGLU + MoE config distinct from the 4h-MLP default geometry."""
+    return SimpleNamespace(
+        intermediate_size=48,  # != 4 * 16 default
+        hidden_act="silu",  # swiglu: 3 matmuls
+        num_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=24,
+        shared_expert_intermediate_size=32,  # shared expert present
+        num_hidden_layers=2,
+        first_k_dense_replace=1,  # 1 dense prefix layer, 1 MoE layer
+    )
+
+
+def test_it411_engine_tflops_use_config_geometry() -> None:
+    """IT-411 (design 6.2): the engine's TFLOPs reflect real config geometry.
+
+    The geometry is only reachable through ``DiffusionLLM.model.config``
+    (the real checkpoint path); the engine must pick it up through
+    ``model_ffn_flops_kwargs`` without any call-site change and report a
+    hand-computed value that differs from the 4h-MLP default estimate.
+    """
+    config = _it411_config()
+    model = _ConfigGeometryDiffusionModel(config)
+    adapter = FastDLLMAdapter(model)  # isinstance DiffusionLLM: dims from stub
+
+    argmax_tokens = torch.tensor([[1, 2, 3, 4, 5]])
+    logits = torch.zeros(1, 5, 100)
+    logits.scatter_(-1, argmax_tokens.unsqueeze(-1), 10.0)
+    model._logits = logits
+
+    engine = ActFoldVerificationEngine(
+        adapter, ActivationCache(device="cpu"), SimilarityGate(tau=0.95)
+    )
+    parent = Branch(branch_id="root", parent_id=None, tokens=argmax_tokens.clone())
+    child = Branch(branch_id="child", parent_id="root", tokens=torch.tensor([[1, 2, 0, 4, 7]]))
+
+    result = engine.verify_branch(parent, child, step_idx=0)
+
+    kwargs = model_ffn_flops_kwargs(adapter)
+    assert kwargs["ffn_intermediate_dim"] == 48
+    assert kwargs["ffn_type"] == "swiglu"
+    assert kwargs["moe_top_k"] == 2
+    assert kwargs["moe_num_layers"] == 1
+    assert kwargs["moe_shared_expert"] is True
+
+    expected = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=5,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=result.stable_ratio,
+        **kwargs,
+    ).total_tflops
+    assert result.tflops == pytest.approx(expected, rel=1e-12)
+
+    default_estimate = count_diffusion_llm_flops(
+        num_layers=2,
+        hidden_dim=16,
+        num_heads=2,
+        seq_len=5,
+        vocab_size=100,
+        num_steps=1,
+        reuse_ratio=result.stable_ratio,
+    ).total_tflops
+    assert result.tflops != pytest.approx(default_estimate)

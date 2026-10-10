@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -140,3 +141,92 @@ def test_diffusion_llm_interface() -> None:
     model.model = MagicMock()
     model.model.parameters.return_value = iter([torch.randn(2, 2)])
     assert model.estimate_memory_mb() > 0.0
+
+
+class _GeometryStubModel(DiffusionLLM):
+    """Concrete ``DiffusionLLM`` stub for FFN/MoE geometry property tests (UT-408).
+
+    Implements only the abstract members; geometry is reachable exclusively
+    through ``self.model.config``.
+    """
+
+    def forward(self, tokens, attention_mask=None, **kwargs):
+        raise NotImplementedError
+
+    def embed(self, tokens):
+        raise NotImplementedError
+
+    @property
+    def num_layers(self):
+        return 2
+
+    @property
+    def hidden_dim(self):
+        return 16
+
+    @property
+    def num_heads(self):
+        return 2
+
+    @property
+    def vocab_size(self):
+        return 100
+
+
+def _geometry_config() -> SimpleNamespace:
+    """Build the UT-408 config-like object with the full primary-name geometry.
+
+    Returns:
+        SimpleNamespace with a swiglu FFN (``intermediate_size=12288``),
+        8 routed experts (top-2, expert intermediate 1536), one shared
+        expert (intermediate 2048), and 32 layers of which the first 3 are
+        dense (``first_k_dense_replace=3`` -> 29 MoE layers).
+    """
+    return SimpleNamespace(
+        intermediate_size=12288,
+        hidden_act="silu",
+        num_experts=8,
+        num_experts_per_tok=2,
+        moe_intermediate_size=1536,
+        shared_expert_intermediate_size=2048,
+        num_hidden_layers=32,
+        first_k_dense_replace=3,
+    )
+
+
+def test_diffusion_llm_ffn_geometry_properties() -> None:
+    """UT-408: the 7 geometry properties read real values from ``model.config``.
+
+    ``config`` forwards to ``self.model.config`` and each geometry property
+    resolves through the shared extraction helper, including
+    ``moe_num_layers == 32 - 3 == 29``.
+    """
+    config = _geometry_config()
+    model = _GeometryStubModel("dummy")
+    model.model = SimpleNamespace(config=config)
+    assert model.config is config
+    assert model.ffn_intermediate_dim == 12288
+    assert model.ffn_type == "swiglu"
+    assert model.moe_num_experts == 8
+    assert model.moe_top_k == 2
+    assert model.moe_intermediate_dim == 1536
+    assert model.moe_shared_expert is True
+    assert model.moe_num_layers == 29
+
+
+def test_diffusion_llm_ffn_geometry_defaults_without_model() -> None:
+    """UT-408: ``self.model=None`` keeps the default geometry without raising.
+
+    ``config`` is None and every geometry property falls back to its
+    default (None / "mlp" / False).
+    """
+    model = _GeometryStubModel("dummy")
+    assert model.model is None
+    assert model.config is None
+    assert model.ffn_intermediate_dim is None
+    assert model.ffn_type == "mlp"
+    assert model.moe_num_experts is None
+    assert model.moe_top_k is None
+    assert model.moe_intermediate_dim is None
+    assert model.moe_shared_expert is False
+    assert model.moe_num_layers is None

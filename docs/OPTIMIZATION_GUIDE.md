@@ -199,7 +199,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 1. **变量长度折叠** ~~只支持等长、直接 `NotImplementedError`~~ **✅ AR003（append-only 前缀折叠）**：`FoldedTransformerLayer` 前缀对齐（gate 前缀比较、后缀恒 divergent、merge 前缀对齐），`BranchManager.align_tokens` 已实现（前缀对齐对），`folded_generate` 真正跨步折叠（因果合成模型 stable_ratio ≈0.84、tokens 与全重算逐位一致）。**遗留子项**：`Branch` 强制持有全量 `hidden_states [L,B,T,H]`（~512MB/branch @ 8B/T=1024）的惰性引用化仍未做；parent 更长的截断复用与多祖先见 P3-2。
 2. **多祖先复用**：README 局限性 #7 自认只支持单 parent。多 parent 激活树（类似 KV cache 的 paged 结构）可进一步提升复用率。
 3. **真实 draft 模型**：`DraftGenerator` 只有 random/perturb/copy_flip；接入 Medusa/Eagle 类小 draft model 是 roadmap 承诺项（与 B10 联动，suffix/logits-draft 是其前奏）。
-4. **MoE 支持**：`flops_counter` 硬编码 4h 中间维（utils/flops_counter.py:60-63），SwiGLU（LLaDA/Dream 均是，3 矩阵×3.375h）低估 FFN FLOPs ~26%；MoE 完全未覆盖。加 `ffn_type`/`intermediate_dim` 参数并从 `config.intermediate_size` 自动读取——**当前所有 TFLOPs 数字含 10–25% 系统偏差**。
+4. **MoE 支持**：~~`flops_counter` 硬编码 4h 中间维（utils/flops_counter.py:60-63），SwiGLU（LLaDA/Dream 均是，3 矩阵×3.375h）低估 FFN FLOPs ~26%；MoE 完全未覆盖。加 `ffn_type`/`intermediate_dim` 参数并从 `config.intermediate_size` 自动读取——**当前所有 TFLOPs 数字含 10–25% 系统偏差**~~ **✅ AR005（FFN/MoE FLOPs 几何修正收口）**：`DiffusionLLM` 几何属性 + `_extract_ffn_geometry` 属性名并集（含 SwiGLU 族判定）+ `model_ffn_flops_kwargs` `underlying_model` 链解析，三调用点零改动自动供参；MoE per-token expert 计量（top-k ± shared、`first_k_dense_replace` 混合层数）；无属性路径逐位零回归。见第十二部分。
 
 ---
 
@@ -342,6 +342,21 @@ AR004（`specs/changes/AR004-logit-acceptance-semantics/`，T001–T006 全部 p
 | 文档收口 | T005（AGENTS #40、CHANGELOG、README 局限 #8、本回链、指南 P2-5 勾选） | ✅ 完成 |
 
 **语义要点**：同位置预测约定（target `logits[:, i]` 预测位置 i 的 token）是全链唯一契约；draft 区域 = 分支新主张位（前缀差异位 + 变长后缀），`T_p < T_c` 截到公共前缀；空 draft 区域 rate=1.0（无新主张=全接受）、mlp=0.0 哨兵；`actfold_score`/`baseline_score` 键名不变仅语义升级（唯一消费面为序数比较）；EMA 首调直初始化（否决 0 先验——首步接受率会被稀释）。**遗留**：接受率当前对着 random/perturb draft 测量，是机制指标；真 draft 模型（P3-3）接入后才成为论文口径的接受率。
+
+---
+
+## 第十二部分 AR005 完成回链（2026-10-10）
+
+AR005（`specs/changes/AR005-ffn-flops-geometry/`，T001–T005 全部 passing）覆盖 P3-4 FFN/MoE FLOPs 几何修正收口；无属性路径逐位零回归（demo 基线 85.5% / 2.35e-03 / 93.75% 精确一致——demo 合成模型走默认几何），全量回归 735+ passed。
+
+| 指南条目 | AR005 任务 | 状态 |
+|---|---|---|
+| P3-4 MoE 计量 | T001（`count_diffusion_llm_flops` 5 个 MoE 参数：top-k 触发键、±shared、`moe_num_layers`/`first_k_dense_replace` 混合层数、moe_inter 回退链；ValueError 域校验） | ✅ 完成 |
+| P3-4 config 自动读取 | T002（`DiffusionLLM.config` 转发 property + 7 几何 property；`_extract_ffn_geometry` 属性名并集单一实现；`model_ffn_flops_kwargs` `underlying_model` 链解析 + `_resolve_model_config`） | ✅ 完成 |
+| P3-4 三调用点接线 | T003（IT-411 engine / IT-412a ablation / IT-412b base_adapter：tflops == 真实几何手算且 ≠ 4h 默认；调用点零改动实证） | ✅ 完成 |
+| 文档收口 | T004（AGENTS #33 修订、CHANGELOG AR005 节、README demo 样例 78.5%→85.5% 修正 + 本回链 + P3-4 勾选） | ✅ 完成 |
+
+**语义要点**：AR001 只做了参数与 helper，全链无人供参——本 AR 补齐"属性暴露 + 链解析 + 调用点自动供参"三环；`moe_top_k` 是计量触发键（per-token FLOPs 只依赖 top-k，`num_experts` 仅容量校验）；`first_k_dense_replace` 消除"全层 MoE"假设的高估（DeepSeek 系前 k 层 dense）；SwiGLU 族 = HF `hidden_act` ∈ {silu/swish/swiglu}，未知名保守回退 `"mlp"`（不高于现状）；shared expert 按 routed 中间维近似（<5%）；router 门控忽略（<1%）。**遗留**：真实 MoE checkpoint 实测（本机无权重，公式 + 提取为合成实证，RERUN_CHECKLIST 流程）；历史数字（含 demo 合成模型口径）仍基于 4h-MLP 默认几何，真实 checkpoint 的 TFLOPs 自本 AR 起反映真实几何。
 
 ---
 

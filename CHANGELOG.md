@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR005: FFN/MoE FLOPs Geometry Correction (P3-4)
+
+Spec: `specs/changes/AR005-ffn-flops-geometry/` (srs.md / design.md / tasks.md, T001–T005 all passing). Default-geometry paths are bit-identical (synthetic models keep the 4h-MLP estimate; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged); full regression 735+ passed.
+
+#### Added
+
+- **MoE accounting in `count_diffusion_llm_flops`**: `moe_num_experts` / `moe_top_k` (the trigger — per-token FLOPs depend on top-k alone) / `moe_intermediate_dim` (falls back to `ffn_intermediate_dim`, then `4h`) / `moe_shared_expert` (adds one always-on expert-equivalent) / `moe_num_layers` (defaults to all layers; DeepSeek-style dense prefixes derive from `first_k_dense_replace` so mixed stacks are not overestimated). Per-token expert FLOPs: `2 · n_matmul · moe_inter · h · (top_k + shared)`; router gating (~1%) is ignored by design.
+- **Automatic FFN geometry extraction (AR001 leftover wiring)**: `DiffusionLLM.config` (concrete property forwarding to `self.model.config` — real subclasses keep the HF config on the wrapped module) plus seven geometry properties (`ffn_intermediate_dim` / `ffn_type` / five MoE keys), all backed by a single `_extract_ffn_geometry(config)` implementation (attribute-name union across Qwen2/DeepSeek MoE families; SwiGLU family {silu, swish, swiglu} → 3 matmuls; unknown names degrade safely to the dense default).
+- **`model_ffn_flops_kwargs` chain resolution**: drills `underlying_model` wrappers (adapter → model), prefers direct attributes/properties, then resolves the config via `_resolve_model_config` (`target.config` → `target.model.config`). The three call sites (verification engine, ablation study, base eval adapter) required **zero changes** — real-checkpoint TFLOPs now reflect true FFN geometry instead of silently falling back to 4h-MLP (the 10–25% systematic bias noted in the guide).
+- Keys of the helper's returned dict are additive-only (5 new MoE keys default to None/False).
+
+#### Changed
+
+- README demo-output sample updated to the corrected 85.5% reduction (was a stale pre-AR001 78.5%).
+
+#### Known follow-ups
+
+- Real MoE checkpoint validation (formula + config extraction are synthetic-proven; no local MoE weights) — per `docs/RERUN_CHECKLIST.md`.
+- Shared-expert intermediate dim is approximated by the routed `moe_intermediate_dim` (sub-5% effect).
+- Attention T² term and KV-cache bandwidth remain opt-in/separate (M-4).
+
 ### AR004: True Speculative-Decoding Acceptance Semantics (P2-5)
 
 Spec: `specs/changes/AR004-logit-acceptance-semantics/` (srs.md / design.md / tasks.md, T001–T006 all passing). Default-parameter behavior is unchanged (threshold 0.0 accepts every branch; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged); full regression 699 passed.

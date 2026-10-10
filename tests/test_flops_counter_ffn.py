@@ -107,15 +107,19 @@ def test_total_sums_components() -> None:
 def test_model_ffn_flops_kwargs_duck_typed() -> None:
     from actfold.utils.flops_counter import model_ffn_flops_kwargs
 
-    # (a) Plain object without FFN attributes -> defaults.
+    # (a) Plain object without FFN attributes -> defaults.  AR005 makes the
+    # returned dict additive (5 new MoE keys), so assert per key instead of
+    # dict equality.
     plain = types.SimpleNamespace(hidden_dim=H)
     kwargs = model_ffn_flops_kwargs(plain)
-    assert kwargs == {"ffn_intermediate_dim": None, "ffn_type": "mlp"}
+    assert kwargs["ffn_intermediate_dim"] is None
+    assert kwargs["ffn_type"] == "mlp"
 
-    # (b) Object exposing FFN shape -> extracted values.
+    # (b) Object exposing FFN shape -> extracted values win over config.
     shaped = types.SimpleNamespace(ffn_intermediate_dim=11008, ffn_type="swiglu")
     kwargs = model_ffn_flops_kwargs(shaped)
-    assert kwargs == {"ffn_intermediate_dim": 11008, "ffn_type": "swiglu"}
+    assert kwargs["ffn_intermediate_dim"] == 11008
+    assert kwargs["ffn_type"] == "swiglu"
 
 
 def test_reuse_reduces_total() -> None:
