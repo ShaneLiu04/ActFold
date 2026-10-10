@@ -11,20 +11,21 @@ the whole module at collection time.
 
 from __future__ import annotations
 
+import warnings as _warnings
 from typing import Any
 
 import pytest
 import torch
 import torch.nn as nn
-import warnings as _warnings
 
-from actfold.core import ActivationCache
+from actfold.core import ActivationCache, fused_ops
 from actfold.core.adaptive_gate import AdaptiveQuantileGate
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.fused_ops import merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
 
 _EPS = 1e-8
+_HAS_TRITON = fused_ops._HAS_TRITON
 
 
 def _load_fused_gate_mask_count():
@@ -379,17 +380,13 @@ def test_layer_wiring_skips_fused_for_non_cosine_or_adaptive(
     ref_out = _run_folded_child(
         layer, SimilarityGate(tau=0.95, metric="l2", eps=_EPS), parent, child
     )
-    out = _run_folded_child(
-        layer, SimilarityGate(tau=0.95, metric="l2", eps=_EPS), parent, child
-    )
+    out = _run_folded_child(layer, SimilarityGate(tau=0.95, metric="l2", eps=_EPS), parent, child)
     assert len(calls) == 0, "non-cosine metric must not take the fused path"
     assert torch.equal(out, ref_out)
 
     # AdaptiveQuantileGate subclasses SimilarityGate but the wiring uses an
     # exact type check, so it must keep the old path too.
-    adaptive_gate = AdaptiveQuantileGate(
-        target_stable_ratio=0.5, metric="cosine", eps=_EPS
-    )
+    adaptive_gate = AdaptiveQuantileGate(target_stable_ratio=0.5, metric="cosine", eps=_EPS)
     _run_folded_child(layer, adaptive_gate, parent, child)
     assert len(calls) == 0, "AdaptiveQuantileGate must not take the fused path"
 
@@ -409,7 +406,10 @@ class _ExplodingKernel:
         return _raise
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only")
+@pytest.mark.skipif(
+    not (torch.cuda.is_available() and _HAS_TRITON),
+    reason="CUDA + Triton required (the test patches the JIT kernel object)",
+)
 def test_ut006c_compile_failure_warns_once_and_disables(monkeypatch: pytest.MonkeyPatch) -> None:
     """AR002 design UT-006c: kernel failure -> one RuntimeWarning + fallback.
 
