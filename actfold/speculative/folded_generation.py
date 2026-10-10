@@ -20,6 +20,11 @@ import torch
 from actfold.core.model_wrapper import FoldedModel
 from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
+from actfold.speculative.acceptance import (
+    acceptance_rate,
+    draft_region_mask,
+    target_argmax_accept_mask,
+)
 from actfold.speculative.acceptance_policy import AcceptancePolicy, GreedyAcceptancePolicy
 from actfold.speculative.branch_tree import BranchNode, BranchTree
 from actfold.speculative.draft_generator import DraftGenerator
@@ -43,6 +48,7 @@ class FoldedGenerationResult:
     stable_ratio: float
     num_folded_steps: int
     final_branch_id: Any
+    acceptance_rate: float = 0.0
 
 
 def _next_branch_id(parent_id: Any, token_idx: int, draft_idx: int = 0) -> str:
@@ -109,6 +115,7 @@ def folded_generate(
         tree = BranchTree(root)
         active = root
         step_ratios: list[float] = []
+        step_acceptances: list[float] = []
 
         for token_idx in range(max_new_tokens):
             candidates = _make_candidates(
@@ -137,6 +144,20 @@ def folded_generate(
 
             accepted = policy.select(evaluated)
             accepted.accepted = True
+
+            # True acceptance semantics (AR004), decoupled from the policy:
+            # score the accepted candidate's new claims (diffs vs the parent
+            # plus the appended token) against the target argmax of its own
+            # forward logits. Computed against the pre-advance parent snapshot.
+            # ``_run_folded_forward`` always stores logits on evaluated nodes.
+            assert accepted.logits is not None
+            parent_tokens = active.tokens
+            accept_mask = target_argmax_accept_mask(accepted.tokens, accepted.logits)
+            draft_mask = draft_region_mask(parent_tokens, accepted.tokens)
+            step_rate = acceptance_rate(accept_mask, draft_mask)
+            accepted.metadata["acceptance_rate"] = step_rate
+            step_acceptances.append(float(step_rate))
+
             active = accepted
             step_ratio = active.metadata.get("stable_ratio", 0.0)
             step_ratios.append(float(step_ratio))
@@ -162,11 +183,15 @@ def folded_generate(
     stable_ratio = (
         sum(step_ratios) / len(step_ratios) if step_ratios else 0.0
     )
+    mean_acceptance = (
+        sum(step_acceptances) / len(step_acceptances) if step_acceptances else 0.0
+    )
     return FoldedGenerationResult(
         tokens=active.tokens,
         stable_ratio=float(stable_ratio),
         num_folded_steps=active.depth,
         final_branch_id=active.branch_id,
+        acceptance_rate=float(mean_acceptance),
     )
 
 

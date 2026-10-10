@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 
+import math
 import warnings
 from dataclasses import dataclass
 from typing import Any, Optional
@@ -19,6 +20,8 @@ from actfold.eval.base_adapter import BaseEvalAdapter
 from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.eval.generation_utils import greedy_generate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
+from actfold.speculative.acceptance_policy import AcceptancePolicy
+from actfold.speculative.branch_tree import BranchNode
 from actfold.speculative.draft_generator import DraftGenerator
 from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
 from actfold.speculative.folded_generation import _next_branch_id, folded_generate
@@ -580,3 +583,260 @@ def test_folded_generate_graph_zero_interference() -> None:
     assert result.num_folded_steps == max_new_tokens
     assert result.tokens.shape == (1, prompt.shape[1] + max_new_tokens)
     assert torch.equal(result.tokens, expected)
+
+
+# ---------------------------------------------------------------------------
+# AR004/T003 (UT-309 / UT-310): target-match acceptance policy + rate report
+# ---------------------------------------------------------------------------
+
+_AR004_VOCAB = 16
+_AR004_PROMPT = [[1, 5, 9]]
+
+
+def _target_match_policy() -> AcceptancePolicy:
+    """Instantiate the target-match acceptance policy (lazily imported).
+
+    The lazy import keeps the module collectible before the implementation
+    lands: in the TDD Red state only the UT-309 tests below fail with an
+    ImportError, while every pre-existing test in this file keeps running.
+    """
+    from actfold.speculative.acceptance_policy import TargetMatchAcceptancePolicy
+
+    return TargetMatchAcceptancePolicy()
+
+
+def _argmax_logits(
+    argmax_seq: list[int],
+    batch: int,
+    vocab_size: int = _AR004_VOCAB,
+) -> torch.Tensor:
+    """Build logits with a scripted per-position argmax, shared by all rows.
+
+    Args:
+        argmax_seq: Argmax token id for each position ``t``.
+        batch: Batch size of the returned tensor.
+        vocab_size: Vocabulary dimension.
+
+    Returns:
+        ``[batch, len(argmax_seq), vocab_size]`` logits with a +10 spike at
+        ``argmax_seq[t]`` for every batch row at position ``t``.
+    """
+    logits = torch.zeros(batch, len(argmax_seq), vocab_size)
+    for pos, tok in enumerate(argmax_seq):
+        logits[:, pos, tok] = 10.0
+    return logits
+
+
+def _make_policy_candidate(
+    branch_id: str,
+    tokens: torch.Tensor,
+    logits: torch.Tensor | None,
+) -> BranchNode:
+    """Build a BranchNode candidate with explicit tokens and logits."""
+    return BranchNode(
+        branch_id=branch_id,
+        parent_id="root",
+        tokens=tokens,
+        logits=logits,
+        depth=1,
+    )
+
+
+class FixedArgmaxModel(nn.Module):
+    """Stub model whose logits have a scripted argmax per position.
+
+    Position ``t`` of the returned logits always has argmax
+    ``argmax_table[t]`` regardless of the input tokens.  The greedy path of
+    ``folded_generate`` therefore appends ``argmax_table[T-1]`` for a parent
+    of length ``T``, and whether that appended token matches the child's
+    same-position argmax (``argmax_table[T]``) is exactly controllable —
+    giving precise 0.0 / 1.0 single-step acceptance rates (srs §3.5-3).
+    """
+
+    def __init__(self, vocab_size: int, argmax_table: list[int]) -> None:
+        super().__init__()
+        self._vocab_size = vocab_size
+        self._argmax_table = list(argmax_table)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        seq_len = tokens.shape[1]
+        logits = torch.zeros(tokens.shape[0], seq_len, self._vocab_size)
+        for pos in range(seq_len):
+            logits[:, pos, self._argmax_table[pos]] = 10.0
+        return logits
+
+
+def _make_fixed_argmax_adapter(argmax_table: list[int]) -> FastDLLMAdapter:
+    """Wrap a FixedArgmaxModel in an adapter (no folded model; direct path)."""
+    raw = FixedArgmaxModel(_AR004_VOCAB, argmax_table)
+    return FastDLLMAdapter(raw, num_layers=1, hidden_dim=8, vocab_size=_AR004_VOCAB)
+
+
+def test_target_match_policy_prefers_matching_candidate() -> None:
+    """UT-309a (srs §3.5-1): the candidate whose appended token matches its
+    same-position argmax (rate 1.0) is selected over a mismatching one (0.0),
+    regardless of list order."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    match = _make_policy_candidate("match", tokens, _argmax_logits([0, 0, 0, 7], 1))
+    mismatch = _make_policy_candidate("mismatch", tokens, _argmax_logits([0, 0, 0, 0], 1))
+
+    assert policy.select([mismatch, match]) is match
+    assert policy.select([match, mismatch]) is match
+
+
+def test_target_match_policy_tie_breaks_to_first() -> None:
+    """UT-309b: candidates with equal rates tie-break to the first in list order."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    first = _make_policy_candidate("first", tokens, _argmax_logits([0, 0, 0, 7], 1))
+    second = _make_policy_candidate("second", tokens, _argmax_logits([1, 1, 1, 7], 1))
+
+    assert policy.select([first, second]) is first
+    assert policy.select([second, first]) is second
+
+
+def test_target_match_policy_skips_none_logits_candidates() -> None:
+    """UT-309c (EX-605): candidates with ``logits=None`` are skipped; the
+    selection is made among the candidates that do carry logits."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    no_logits = _make_policy_candidate("none", tokens, None)
+    match = _make_policy_candidate("match", tokens, _argmax_logits([0, 0, 0, 7], 1))
+    mismatch = _make_policy_candidate("mismatch", tokens, _argmax_logits([0, 0, 0, 0], 1))
+
+    assert policy.select([no_logits, match, mismatch]) is match
+    assert policy.select([mismatch, no_logits]) is mismatch
+
+
+def test_target_match_policy_all_none_logits_returns_first() -> None:
+    """UT-309d (EX-605/EC-9): when every candidate has ``logits=None`` the
+    policy returns ``candidates[0]`` without raising."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    first = _make_policy_candidate("first", tokens, None)
+    second = _make_policy_candidate("second", tokens, None)
+
+    selected = policy.select([first, second])
+
+    assert selected is first
+
+
+def test_target_match_policy_single_candidate_returned_directly() -> None:
+    """UT-309e (EC-11): a lone candidate is returned as-is."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    only = _make_policy_candidate("only", tokens, _argmax_logits([0, 0, 0, 7], 1))
+
+    assert policy.select([only]) is only
+
+
+def test_target_match_policy_batch_half_match_selects_between_extremes() -> None:
+    """UT-309f (srs §3.5-3): with batch=2 and exactly one matching row the
+    rate is 0.5 — it must beat a 0.0-rate candidate and lose to a 1.0-rate
+    candidate, pinning the value strictly between the extremes."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7], [2, 6, 10, 7]])
+    full = _make_policy_candidate("full", tokens, _argmax_logits([0, 0, 0, 7], 2))
+    zero = _make_policy_candidate("zero", tokens, _argmax_logits([0, 0, 0, 0], 2))
+    half_logits = torch.zeros(2, 4, _AR004_VOCAB)
+    half_logits[:, :3, 0] = 10.0
+    half_logits[0, 3, 7] = 10.0
+    half_logits[1, 3, 0] = 10.0
+    half = _make_policy_candidate("half", tokens, half_logits)
+
+    assert policy.select([zero, half]) is half
+    assert policy.select([half, zero]) is half
+    assert policy.select([half, full]) is full
+
+
+def test_target_match_policy_conforms_to_acceptance_policy_interface() -> None:
+    """UT-309g: the policy subclasses AcceptancePolicy and its ``select``
+    accepts the interface's optional ``logits`` argument."""
+    policy = _target_match_policy()
+    tokens = torch.tensor([[1, 5, 9, 7]])
+    only = _make_policy_candidate("only", tokens, _argmax_logits([0, 0, 0, 7], 1))
+
+    assert isinstance(policy, AcceptancePolicy)
+    assert policy.select([only], None) is only
+
+
+def test_folded_generate_acceptance_rate_reported_across_steps() -> None:
+    """UT-310a (srs §3.5-2): multi-step folded_generate reports a finite
+    ``acceptance_rate`` mean in [0, 1]."""
+    _raw, adapter, folded, _cache = _make_causal_setup("cpu")
+    prompt = torch.tensor(_CAUSAL_PROMPT)
+
+    result = folded_generate(adapter, prompt, max_new_tokens=4, folded_model=folded)
+
+    assert result.num_folded_steps == 4
+    rate = result.acceptance_rate
+    assert isinstance(rate, float)
+    assert math.isfinite(rate)
+    assert 0.0 <= rate <= 1.0
+
+
+@pytest.mark.parametrize(
+    ("argmax_table", "max_new_tokens", "expected_rate", "expected_tokens"),
+    [
+        ([3, 3, 7, 7], 1, 1.0, [1, 5, 9, 7]),
+        ([3, 3, 7, 0], 1, 0.0, [1, 5, 9, 7]),
+        ([3, 3, 7, 7, 7], 2, 1.0, [1, 5, 9, 7, 7]),
+        ([3, 3, 7, 0, 7], 2, 0.0, [1, 5, 9, 7, 0]),
+        ([3, 3, 7, 7, 0], 2, 0.5, [1, 5, 9, 7, 7]),
+    ],
+)
+def test_folded_generate_acceptance_rate_exact_controlled(
+    argmax_table: list[int],
+    max_new_tokens: int,
+    expected_rate: float,
+    expected_tokens: list[int],
+) -> None:
+    """UT-310b (srs §3.5-3): a FixedArgmax stub pins each step's acceptance
+    rate exactly, so the reported ``acceptance_rate`` is the exact cross-step
+    mean (1.0, 0.0, or a 1.0/0.0 mix averaging 0.5).
+
+    The prompt has length 3 and position 2 of the table (7) picks the first
+    appended token.  A step appending token ``x`` at length ``T`` accepts iff
+    ``argmax_table[T] == x``; the greedy path appends ``argmax_table[T-1]``,
+    making every step's rate and the appended token sequence fully scripted.
+    """
+    adapter = _make_fixed_argmax_adapter(argmax_table)
+    prompt = torch.tensor(_AR004_PROMPT)
+
+    result = folded_generate(adapter, prompt, max_new_tokens=max_new_tokens)
+
+    assert result.num_folded_steps == max_new_tokens
+    assert torch.equal(result.tokens, torch.tensor([expected_tokens]))
+    assert result.acceptance_rate == pytest.approx(expected_rate)
+
+
+def test_folded_generate_default_policy_zero_regression_reports_rate() -> None:
+    """UT-310c (srs §3.5-2): with all-default arguments (greedy policy, no
+    folded model, no draft generator) the token output matches the eager
+    greedy baseline bit-for-bit and ``acceptance_rate`` is still reported."""
+    raw, _adapter, _folded, _cache = _make_causal_setup("cpu")
+    plain_adapter = FastDLLMAdapter(
+        raw, num_layers=_CAUSAL_LAYERS, hidden_dim=_CAUSAL_HIDDEN
+    )
+    prompt = torch.tensor(_CAUSAL_PROMPT)
+
+    expected = greedy_generate(plain_adapter, prompt, max_new_tokens=4)
+    result = folded_generate(plain_adapter, prompt, max_new_tokens=4)
+
+    assert torch.equal(result.tokens, expected)
+    assert math.isfinite(result.acceptance_rate)
+    assert 0.0 <= result.acceptance_rate <= 1.0
+
+
+def test_folded_generate_zero_new_tokens_acceptance_rate_is_zero() -> None:
+    """UT-310d (EC-12): with no generation steps the acceptance-rate mean
+    falls back to the 0.0 sentinel."""
+    _raw, adapter, folded, _cache = _make_causal_setup("cpu")
+    prompt = torch.tensor(_CAUSAL_PROMPT)
+
+    result = folded_generate(adapter, prompt, max_new_tokens=0, folded_model=folded)
+
+    assert result.num_folded_steps == 0
+    assert torch.equal(result.tokens, prompt)
+    assert result.acceptance_rate == 0.0

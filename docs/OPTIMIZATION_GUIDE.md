@@ -192,7 +192,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 | P2-2 | nonzero 同步的根除（split 层） | 固定容量 padded gather（索引 clamp + mask 过滤），接受固定 divergent 预算的少量多余 FFN 行计算 | 消除每 layer 1 次同步；**CUDA graph 前置条件** | 中 **✅ AR002 T001（`_exact_divergent_index`/`_padded_divergent_index` + stable_count 转发）** |
 | P2-3 | **CUDA graph / torch.compile 捕获验证循环** | 前置：P0 全部 + P2-2 + branch 上下文改由编译期 kwargs 传递（弃用 contextvars/thread-local）；diffusion 验证阶段是"同 shape 反复前向"的典型可捕获负载 | 固定 shape 场景潜在 2–5×；launch 开销归零 | 高（战略价值最大）**✅ AR002 T006–T008（kwargs 化 + `FoldedGraphRunner` + `ManualFoldedForward(use_cuda_graph=True)`；本机实测 per-step -47.1%，见第九部分）** |
 | P2-4 | 生成循环 O(T²) 消除 | baseline 侧接 KV cache（HF `DynamicCache`）使对照公平；folded 路径明确其适用域是 diffusion 多分支验证（本无 KV cache），并在论文口径中区分 | baseline 5–20× 墙钟（长序列）；**方法学对照公平性** | 低（baseline）/高（共存设计） |
-| P2-5 | 真正的投机解码接受语义 | 当前 engine 只测激活相似度，无基于 logits 的接受率验证（draft 分布 vs target 分布）；升级为 EMA[r] 式接受率 + log-prob 分数 | 论文叙事成立的前提；`logits.float().mean().item()`（verification_engine.py:122）这类无意义分数一并替换 | 高 |
+| P2-5 | 真正的投机解码接受语义 | 当前 engine 只测激活相似度，无基于 logits 的接受率验证（draft 分布 vs target 分布）；升级为 EMA[r] 式接受率 + log-prob 分数 | 论文叙事成立的前提；`logits.float().mean().item()`（verification_engine.py:122）这类无意义分数一并替换 | 高 **✅ AR004（`acceptance.py` 纯函数库 + 引擎 EMA/判定切换 + `TargetMatchAcceptancePolicy` + folded_generate 报告；见第十一部分）** |
 
 ### P3 算法/功能扩展（解锁真实场景）
 
@@ -326,6 +326,22 @@ AR003（`specs/changes/AR003-var-len-prefix-folding/`，T001–T007 全部 passi
 | 文档收口 | T006（README 局限性 #7 状态更新、AGENTS #19/#20 修订、CHANGELOG、本回链、ALGORITHM.md §11） | ✅ 完成 |
 
 **语义要点**：后缀恒 divergent 用显式 all-False mask tail 实现（对任意 tau 稳健，否决零填充方案——`tau<0` 时零向量 cosine=0 会被误判 stable）；var-len 不走 fused gate（同形连续契约 + 阈值不可达）与 `gather_select`（`fetch_flat` 按 child 长度索引 parent 行）；等长路径（`prefix_len == T_c`）逐位不变为最高不变量。
+
+---
+
+## 第十一部分 AR004 完成回链（2026-10-10）
+
+AR004（`specs/changes/AR004-logit-acceptance-semantics/`，T001–T006 全部 passing）覆盖 P2-5 真投机解码接受语义；默认参数行为零变化（判定阈值 0.0 下全接受，demo 基线 85.5% / 2.35e-03 / 93.75% 精确一致），全量回归 699 passed。
+
+| 指南条目 | AR004 任务 | 状态 |
+|---|---|---|
+| P2-5 接受率核心 | T001（`acceptance.py` 四纯函数：`target_argmax_accept_mask` / `draft_region_mask` / `acceptance_rate` / `mean_log_prob`，共享形状校验；engine `:122` 占位替换为 mean_log_prob） | ✅ 完成 |
+| P2-5 EMA[r] + 判定切换 | T002（`ema_alpha=0.3` 域 (0,1]、首调初始化无零先验稀释；`accepted = acceptance_rate >= threshold`，默认 0.0 零行为变化；stable_ratio 照常上报） | ✅ 完成 |
+| P2-5 policy + 报告 | T003（`TargetMatchAcceptancePolicy`：appended token 同位置 argmax 匹配率选优、并列取首、None 跳过、全 None→首候选；`folded_generate` 每步 metadata 接受率 + 结果字段跨步均值，与 policy 解耦） | ✅ 完成 |
+| P2-5 baseline 分数 | T004（`SpiffyBaseline` `baseline_score` → 全位置 mean_log_prob，键名不变） | ✅ 完成 |
+| 文档收口 | T005（AGENTS #40、CHANGELOG、README 局限 #8、本回链、指南 P2-5 勾选） | ✅ 完成 |
+
+**语义要点**：同位置预测约定（target `logits[:, i]` 预测位置 i 的 token）是全链唯一契约；draft 区域 = 分支新主张位（前缀差异位 + 变长后缀），`T_p < T_c` 截到公共前缀；空 draft 区域 rate=1.0（无新主张=全接受）、mlp=0.0 哨兵；`actfold_score`/`baseline_score` 键名不变仅语义升级（唯一消费面为序数比较）；EMA 首调直初始化（否决 0 先验——首步接受率会被稀释）。**遗留**：接受率当前对着 random/perturb draft 测量，是机制指标；真 draft 模型（P3-3）接入后才成为论文口径的接受率。
 
 ---
 

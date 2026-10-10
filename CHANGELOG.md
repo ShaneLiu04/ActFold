@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR004: True Speculative-Decoding Acceptance Semantics (P2-5)
+
+Spec: `specs/changes/AR004-logit-acceptance-semantics/` (srs.md / design.md / tasks.md, T001–T006 all passing). Default-parameter behavior is unchanged (threshold 0.0 accepts every branch; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged); full regression 699 passed.
+
+#### Added
+
+- **`actfold/speculative/acceptance.py`**: four pure functions implementing true acceptance semantics — `target_argmax_accept_mask` (per-position mask: draft token == target argmax at the same position), `draft_region_mask` (the positions a branch newly claims: prefix diffs vs the parent plus appended suffix; `T_p < T_c` truncates to the common prefix, a batch mismatch raises `ValueError`), `acceptance_rate` (masked mean over the draft region; empty region → 1.0), and `mean_log_prob` (fp32 `log_softmax` gather mean; empty region → 0.0 sentinel). Shared `_validate_token_tensor` gives all three a single shape-validation path.
+- **`TargetMatchAcceptancePolicy`** (`acceptance_policy.py`): selects the candidate whose appended token matches the target argmax of its own forward logits (batch-mean rate; ties → first in list order; `logits=None` candidates are skipped; all-None → `candidates[0]`).
+- `folded_generate` **per-step acceptance reporting**: after policy selection (decoupled from the policy by design), each step's accepted branch is scored against the pre-advance parent snapshot via the shared helpers; `accepted.metadata["acceptance_rate"]` is written per step and aggregated into the new `FoldedGenerationResult.acceptance_rate` field (mean over steps, 0.0 when no steps).
+- `ActFoldVerificationEngine`: `ema_alpha: float = 0.3` constructor parameter (domain `(0, 1]`, else `ValueError`), a public `ema_acceptance_rate` attribute (first call initializes to that call's rate — no zero-prior dilution), and `VerificationResult` fields `acceptance_rate` / `mean_log_prob` / `ema_acceptance_rate`.
+
+#### Changed
+
+- **Acceptance decision switch**: `verify_branch` now decides `accepted = acceptance_rate >= acceptance_threshold` (was `stable_ratio >= threshold`). With the default threshold 0.0 and `acceptance_rate ∈ [0, 1]` every branch still passes — a zero-change default, but the knob now controls true acceptance instead of activation similarity; `stable_ratio` is still measured and reported.
+- **`actfold_score` semantic upgrade** (key name unchanged by design): the meaningless `logits.float().mean().item()` placeholder (verification_engine.py:122) is replaced by `mean_log_prob` over the draft region. The only consumer compares ordinally (test_integration.py:169), so the change is consumer-safe.
+- **`SpiffyBaseline.verify` `baseline_score`** placeholder replaced by `mean_log_prob` over all positions (key name unchanged).
+
+#### Known follow-ups
+
+- A real draft model (P3-3) is what the acceptance rate should measure against; current drafts are random/perturb modes, so the reported rate is a mechanism metric until then.
+- Multi-ancestor reuse (P3-2), `Branch.hidden_states` lazy referencing, and MoE FLOPs correction remain open.
+
 ### AR003: Variable-Length Prefix Folding (P3-1) + BenchmarkRunner Graph Wiring (AR002 follow-up)
 
 Spec: `specs/changes/AR003-var-len-prefix-folding/` (srs.md / design.md / tasks.md, T001–T007 all passing). Equal-length folding is bit-identical to the previous behavior (demo baseline 85.5% / 2.35e-03 / 93.75% unchanged).

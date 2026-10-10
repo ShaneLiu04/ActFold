@@ -70,3 +70,49 @@ class ThresholdAcceptancePolicy(AcceptancePolicy):
         if not eligible:
             eligible = candidates
         return self.greedy.select(eligible, logits)
+
+
+class TargetMatchAcceptancePolicy(AcceptancePolicy):
+    """Select the candidate whose appended token matches the target argmax.
+
+    True speculative-decoding semantics (AR004): each candidate's appended
+    token (its last position) is accepted iff it equals the target argmax at
+    that same position of the candidate's own forward logits.  The candidate
+    with the highest acceptance rate wins; ties resolve to the first
+    candidate in list order.  Candidates without logits are skipped; if all
+    candidates lack logits, the first candidate is returned.
+    """
+
+    def _rate(self, node: BranchNode) -> float:
+        """Batch-mean acceptance of the candidate's appended token."""
+        assert node.logits is not None
+        last_logits = node.logits[:, -1, :]  # [batch, vocab]
+        predicted = last_logits.argmax(dim=-1)  # [batch]
+        return float((predicted == node.tokens[:, -1]).float().mean().item())
+
+    def select(
+        self,
+        candidates: list[BranchNode],
+        logits: torch.Tensor | None = None,
+    ) -> BranchNode:
+        """Return the candidate with the highest appended-token acceptance.
+
+        Args:
+            candidates: Candidate branch nodes (each with forward logits).
+            logits: Unused; kept for interface symmetry.
+
+        Returns:
+            The accepted branch.
+        """
+        best: BranchNode | None = None
+        best_rate = float("-inf")
+        for node in candidates:
+            if node.logits is None:
+                continue
+            rate = self._rate(node)
+            if rate > best_rate:
+                best_rate = rate
+                best = node
+        if best is None:
+            return candidates[0]
+        return best

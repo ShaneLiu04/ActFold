@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from actfold.speculative.acceptance import mean_log_prob
 from actfold.speculative.branch import Branch
 from actfold.speculative.draft_generator import DraftGenerator
 from actfold.speculative.fast_dllm_adapter import DiffusionLLMAdapter
@@ -14,7 +15,8 @@ class SpiffyBaseline:
 
     This baseline generates ``num_branches`` candidate continuations of length
     ``max_new_tokens`` and verifies each with a full forward pass. The branch
-    with the highest mean logit score is accepted.
+    with the highest mean token log-probability (``baseline_score``, AR004
+    true verification semantics) is accepted.
 
     Args:
         model: Model adapter.
@@ -74,7 +76,10 @@ class SpiffyBaseline:
 
         for branch in branches:
             logits = self.model.forward(branch.tokens)
-            score = logits.float().mean().item()
+            # True verification semantics (AR004): mean log-prob of the branch
+            # tokens under the model (all positions) replaces the historical
+            # ``logits.mean()`` placeholder. Key name unchanged by design.
+            score = mean_log_prob(logits, branch.tokens)
             branch.metadata["baseline_score"] = score
             if score > best_score:
                 best_score = score

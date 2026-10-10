@@ -10,6 +10,12 @@ from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER, StabilityProfile
+from actfold.speculative.acceptance import (
+    acceptance_rate,
+    draft_region_mask,
+    mean_log_prob,
+    target_argmax_accept_mask,
+)
 from actfold.speculative.branch import Branch
 from actfold.speculative.fast_dllm_adapter import DiffusionLLMAdapter
 from actfold.utils.cost_model import ComputeBandwidthCostModel, HardwareProfile
@@ -29,6 +35,9 @@ class VerificationResult:
     latency_ms: float
     estimated_latency_ms: float = 0.0
     stability_profile: StabilityProfile | None = None
+    acceptance_rate: float = 0.0
+    mean_log_prob: float = 0.0
+    ema_acceptance_rate: float = 0.0
 
 
 class ActFoldVerificationEngine:
@@ -45,9 +54,19 @@ class ActFoldVerificationEngine:
         cache: Activation cache shared across branches.
         gate: Similarity gate.
         scheduler: Optional folding scheduler for dynamic tau.
-        acceptance_threshold: Minimum stable ratio for a branch to be accepted.
-            A value of ``0.0`` accepts all branches (useful for research
-            benchmarking). Increase to make verification more conservative.
+        acceptance_threshold: Minimum acceptance rate for a branch to be
+            accepted (AR004: true speculative-decoding semantics; previously
+            the stable ratio).  A value of ``0.0`` accepts all branches
+            (useful for research benchmarking). Increase to make verification
+            more conservative.
+        ema_alpha: Exponential-moving-average coefficient for the acceptance
+            rate tracked across ``verify_branch`` calls (``0 < ema_alpha <= 1``;
+            ``1.0`` degenerates to the instantaneous rate). The first call
+            initializes the average to that call's rate.
+
+    Raises:
+        ValueError: If ``acceptance_threshold`` is outside ``[0, 1]`` or
+            ``ema_alpha`` is outside ``(0, 1]``.
     """
 
     def __init__(
@@ -58,15 +77,21 @@ class ActFoldVerificationEngine:
         scheduler: FoldingScheduler | None = None,
         acceptance_threshold: float = 0.0,
         cost_model: ComputeBandwidthCostModel | None = None,
+        ema_alpha: float = 0.3,
     ) -> None:
         if not 0.0 <= acceptance_threshold <= 1.0:
             raise ValueError(f"acceptance_threshold must be in [0, 1], got {acceptance_threshold}")
+        if not 0.0 < ema_alpha <= 1.0:
+            raise ValueError(f"ema_alpha must be in (0, 1], got {ema_alpha}")
 
         self.model = model
         self.cache = cache
         self.gate = gate
         self.scheduler = scheduler
         self.acceptance_threshold = acceptance_threshold
+        self.ema_alpha = ema_alpha
+        self.ema_acceptance_rate: float = 0.0
+        self._ema_initialized: bool = False
         self._current_seq_len: int = 1
         self.cost_model = cost_model or ComputeBandwidthCostModel(
             HardwareProfile.from_device(cache.device)
@@ -119,11 +144,35 @@ class ActFoldVerificationEngine:
 
         tflops = self._estimate_tflops(stable_ratio)
 
-        score = logits.float().mean().item()
+        # True speculative-decoding acceptance semantics (AR004): the draft
+        # region carries the child's new claims and is scored against the
+        # target argmax / distribution. ``actfold_score`` is the draft-region
+        # mean log-prob (semantic upgrade over the raw-logit-mean placeholder).
+        accept_mask = target_argmax_accept_mask(child_branch.tokens, logits)
+        draft_mask = draft_region_mask(parent_branch.tokens, child_branch.tokens)
+        rate = acceptance_rate(accept_mask, draft_mask)
+        score = mean_log_prob(logits, child_branch.tokens, draft_mask)
+
+        # EMA[r] tracking (AR004): the first call initializes the average to
+        # that call's rate; later calls blend with the ema_alpha coefficient.
+        if not self._ema_initialized:
+            self.ema_acceptance_rate = rate
+            self._ema_initialized = True
+        else:
+            self.ema_acceptance_rate = (
+                self.ema_alpha * rate
+                + (1.0 - self.ema_alpha) * self.ema_acceptance_rate
+            )
+
         child_branch.metadata["actfold_score"] = score
+        child_branch.metadata["acceptance_rate"] = rate
         child_branch.metadata["stable_ratio"] = stable_ratio
 
-        accepted = stable_ratio >= self.acceptance_threshold
+        # Acceptance decision consumes the true speculative-decoding
+        # semantics (AR004): the draft's target-argmax acceptance rate, not
+        # the activation-reuse stable ratio. With the default threshold of
+        # 0.0 every branch is accepted, exactly as before.
+        accepted = rate >= self.acceptance_threshold
         child_branch.accepted = accepted
 
         if not accepted:
@@ -141,6 +190,9 @@ class ActFoldVerificationEngine:
             latency_ms=measurement.latency_ms,
             estimated_latency_ms=estimated_latency_ms,
             stability_profile=profile,
+            acceptance_rate=rate,
+            mean_log_prob=score,
+            ema_acceptance_rate=self.ema_acceptance_rate,
         )
 
     def _ensure_parent_layers(
