@@ -239,7 +239,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 - `AdaptiveQuantileGate` 与 `FoldingScheduler` 互斥但无检测（AGENTS #29）：`FoldedTransformerLayer` 应显式拒绝组合。
 - `architecture_utils.find_layer_list` 只认 `nn.ModuleList`（:147），`nn.Sequential`/自定义容器不支持，且 auto-discovery 失败时**静默降级为 embedding 代理测量，用户不知道 folding 没生效**——应返回 `folding_status` 枚举并 WARNING。
 - `registry._resolve_family` 子串匹配（"fast" in name）与 `models/utils.infer_model_family` 双份维护；未知 diffusion 家族静默落 `causal_lm`。
-- `generic.forward` 恒置 `output_hidden_states=True`（generic.py:112）：7B 模型 T=512 时数百 MB 峰值浪费。
+- ~~`generic.forward` 恒置 `output_hidden_states=True`（generic.py:112）：7B 模型 T=512 时数百 MB 峰值浪费。~~ **✅ AR008（按需化）**：默认 `False`；输出既无 `logits` 也无 `last_hidden_state` 时置实例标志并带 `True` 递归重跑一次（每实例至多一次双跑，标志粘性安全）；LLaDA/Dream 继承链自动受益；EX-805 CUDA 实证峰值差 ≥150MB（理论 192MB）。见第十五部分。
 - Windows 兼容：evalplus 明确 raise（合理）；bash 脚本全家桶需 WSL；`run_ablation.sh` heredoc 未加引号的变量插值存在注入面。
 
 ---
@@ -387,6 +387,21 @@ AR007（`specs/changes/AR007-truncated-parent-reuse/`，T001–T004 全部 passi
 | 全量质量门 | T004（761 passed 零回归、demo 基线不变、mypy/pyflakes/100 列） | ✅ 完成 |
 
 **语义要点**：截断复用**不要求**真前缀——gate 相似度是语义安全网（真前缀是收益场景：因果模型逐位一致 → 全 stable 完全复用；非前缀 divergent → 全重算 bit-exact）。快路径截断判定基于 fetch 后**实际形状**而非布尔标记（异常 cache 层间错位状态确定性兜底）。`gather_select` 在 parent 更长时保守跳过：fetch_flat 行公式（vectorized_cache.py:376-378）在非 None 返回时实际确定覆盖前 `seq_len` token，gather_select 对 parent 更长**实际正确**——留作后续性能 AR 线索。CUDA graph 零改动：`_parent_cache_complete` 形状检查天然把变长 parent 路由到 silent eager（与 AR003 变长步骤同路径）。**遗留**：paged 多祖先结构（P3-2 主体）；`Branch.hidden_states` 惰性引用化（生产零调用）。
+
+---
+
+## 第十五部分 AR008 完成回链（2026-10-11）
+
+AR008（`specs/changes/AR008-generic-hidden-states-on-demand/`，T001–T004 全部 passing）收口 6.2 API 债中"generic.forward 恒置 `output_hidden_states=True`"：**真实模型前向内存峰值优化**——默认不收集全层 hidden states（7B/T=512 约 256MB fp32），仅对"既无 `logits` 也无 `last_hidden_state`"的第三类包装模型按需收集。
+
+| 指南条目 | AR008 任务 | 状态 |
+|---|---|---|
+| 按需化核心 | T001（`__init__` 实例标志 `_needs_hidden_states: bool = False` + forward 默认 False/两字段缺失时置位并带 True 递归重跑一次/RuntimeError 消息逐字保留/平铺探测顺序逐行保留；UT-701~705：logits-only spy False+逐位 / last_hidden-only 同 / hidden_states-only 旗标条件式 stub 首跑双调（False→True）+次跑单调 True / 三态全无+空元组变体 RuntimeError 逐字+恰好 2 调 / branch 键剥离重跑下保持） | ✅ 完成 |
+| 内存实证与回归 | T002（EX-805 CUDA：24 层无参数 stub False/True 实例对照 `max_memory_allocated` 峰值差 ≥150MB 实测通过；test_models.py 10 passed 零回归；LLaDA/Dream 继承链零回归） | ✅ 完成 |
+| 文档收口 | T003（指南 6.2 勾选 + 本回链、CHANGELOG AR008 节） | ✅ 完成 |
+| 全量质量门 | T004（全量零回归、demo 基线不变、mypy/pyflakes/100 列） | ✅ 完成 |
+
+**语义要点**：重跑仅在"输出本就不可用"的路径发生（AGENTS #10 论证：修复而非静默切换）；标志单向 False→True 且粘性安全（True 态下 logits-first 模型仍走早退分支，仅付内存代价不损正确性）；train 模式双跑可接受（首跑输出不可用，重跑是唯一可用结果）。调用链覆盖（req 门控逐路径核实）：基类 AR fallback 与 LLaDA/Dream sampler 非折叠路径经继承的 generic.forward ✓；sampler 折叠路径与 `_native_sampler` 裸 model 今日即绕过 → 行为零变化。**测试教训（design 门控 WARN-1）**：hidden_states-only stub 必须旗标条件式（False → 字段 None，模拟真实 HF 语义），恒返回元组的 stub 使"首跑双调"断言成为假 Red。**遗留**：真实 7B checkpoint 实测（RERUN_CHECKLIST）。
 
 ---
 

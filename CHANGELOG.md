@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR008: On-Demand `output_hidden_states` in `GenericDiffusionLLM.forward` (guide 6.2 memory-debt fix)
+
+Spec: `specs/changes/AR008-generic-hidden-states-on-demand/` (srs.md / design.md / tasks.md, T001–T004 all passing). Three output shapes (logits / last_hidden_state / hidden_states-only) behave identically; the RuntimeError text is preserved verbatim; full regression zero-regression; demo baseline unchanged. Real 7B checkpoint measurement remains deferred to the RERUN_CHECKLIST.
+
+#### Changed
+
+- **`GenericDiffusionLLM.forward` no longer unconditionally collects all-layer hidden states**: `output_hidden_states` defaults to `False` (~256 MB fp32 peak saved at 7B/T=512 for the common `logits`/`last_hidden_state` shapes). Only when the model output exposes neither field does the wrapper set the per-instance `_needs_hidden_states` flag and re-run the same forward once with collection enabled — at most one double forward per instance (the flag is sticky and safe: a logits-first model still takes the early return when the flag is on). The probing order and the verbatim "Model output exposes neither ..." RuntimeError are preserved line-for-line. `LLaDAModel`/`DreamModel` inherit `generic.forward` and benefit automatically; the sampler folded path and `_native_sampler` already bypass this wrapper (zero behavior change).
+- New private attribute `_needs_hidden_states: bool` (no public API change).
+
+#### Added
+
+- Tests: UT-701~705 (`tests/test_generic_forward.py`) pin the three output shapes via **flag-conditional stubs** (False → `hidden_states=None`, mirroring real HF semantics; a constant-tuple stub would make the double-forward assertion a false Red) with call-log spies, the verbatim error message, exactly-two-calls termination, and branch-kwarg stripping under the rerun; EX-805 (CUDA) measures the `max_memory_allocated` peak delta between flag-False and flag-True instances over a 24-layer parameter-free stub — ≥150 MiB observed against the theoretical 192 MiB.
+
 ### AR007: Truncated-Prefix Reuse for Longer Parents (P3-2 first tier)
 
 Spec: `specs/changes/AR007-truncated-parent-reuse/` (srs.md / design.md / tasks.md, T001–T004 all passing). Equal-length and append-only paths are bit-identical (full regression 761 passed, zero regressions; demo baseline unchanged). The paged multi-ancestor structure remains the P3-2 follow-up.

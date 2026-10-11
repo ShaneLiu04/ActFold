@@ -46,6 +46,12 @@ class GenericDiffusionLLM(DiffusionLLM):
     ) -> None:
         super().__init__(model_name_or_path)
         self._allow_random_head = allow_random_head
+        # AR008: set on the first forward whose output exposes neither
+        # ``logits`` nor ``last_hidden_state``; later forwards then request
+        # hidden states up front instead of re-running twice. Collecting all
+        # layer hidden states costs ~hundreds of MB at 7B/T=512, so the
+        # default is off.
+        self._needs_hidden_states: bool = False
         load_kwargs: dict[str, Any] = {}
         if load_in_8bit:
             load_kwargs["load_in_8bit"] = True
@@ -126,10 +132,13 @@ class GenericDiffusionLLM(DiffusionLLM):
         # not accept them, so they are always stripped here.
         for key in ("branch_id", "parent_branch_id", "step_idx"):
             kwargs.pop(key, None)
+        # AR008: hidden-state collection is off by default — only wrapper
+        # models that expose neither ``logits`` nor ``last_hidden_state``
+        # need the all-layer tuple (see the fallback below).
         outputs = model(
             input_ids=tokens,
             attention_mask=attention_mask,
-            output_hidden_states=True,
+            output_hidden_states=self._needs_hidden_states,
             return_dict=True,
             **kwargs,
         )
@@ -145,6 +154,15 @@ class GenericDiffusionLLM(DiffusionLLM):
             if hidden_states:
                 last_hidden = hidden_states[-1]
         if last_hidden is None:
+            if not self._needs_hidden_states:
+                # AR008: this model's default output exposes neither
+                # ``logits`` nor ``last_hidden_state`` — re-run once with
+                # hidden-state collection enabled and cache the decision
+                # (at most one double forward per instance; the flag is
+                # sticky, and a ``logits``-first model still takes the
+                # early return above when the flag is on).
+                self._needs_hidden_states = True
+                return self.forward(tokens, attention_mask=attention_mask, **kwargs)
             raise RuntimeError(
                 "Model output exposes neither 'logits', 'last_hidden_state', nor "
                 "'hidden_states'; cannot extract a tensor for ActFold."
