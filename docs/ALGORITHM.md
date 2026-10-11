@@ -245,9 +245,9 @@ general **append-only** rule: a parent cached at `T_p ≤ T_c` (same batch and
 hidden size) can donate activations for the child's *prefix*.
 
 1. **Prefix classification** — after fetching the parent gate activation, a
-   batch/hidden mismatch, a zero-length entry, or `T_p > T_c` (the child is
-   not a prefix extension; truncation reuse is unsupported) treats the parent
-   as absent (full recompute, cache-miss semantics, never an error).
+   batch/hidden mismatch or a zero-length entry treats the parent as absent
+   (full recompute, cache-miss semantics, never an error). A parent cached at
+   `T_p > T_c` is **truncated** to the child length (AR007, §12).
 2. **Prefix gate + explicit False suffix** — the similarity gate compares
    only `child[:, :T_p]` against the parent; the full mask is
    `cat([prefix_mask, all-False suffix])`. The suffix has no parent activation
@@ -271,4 +271,32 @@ token recomputes) while remaining `torch.equal` to the eager full recompute
 (measured mean stable ratio ≈ 0.84 over 4 growth steps, T 4→8). Variable-
 length steps never enter the CUDA graph (§10): the parent-cache shape check
 routes them to a silent eager fallback where prefix folding applies.
+
+## 12. Truncated-Prefix Reuse for Longer Parents (AR007)
+
+The symmetric completion of §11: a parent cached at `T_p > T_c` (same batch
+and hidden size) donates its **first `T_c` positions**.
+
+1. **Truncation** — the gate activation `h_parent` is sliced to
+   `h_parent[:, :T_c]` and folds through the existing equal-length branches
+   (`T_p == T_c` semantics after the slice); only batch/hidden mismatches and
+   zero-length entries still mean no-parent.
+2. **Reuse vs. safety net** — a *true* prefix of a causal model is
+   bit-identical position-wise, so the gate certifies every position stable
+   and the parent FFN output is reused after the same truncation
+   (`torch.equal` to the eager recompute, zero `_recompute_all` calls). A
+   non-prefix child diverges at the gate and recomputes — the similarity
+   gate is the semantic safety net, so truncation never requires a true
+   prefix for correctness. The fast path truncates by the fetched shape, so
+   per-layer cache entries that disagree in length resolve deterministically.
+3. **Merge path** — `gather_select` is conservatively skipped (its flat-row
+   layout contract covers exactly `seq_len` stored tokens; the skip is
+   bit-identical, one less fused kernel) and the parent FFN is fetched,
+   truncated, and merged. `_get_parent_ffn_output` accepts a longer-than-mask
+   FFN **only on the equal-length contract**; the §11 varlen exact-shape
+   contract is unchanged.
+4. **Graph path** — a longer parent fails the `_parent_cache_complete` shape
+   check and silently runs eager (the same route as §11 variable-length
+   steps): no capture, no warning, no disable; a later same-shape child with
+   a complete parent cache still captures.
 

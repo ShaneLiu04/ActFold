@@ -167,19 +167,27 @@ class FoldedTransformerLayer(nn.Module):
         except (KeyError, RuntimeError):
             h_parent = None
 
+        parent_longer = False
         if h_parent is not None and (
             h_parent.dim() != 3
             or h_parent.shape[0] != hidden_states.shape[0]
             or h_parent.shape[2] != hidden_states.shape[2]
             or h_parent.shape[1] == 0
-            or h_parent.shape[1] > hidden_states.shape[1]
         ):
             # The parent cannot donate a prefix-aligned activation: a batch
-            # or hidden-dim mismatch, a zero-length entry, or a parent
-            # LONGER than the child (append-only folding; truncation reuse
-            # is unsupported).  Treat the parent as absent and recompute —
-            # identical semantics to a cache miss, never a hard error.
+            # or hidden-dim mismatch or a zero-length entry.  Treat the
+            # parent as absent and recompute — identical semantics to a
+            # cache miss, never a hard error.
             h_parent = None
+        elif h_parent is not None and h_parent.shape[1] > hidden_states.shape[1]:
+            # AR007 truncated-prefix reuse: a parent LONGER than the child
+            # donates its first ``seq_len`` positions.  Causal models are
+            # bit-identical on a true prefix, so the gate certifies them
+            # all-stable and the parent FFN output is reused after the same
+            # truncation; non-prefix children diverge at the gate and are
+            # recomputed (the similarity gate is the semantic safety net).
+            h_parent = h_parent[:, : hidden_states.shape[1]]
+            parent_longer = True
 
         if h_parent is None:
             output = self._recompute_all(hidden_states, attention_mask, **kwargs)
@@ -276,6 +284,17 @@ class FoldedTransformerLayer(nn.Module):
                 ffn_out = None
             if (
                 ffn_out is not None
+                and ffn_out.dim() == 3
+                and ffn_out.shape[1] > hidden_states.shape[1]
+            ):
+                # AR007: a parent FFN longer than the child is truncated to
+                # the child length before the reuse check.  The shape test is
+                # deliberately on the fetched tensor (not the ``parent_longer``
+                # flag): a cache whose per-layer entries disagree in length
+                # (an anomalous state) still resolves deterministically here.
+                ffn_out = ffn_out[:, : hidden_states.shape[1]]
+            if (
+                ffn_out is not None
                 and ffn_out.shape == hidden_states.shape
                 and self._returns_tuple is not None
             ):
@@ -318,6 +337,7 @@ class FoldedTransformerLayer(nn.Module):
             stable_mask,
             child_out,
             prefix_len=merge_prefix_len,
+            parent_longer=parent_longer,
         )
 
         # Store child activations for future reuse.
@@ -345,6 +365,7 @@ class FoldedTransformerLayer(nn.Module):
         stable_mask: torch.Tensor,
         child_out: torch.Tensor,
         prefix_len: int | None = None,
+        parent_longer: bool = False,
     ) -> torch.Tensor:
         """Merge the cached parent FFN output with the recomputed child output.
 
@@ -364,10 +385,18 @@ class FoldedTransformerLayer(nn.Module):
                 indexes parent rows by the child ``seq_len``, which does not
                 match a shorter parent) and the parent FFN is aligned to the
                 child length with the recomputed suffix before the merge.
+            parent_longer: True when the cached parent activation was
+                longer than the child and was truncated (AR007).  The
+                ``gather_select`` fast path is skipped conservatively (its
+                flat-row layout contract covers exactly ``seq_len`` stored
+                tokens per branch; truncation reuse does not depend on it)
+                and the parent FFN is fetched and truncated instead —
+                bit-identical, one less fused kernel.
         """
         batch, seq_len, hidden_dim = child_out.shape
         if (
             prefix_len is None
+            and not parent_longer
             and seq_len >= _GATHER_SELECT_MIN_TOKENS
             and hidden_dim >= _GATHER_SELECT_MIN_HIDDEN
             and (not _GATHER_SELECT_REQUIRE_CUDA or child_out.is_cuda)
@@ -413,9 +442,12 @@ class FoldedTransformerLayer(nn.Module):
             parent_branch_id: Identifier of the parent branch.
             stable_mask: Boolean stability mask ``[batch, seq_len]``.
             prefix_len: Parent prefix length for variable-length folding
-                (AR003).  ``None`` selects the equal-length contract (the
-                FFN shape must match the mask shape); when set, the FFN
-                shape must match ``[batch, prefix_len]`` instead.
+                (AR003).  ``None`` selects the equal-length contract, under
+                which a parent FFN **longer** than the mask is accepted and
+                truncated to the mask length (AR007 truncated-prefix
+                reuse); when set, the FFN shape must match
+                ``[batch, prefix_len]`` exactly (the varlen contract is
+                unchanged).
         """
         ffn_out = self.cache.fetch(
             branch_id=parent_branch_id,
@@ -426,12 +458,26 @@ class FoldedTransformerLayer(nn.Module):
                 f"Parent FFN output missing for branch={parent_branch_id}, "
                 f"layer={self.layer_idx}"
             )
-        expected_shape: torch.Size = (
-            torch.Size([stable_mask.shape[0], prefix_len])
-            if prefix_len is not None
-            else stable_mask.shape
-        )
+        if prefix_len is not None:
+            expected_shape: torch.Size = torch.Size([stable_mask.shape[0], prefix_len])
+            if ffn_out.shape[:2] != expected_shape:
+                raise RuntimeError(
+                    f"Parent FFN output shape {tuple(ffn_out.shape[:2])} does not match "
+                    f"the expected shape {tuple(expected_shape)} for "
+                    f"branch={parent_branch_id}, layer={self.layer_idx}"
+                )
+            return ffn_out
+        expected_shape = stable_mask.shape
         if ffn_out.shape[:2] != expected_shape:
+            if (
+                ffn_out.dim() == 3
+                and ffn_out.shape[0] == expected_shape[0]
+                and ffn_out.shape[1] > expected_shape[1]
+            ):
+                # AR007: a longer parent FFN donates its first ``seq_len``
+                # positions; shorter or batch-mismatched entries remain hard
+                # errors (the varlen path above keeps the exact contract).
+                return ffn_out[:, : expected_shape[1]]
             raise RuntimeError(
                 f"Parent FFN output shape {tuple(ffn_out.shape[:2])} does not match "
                 f"the expected shape {tuple(expected_shape)} for "

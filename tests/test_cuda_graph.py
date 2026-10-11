@@ -1014,12 +1014,11 @@ def test_bs001_folded_generate_graph_end_to_end() -> None:
     """folded_generate + Manual(use_cuda_graph=True) matches eager tokens.
 
     ``folded_generate`` appends one token per step, so every child is one
-    token longer than its parent: with variable-length folding unsupported
-    (README limitation #7) the parent activations can never be reused and
-    every step recomputes (the same semantics as the legacy FoldedModel
-    path, where folding silently never activated). The generated tokens
-    must equal the all-eager run and generation must not be interrupted or
-    crash on the shape mismatch.
+    token longer than its parent: a variable-length step never enters the
+    graph (the ``_parent_cache_complete`` shape check routes it to a silent
+    eager fallback, where AR003 prefix folding applies). The generated
+    tokens must equal the all-eager run and generation must not be
+    interrupted or crash on the shape mismatch.
     """
     from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
     from actfold.speculative.folded_generation import folded_generate
@@ -1121,3 +1120,88 @@ def test_bs001_fixed_shape_verification_loop_via_adapter() -> None:
 
     assert mff_graph.graph_runner is not None
     assert _count_user_warnings(record) == 0
+
+
+# ---------------------------------------------------------------------------
+# AR007: parent-longer truncated-prefix reuse through ManualFoldedForward
+# ---------------------------------------------------------------------------
+
+
+def test_it_611_long_parent_true_prefix_end_to_end() -> None:
+    """IT-611 (AR007): a longer parent donates a truncated true prefix.
+
+    An 8-token parent pass populates the cache; a 6-token child that is a
+    true prefix of the parent folds with full reuse: the output matches the
+    eager full recompute bit-for-bit, every folded layer records
+    ``stable_ratio == 1.0`` in the global profiler, and the child branch is
+    published into the cache at the child length.
+    """
+    device = "cpu"
+    model, _profile = _build_model(device)
+    torch.manual_seed(_SEED)
+    parent_tokens = torch.randint(0, _VOCAB, (1, 8), device=device)
+    child_tokens = parent_tokens[:, :6].contiguous()
+
+    mff = _make_mff(model, device)
+    with torch.no_grad():
+        mff(parent_tokens, branch_id="parent")
+        eager_out = model(child_tokens)
+
+    GLOBAL_STABILITY_PROFILER.reset_branch("child")
+    with torch.no_grad():
+        folded_out = mff(child_tokens, branch_id="child", parent_branch_id="parent")
+
+    assert torch.equal(folded_out, eager_out)
+    profile = GLOBAL_STABILITY_PROFILER.get_profile("child")
+    assert profile is not None
+    assert len(profile.layer_stats) == _LAYERS
+    for stat in profile.layer_stats:
+        assert stat.stable_ratio == pytest.approx(1.0)
+    for layer_idx in range(_LAYERS):
+        entry = mff.cache.fetch(branch_id="child", layer_idx=layer_idx)
+        assert "ffn_out" in entry
+        assert tuple(entry["ffn_out"].shape) == (1, 6, _HIDDEN)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+def test_it_613_long_parent_silent_eager_no_capture() -> None:
+    """IT-613 (AR007): a longer parent never captures and never warns.
+
+    The graph wiring captures only same-shape children with a complete
+    parent cache; a child shorter than its cached parent fails the
+    ``_parent_cache_complete`` shape check and silently runs eager, where
+    AR007 truncated-prefix reuse applies. The graph must not be disabled:
+    a later complete-parent child still captures.
+    """
+    _load_runner_cls()
+    device = "cuda"
+    model, _profile = _build_model(device)
+    torch.manual_seed(_SEED)
+    long_parent_tokens = torch.randint(0, _VOCAB, (1, 10), device=device)
+    child_tokens = long_parent_tokens[:, :8].contiguous()
+
+    mff = _make_mff(model, device, use_cuda_graph=True, graph_capacity_ratio=0.5)
+    with torch.no_grad():
+        mff(long_parent_tokens, branch_id="parent")
+        eager_ref = model(child_tokens)
+
+    with warnings.catch_warnings(record=True) as record:
+        warnings.simplefilter("always")
+        with torch.no_grad():
+            folded_out = mff(child_tokens, branch_id="child", parent_branch_id="parent")
+
+    # Silent eager fallback: no capture, no warning, no disable, exact reuse.
+    assert mff.graph_runner is None
+    assert mff._graph_capture_failed is False
+    assert _count_user_warnings(record) == 0
+    assert torch.allclose(folded_out, eager_ref, atol=1e-4, rtol=1e-4)
+
+    # The graph wiring stays armed: a same-shape child with a complete
+    # parent cache still captures on the next eligible call.
+    torch.manual_seed(_SEED + 1)
+    parent2_tokens = torch.randint(0, _VOCAB, (1, 8), device=device)
+    child2_tokens = _change_tokens(parent2_tokens, [3])
+    with torch.no_grad():
+        mff(parent2_tokens, branch_id="parent2")
+        mff(child2_tokens, branch_id="child2", parent_branch_id="parent2")
+    assert mff.graph_runner is not None

@@ -196,8 +196,8 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 ### P3 算法/功能扩展（解锁真实场景）
 
-1. **变量长度折叠** ~~只支持等长、直接 `NotImplementedError`~~ **✅ AR003（append-only 前缀折叠）**：`FoldedTransformerLayer` 前缀对齐（gate 前缀比较、后缀恒 divergent、merge 前缀对齐），`BranchManager.align_tokens` 已实现（前缀对齐对），`folded_generate` 真正跨步折叠（因果合成模型 stable_ratio ≈0.84、tokens 与全重算逐位一致）。**遗留子项**：`Branch` 强制持有全量 `hidden_states [L,B,T,H]`（~512MB/branch @ 8B/T=1024）的惰性引用化仍未做；parent 更长的截断复用与多祖先见 P3-2。
-2. **多祖先复用**：README 局限性 #7 自认只支持单 parent。多 parent 激活树（类似 KV cache 的 paged 结构）可进一步提升复用率。
+1. **变量长度折叠** ~~只支持等长、直接 `NotImplementedError`~~ **✅ AR003（append-only 前缀折叠）**：`FoldedTransformerLayer` 前缀对齐（gate 前缀比较、后缀恒 divergent、merge 前缀对齐），`BranchManager.align_tokens` 已实现（前缀对齐对），`folded_generate` 真正跨步折叠（因果合成模型 stable_ratio ≈0.84、tokens 与全重算逐位一致）。~~**遗留子项**：`Branch` 强制持有全量 `hidden_states [L,B,T,H]`（~512MB/branch @ 8B/T=1024）的惰性引用化仍未做；parent 更长的截断复用与多祖先见 P3-2。~~ **✅ AR007（parent 更长截断复用，P3-2 第一档）**：`T_p > T_c` 不再视为无 parent——gate 输入截断 `[:, :T_c]` 走既有等长分支，真前缀全 stable 时 parent FFN 截断复用（spy 实证零重算），非前缀经 gate 语义安全网全重算；`gather_select` 保守跳过（fetch+截断+merge bit-identical）；CUDA graph 零干扰（`_parent_cache_complete` 形状检查 silent eager 回退）。见第十四部分。遗留：`Branch` 全量 `hidden_states` 惰性引用化（生产零调用）；多祖先主体见 P3-2。
+2. **多祖先复用**：README 局限性 #7 自认只支持单 parent。多 parent 激活树（类似 KV cache 的 paged 结构）可进一步提升复用率。**✅ 第一档（AR007）**：单 parent 更长时的截断前缀复用已收口（见上）；paged 多祖先结构仍为遗留主体。
 3. **真实 draft 模型**：`DraftGenerator` 只有 random/perturb/copy_flip；接入 Medusa/Eagle 类小 draft model 是 roadmap 承诺项（与 B10 联动，suffix/logits-draft 是其前奏）。
 4. **MoE 支持**：~~`flops_counter` 硬编码 4h 中间维（utils/flops_counter.py:60-63），SwiGLU（LLaDA/Dream 均是，3 矩阵×3.375h）低估 FFN FLOPs ~26%；MoE 完全未覆盖。加 `ffn_type`/`intermediate_dim` 参数并从 `config.intermediate_size` 自动读取——**当前所有 TFLOPs 数字含 10–25% 系统偏差**~~ **✅ AR005（FFN/MoE FLOPs 几何修正收口）**：`DiffusionLLM` 几何属性 + `_extract_ffn_geometry` 属性名并集（含 SwiGLU 族判定）+ `model_ffn_flops_kwargs` `underlying_model` 链解析，三调用点零改动自动供参；MoE per-token expert 计量（top-k ± shared、`first_k_dense_replace` 混合层数）；无属性路径逐位零回归。见第十二部分。
 
@@ -372,6 +372,21 @@ AR006（`specs/changes/AR006-model-draft/`，T001–T005 全部 passing）覆盖
 | 文档收口 | T004（AGENTS #40 更新、CHANGELOG AR006 节、README 局限性 #5/#8 更新 + 本回链 + M-2 勾选） | ✅ 完成 |
 
 **语义要点**：接受率数学口径——`_sample_from_topk` 是 top-k **均匀**采样，接受率 = P(target argmax ∈ draft top-k)/k（≠ argmax 命中率）；fixture 统一 top_k=2（k=1 使 logits_draft 比较器恒 1.0，k=10 使 model_draft−random gap 上界 1/k−1/V=0.099<0.1 不可达）。**fixture 结构教训**：one-hot-cumsum + 单位阵残差的共享结构使"随机权重"draft 也 0.4 相关——无关 draft 必须去掉 I 残差项（`x @ U.T`）才能落在 random 下界。append 位置从 parent 末位 draft logits 采样是第一档近似（真实 draft 逐 token 自回归属第二档）。**遗留**：Medusa/Eagle checkpoint 加载与 head 结构（第二档，需真实权重）；draft KV cache 逐 token 增量生成。
+
+---
+
+## 第十四部分 AR007 完成回链（2026-10-11）
+
+AR007（`specs/changes/AR007-truncated-parent-reuse/`，T001–T004 全部 passing）覆盖 P3-2 多祖先复用**第一档**：**parent 更长时的截断前缀复用**——`T_p > T_c` 不再"视为无 parent 全重算"，而是截断 `[:, :T_c]` 走既有等长折叠分支（AR003 的对称补全：AR003 做 child 更长，AR007 做 parent 更长）。
+
+| 指南条目 | AR007 任务 | 状态 |
+|---|---|---|
+| 截断复用核心 | T001（folded_transformer 三改动点：①守卫 `T_p > T_c` 截断 + `parent_longer` 标记（batch/hidden 不匹配、零长度仍 no-parent）；②全 stable 快路径 fetch parent FFN 后按实际形状截断再校验复用；③`_merge_parent_child(parent_longer=)` 禁 gather_select + `_get_parent_ffn_output` 放宽**仅限 `prefix_len is None`**（varlen 精确 shape 契约保留，EX-505 零回归）；UT-601~605：真前缀全 stable bit-exact + profiler stable_ratio==1.0 / 非前缀独立采样全重算 / batch 不匹配仍 no-parent / spy `_recompute_all` 计数==0（复用实证）/ 跨层错位 RuntimeError 钉死） | ✅ 完成 |
+| 端到端与回归 | T002（IT-611 ManualFoldedForward 8-token parent → 6-token 真前缀 child `torch.equal` + 全层 stable_ratio==1.0 + cache 发布；IT-612 既有 append-only/等长套件 + 全量 759 零回归；IT-613 graph 更长 parent silent eager 回退零告警不禁用（后续 complete-parent child 仍捕获）） | ✅ 完成 |
+| 文档收口 | T003（AGENTS #20 修订、README 局限性 #7 更新 + 本回链 + :199 勾选、CHANGELOG AR007 节、UT-203/bs001 陈旧 docstring 清理） | ✅ 完成 |
+| 全量质量门 | T004（761 passed 零回归、demo 基线不变、mypy/pyflakes/100 列） | ✅ 完成 |
+
+**语义要点**：截断复用**不要求**真前缀——gate 相似度是语义安全网（真前缀是收益场景：因果模型逐位一致 → 全 stable 完全复用；非前缀 divergent → 全重算 bit-exact）。快路径截断判定基于 fetch 后**实际形状**而非布尔标记（异常 cache 层间错位状态确定性兜底）。`gather_select` 在 parent 更长时保守跳过：fetch_flat 行公式（vectorized_cache.py:376-378）在非 None 返回时实际确定覆盖前 `seq_len` token，gather_select 对 parent 更长**实际正确**——留作后续性能 AR 线索。CUDA graph 零改动：`_parent_cache_complete` 形状检查天然把变长 parent 路由到 silent eager（与 AR003 变长步骤同路径）。**遗留**：paged 多祖先结构（P3-2 主体）；`Branch.hidden_states` 惰性引用化（生产零调用）。
 
 ---
 

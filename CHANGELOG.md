@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR007: Truncated-Prefix Reuse for Longer Parents (P3-2 first tier)
+
+Spec: `specs/changes/AR007-truncated-parent-reuse/` (srs.md / design.md / tasks.md, T001–T004 all passing). Equal-length and append-only paths are bit-identical (full regression 761 passed, zero regressions; demo baseline unchanged). The paged multi-ancestor structure remains the P3-2 follow-up.
+
+#### Changed
+
+- **`FoldedTransformerLayer` no longer treats a longer parent as absent**: a cached parent with `T_p > T_c` is truncated to `h_parent[:, :T_c]` and folds through the existing equal-length branches (the symmetric completion of AR003: AR003 folded the longer child, AR007 folds the longer parent). A true prefix is certified all-stable by the gate and the parent FFN output is reused after the same truncation (`torch.equal` vs. full recompute, zero `_recompute_all` calls by spy); a non-prefix child diverges at the gate and recomputes — the similarity gate is the semantic safety net, so truncation never requires a *true* prefix for correctness. The fast path truncates by the **fetched shape** (anomalously length-mismatched per-layer cache entries resolve deterministically). Batch/hidden mismatches and zero-length entries still mean no-parent.
+- `_merge_parent_child` gains `parent_longer: bool = False`, which conservatively skips the `gather_select` fast path and reads `fetch` + truncate + merge instead (bit-identical; one less fused kernel). The equal-length path is byte-for-byte unchanged.
+- `_get_parent_ffn_output` accepts a parent FFN **longer** than the mask and truncates it, **only on the `prefix_len is None` path**; the variable-length (AR003) exact-shape `RuntimeError` contract is unchanged (EX-505 pinned).
+- CUDA graph is untouched: `_parent_cache_complete`'s shape check routes a longer-parent child to a silent eager fallback (same path as AR003 variable-length steps; no capture, no warning, no disable — a later complete-parent child still captures).
+- AGENTS #20 and README limitation #7 updated; stale docstrings in `test_varlen_parent_longer_full_recompute` (UT-203) and `test_bs001_folded_generate_graph_end_to_end` corrected to the current semantics.
+
+#### Added
+
+- Tests: UT-601~605 (`tests/test_folded_transformer_varlen.py`, `TestAR007TruncatedParentReuse`) and IT-611/IT-613 (`tests/test_cuda_graph.py`) — true-prefix full-reuse with per-layer `stable_ratio == 1.0`, independently-sampled non-prefix full recompute, batch-mismatch no-parent pin, fast-path reuse spy, cross-layer length-misalignment `RuntimeError` pin, end-to-end `ManualFoldedForward` truncation reuse, and graph-mode silent-eager no-capture.
+
 ### AR006: Real Draft Model, Tier 1 — `model_draft` Mode (P3-3 first tier / M-2 tier 3 / B10 final fix)
 
 Spec: `specs/changes/AR006-model-draft/` (srs.md / design.md / tasks.md, T001–T005 all passing). The five pre-existing draft modes are bit-identical (full regression zero-regression; demo baseline unchanged — demo uses the default mode). Medusa/Eagle checkpoint loading remains tier 2 (requires real weights).

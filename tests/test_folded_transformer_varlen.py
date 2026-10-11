@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 import torch
 import torch.nn as nn
@@ -9,6 +11,7 @@ import torch.nn as nn
 from actfold.core import ActivationCache, SimilarityGate
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.split_layer import SplitFoldedTransformerLayer
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 
 B = 2
 T_PARENT = 4  # T_p: cached parent prefix length, strictly shorter than T_CHILD
@@ -155,10 +158,13 @@ def test_varlen_suffix_always_divergent(device: str) -> None:
 
 
 def test_varlen_parent_longer_full_recompute(device: str) -> None:
-    """UT-203: ``T_p > T_c`` is treated as no parent; full recompute, no error.
+    """UT-203: an unrelated longer parent truncates; full recompute, no error.
 
-    A parent cached at a longer sequence length than the child cannot donate
-    a prefix; the forward must not raise and must return ``layer(child)``.
+    A parent cached at a longer sequence length than the child donates its
+    truncated prefix (AR007).  Here the cached parent is random noise with
+    no relation to the child, so the gate judges every position divergent
+    and the forward must not raise and must return ``layer(child)`` — the
+    similarity gate is the semantic safety net for non-prefix children.
     """
     layer = DummyLayer(HIDDEN_DIM).to(device)
     cache = ActivationCache(device=device)
@@ -781,3 +787,219 @@ def test_varlen_cache_eviction_breaks_and_rebuilds_chain(device: str) -> None:
     ref_aligned = torch.cat([out_child, layer_gc[:, T_CHILD:]], dim=1)
     expected = torch.where(ref_mask.unsqueeze(-1), ref_aligned, layer_gc)
     assert torch.equal(out_grandchild, expected)
+
+
+# ---------------------------------------------------------------------------
+# AR007 / T001: truncated parent-prefix reuse (T_p > T_c)
+# ---------------------------------------------------------------------------
+
+T_LONG_PARENT = 8  # T_p: parent sequence length, strictly longer than the child
+T_SHORT_CHILD = 6  # T_c: child sequence length (the truncation target)
+
+
+def _make_ar007_stack(
+    device: str,
+) -> tuple[DummyLayer, ActivationCache, SimilarityGate, FoldedTransformerLayer]:
+    """Build the causal token-wise layer, cache, gate, and folded stack (AR007).
+
+    ``DummyLayer`` is token-wise (a per-token linear map), hence trivially
+    causal: a child whose hidden states are a true prefix of the parent's has
+    bit-identical activations on the shared positions, which is the
+    precondition for truncated-prefix reuse.
+    """
+    layer = DummyLayer(HIDDEN_DIM).to(device)
+    cache = ActivationCache(device=device)
+    gate = SimilarityGate(tau=0.95)
+    folded = FoldedTransformerLayer(layer, cache, gate, layer_idx=0).to(device)
+    return layer, cache, gate, folded
+
+
+def _run_long_parent_forward(
+    folded: FoldedTransformerLayer,
+    device: str,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Run a ``T_LONG_PARENT`` no-parent forward that fills the cache (warm-up).
+
+    The forward fully recomputes, which also assigns ``_returns_tuple`` on
+    the folded layer (it is only set inside ``_recompute_all``), satisfying
+    the warm-up requirement of the all-stable fast path, and stores the
+    parent's layer-0 ``ffn_out``/``embedding`` entries at the parent length
+    for the child step to reuse.
+    """
+    parent_h = torch.randn(B, T_LONG_PARENT, HIDDEN_DIM, device=device)
+    parent_out = folded(parent_h, branch_id="parent")
+    return parent_h, parent_out
+
+
+class TestAR007TruncatedParentReuse:
+    """``T_p > T_c`` donates a truncated prefix instead of a full recompute.
+
+    Target behavior (AR007): a parent cached at a longer sequence length
+    than the child truncates to ``h_parent[:, :T_c]`` and folds through the
+    existing equal-length branches.  Batch/hidden mismatches and zero-length
+    parents still mean "no parent"; non-prefix children diverge at the gate
+    and recompute.
+    """
+
+    def test_ut_601_true_prefix_all_stable_reuse(self, device: str) -> None:
+        """UT-601 (AR007): a true-prefix child of a longer parent folds fully.
+
+        A parent cached at T=8 by a real forward through the same folded
+        layer (warm-up: sets ``_returns_tuple``) donates a truncated prefix
+        to a T=6 child whose hidden states are the parent's true prefix.  On
+        a causal token-wise layer the shared positions are bit-identical, so
+        every child token must be judged stable, the output must equal the
+        eager full recompute (the reused parent FFN prefix is bit-identical
+        to it), and the global profiler must record ``stable_ratio == 1.0``
+        for the folded layer.
+        """
+        layer, _cache, _gate, folded = _make_ar007_stack(device)
+        parent_h, _parent_out = _run_long_parent_forward(folded, device)
+
+        child = parent_h[:, :T_SHORT_CHILD]
+
+        GLOBAL_STABILITY_PROFILER.set_enabled(True)
+        GLOBAL_STABILITY_PROFILER.reset()
+
+        out = folded(child, branch_id="child", parent_branch_id="parent")
+
+        assert torch.equal(out, layer(child))
+
+        profile = GLOBAL_STABILITY_PROFILER.get_profile("child")
+        assert profile is not None
+        assert len(profile.layer_stats) == 1
+        assert profile.layer_stats[0].stable_ratio == pytest.approx(1.0)
+
+    def test_ut_602_non_prefix_child_full_recompute(self, device: str) -> None:
+        """UT-602 (AR007): an independently sampled non-prefix child recomputes.
+
+        A T=6 child sampled independently of the T=8 parent shares no prefix:
+        after truncation every position must be judged divergent, so the
+        output must equal the eager full recompute and the profiler must
+        record ``stable_ratio == 0.0``, proving the gate actually compared
+        the child against the truncated parent prefix instead of skipping
+        the comparison.
+        """
+        layer, _cache, gate, folded = _make_ar007_stack(device)
+        parent_h, _parent_out = _run_long_parent_forward(folded, device)
+
+        child = torch.randn(B, T_SHORT_CHILD, HIDDEN_DIM, device=device)
+        # Scenario sanity: the independent child is divergent at every
+        # position against the truncated parent prefix.
+        ref_mask = gate(child, parent_h[:, :T_SHORT_CHILD])
+        assert int(ref_mask.sum()) == 0
+
+        GLOBAL_STABILITY_PROFILER.set_enabled(True)
+        GLOBAL_STABILITY_PROFILER.reset()
+
+        out = folded(child, branch_id="child", parent_branch_id="parent")
+
+        assert torch.equal(out, layer(child))
+
+        profile = GLOBAL_STABILITY_PROFILER.get_profile("child")
+        assert profile is not None
+        assert len(profile.layer_stats) == 1
+        assert profile.layer_stats[0].stable_ratio == pytest.approx(0.0)
+
+    def test_ut_603_batch_mismatch_still_no_parent(self, device: str) -> None:
+        """UT-603 (AR007): a batch-mismatched longer parent still means no parent.
+
+        A parent longer than the child (T=8) whose batch dimension differs
+        from the child's cannot donate a prefix even under truncation: the
+        forward must treat it as absent (full recompute, no profiler record)
+        and return exactly ``layer(child)``, never a shape error.
+        """
+        layer, cache, _gate, folded = _make_ar007_stack(device)
+
+        h_parent = torch.randn(B + 1, T_LONG_PARENT, HIDDEN_DIM, device=device)
+        ffn_seed = torch.randn(B + 1, T_LONG_PARENT, HIDDEN_DIM, device=device)
+        _seed_parent_cache(cache, h_parent, ffn_seed)
+
+        child = torch.randn(B, T_SHORT_CHILD, HIDDEN_DIM, device=device)
+
+        GLOBAL_STABILITY_PROFILER.set_enabled(True)
+        GLOBAL_STABILITY_PROFILER.reset()
+
+        out = folded(child, branch_id="child", parent_branch_id="parent")
+
+        assert torch.equal(out, layer(child))
+        assert GLOBAL_STABILITY_PROFILER.get_profile("child") is None
+
+    def test_ut_604_fast_path_reuse_without_recompute(
+        self,
+        device: str,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """UT-604 (AR007): the all-stable truncated prefix reuses, no recompute.
+
+        After the parent warm-up forward (T=8, sets ``_returns_tuple``), a
+        true-prefix T=6 child is all-stable against the truncated parent
+        prefix, so the forward must take the reuse fast path: a spy on
+        ``_recompute_all`` records zero calls and the output equals the
+        truncated parent FFN output.
+        """
+        _layer, _cache, _gate, folded = _make_ar007_stack(device)
+        parent_h, parent_out = _run_long_parent_forward(folded, device)
+
+        child = parent_h[:, :T_SHORT_CHILD]
+
+        recompute_calls: list[int] = []
+        original_recompute = folded._recompute_all
+
+        def _spy_recompute(
+            hidden_states: torch.Tensor,
+            attention_mask: torch.Tensor | None,
+            **kwargs: Any,
+        ) -> torch.Tensor:
+            recompute_calls.append(1)
+            return original_recompute(hidden_states, attention_mask, **kwargs)
+
+        monkeypatch.setattr(folded, "_recompute_all", _spy_recompute)
+
+        out = folded(child, branch_id="child", parent_branch_id="parent")
+
+        assert recompute_calls == []
+        assert torch.equal(out, parent_out[:, :T_SHORT_CHILD])
+
+    def test_ut_605_cross_layer_misaligned_parent_ffn_raises(self, device: str) -> None:
+        """UT-605 (AR007): a cross-layer misaligned parent FFN raises RuntimeError.
+
+        Pins the existing no-swallow contract of the mixed merge path: a
+        layer-1 folded layer reads the parent's layer-0 ``ffn_out`` for the
+        gate (seeded at the child length, so the equal-length gate branch
+        produces a genuinely mixed mask) while the merge entry, the parent's
+        layer-1 ``ffn_out``, is one token shorter than the child.
+        ``_get_parent_ffn_output`` must raise ``RuntimeError`` instead of
+        silently mis-merging; truncation reuse is keyed on the gate entry
+        and must not rescue the misaligned merge entry.
+        """
+        layer = DummyLayer(HIDDEN_DIM).to(device)
+        cache = _DictActivationCache()
+        gate = SimilarityGate(tau=0.95)
+        folded = FoldedTransformerLayer(layer, cache, gate, layer_idx=1).to(device)
+
+        h_gate = torch.randn(B, T_SHORT_CHILD, HIDDEN_DIM, device=device)
+        short_ffn = torch.randn(B, T_SHORT_CHILD - 1, HIDDEN_DIM, device=device)
+        cache.put(
+            branch_id="parent",
+            layer_idx=0,
+            activations={"ffn_out": h_gate},
+        )
+        cache.put(
+            branch_id="parent",
+            layer_idx=1,
+            activations={"ffn_out": short_ffn},
+        )
+
+        # Mixed child: the leading positions equal the gate entry (stable),
+        # the trailing ones are heavily perturbed (divergent), which is
+        # mandatory for the slow path that validates the parent FFN shape.
+        child = torch.randn(B, T_SHORT_CHILD, HIDDEN_DIM, device=device)
+        half = T_SHORT_CHILD // 2
+        child[:, :half] = h_gate[:, :half]
+        child[:, half:] += 100.0 * torch.randn(B, T_SHORT_CHILD - half, HIDDEN_DIM, device=device)
+        ref_mask = gate(child, h_gate)
+        assert 0 < int(ref_mask.sum()) < ref_mask.numel()
+
+        with pytest.raises(RuntimeError):
+            folded(child, branch_id="child", parent_branch_id="parent")
