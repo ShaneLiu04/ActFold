@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from uuid import uuid4
 
 import torch
@@ -22,24 +23,37 @@ class DraftGenerator:
     - ``logits_draft``: like ``suffix_append`` but resampled positions are
       drawn from the top-k tokens of ``parent_logits`` at that position,
       approximating the model's own next-token distribution.
+    - ``model_draft`` (AR006): like ``logits_draft`` but the logits come from
+      an independent draft model (``draft_model(parent.tokens)``), not from a
+      target forward pass — the real speculative-decoding semantics. The
+      ``parent_logits`` argument is ignored in this mode (upper-bound
+      comparison experiments may still carry it). Append positions are
+      sampled from the draft logits at the parent's last position (first-tier
+      approximation of autoregressive drafting).
     - ``copy_flip``: copy the parent and flip a fraction of positions anywhere
       (uniform over the full vocabulary). Kept for backward compatibility.
     - ``random`` / ``perturb``: uniform random tokens (research stand-ins).
 
     Args:
         vocab_size: Size of the token vocabulary.
-        mode: Drafting mode ("suffix_append", "logits_draft", "random",
-            "perturb", "copy_flip").
+        mode: Drafting mode ("suffix_append", "logits_draft", "model_draft",
+            "random", "perturb", "copy_flip").
         perturbation_std: Deprecated; kept for API compatibility.
         flip_ratio: Fraction of region positions to resample.
-        top_k: Candidate pool size for "logits_draft".
+        top_k: Candidate pool size for "logits_draft"/"model_draft".
         prompt_length: Protected prefix length used for the default suffix
             region (positions before it are never resampled).
+        draft_model: Callable mapping tokens ``[batch, seq_len]`` to logits
+            ``[batch, seq_len, vocab_size]`` (an ``nn.Module`` qualifies).
+            Required at ``generate`` time for "model_draft"; ignored by every
+            other mode. Draft models should run in eval mode so seeded
+            generation is reproducible.
     """
 
     _MODES: tuple[str, ...] = (
         "suffix_append",
         "logits_draft",
+        "model_draft",
         "random",
         "perturb",
         "copy_flip",
@@ -53,6 +67,7 @@ class DraftGenerator:
         flip_ratio: float = 0.1,
         top_k: int = 10,
         prompt_length: int | None = None,
+        draft_model: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         if mode not in self._MODES:
             raise ValueError(f"Unsupported draft mode: {mode}")
@@ -64,6 +79,7 @@ class DraftGenerator:
         self.flip_ratio = flip_ratio
         self.top_k = top_k
         self.prompt_length = prompt_length
+        self.draft_model = draft_model
         self._counter = 0
         # Session-scoped prefix keeps child IDs at bounded length; chaining
         # parent IDs (the old format) grew O(T^2) in total string memory.
@@ -95,6 +111,31 @@ class DraftGenerator:
         _, top_idx = torch.topk(logits_pos, k)
         choice = torch.randint(0, k, (1,), generator=generator, device=logits_pos.device)
         return int(top_idx[choice])
+
+    def _sample_tokens_from_logits(
+        self,
+        logits_source: torch.Tensor,
+        batch_idx: int,
+        positions: list[int],
+        dtype: torch.dtype,
+        device: torch.device,
+        generator: torch.Generator | None,
+    ) -> torch.Tensor:
+        """Sample one top-k token per position from ``logits_source``.
+
+        Shared by the ``logits_draft`` and ``model_draft`` modes so the two
+        sampling paths cannot drift apart.
+        """
+        return torch.tensor(
+            [
+                self._sample_from_topk(
+                    logits_source[batch_idx, pos], generator=generator
+                )
+                for pos in positions
+            ],
+            dtype=dtype,
+            device=device,
+        )
 
     def generate(
         self,
@@ -154,6 +195,7 @@ class DraftGenerator:
         region_start, region_end = self._region(seq_len, flip_region)
         region_len = region_end - region_start
 
+        logits_source: torch.Tensor | None = None
         if self.mode == "logits_draft":
             if parent_logits is None:
                 raise RuntimeError(
@@ -165,6 +207,36 @@ class DraftGenerator:
                     f"parent_logits shape {tuple(parent_logits.shape)} does not "
                     f"match expected {(batch_size, seq_len, self.vocab_size)}"
                 )
+            logits_source = parent_logits
+        elif self.mode == "model_draft":
+            if self.draft_model is None:
+                raise RuntimeError(
+                    "DraftGenerator mode 'model_draft' requires a draft_model "
+                    "(callable tokens -> logits); got None."
+                )
+            draft_logits = self.draft_model(parent.tokens)
+            if tuple(draft_logits.shape) != (
+                batch_size,
+                seq_len,
+                self.vocab_size,
+            ):
+                raise ValueError(
+                    f"draft_model output shape {tuple(draft_logits.shape)} does "
+                    f"not match expected "
+                    f"{(batch_size, seq_len, self.vocab_size)}"
+                )
+            if not torch.is_floating_point(draft_logits):
+                raise ValueError(
+                    "draft_model output must be floating-point logits, got "
+                    f"dtype {draft_logits.dtype}"
+                )
+            if draft_logits.device != parent.tokens.device:
+                raise ValueError(
+                    "draft_model output device "
+                    f"{draft_logits.device} does not match parent tokens device "
+                    f"{parent.tokens.device}"
+                )
+            logits_source = draft_logits
 
         children: list[Branch] = []
 
@@ -209,7 +281,7 @@ class DraftGenerator:
                         generator=dev_rng,
                     )
                     child_tokens = torch.cat([child_tokens, appended], dim=1)
-            else:  # suffix_append / logits_draft
+            else:  # suffix_append / logits_draft / model_draft
                 child_tokens = parent.tokens.clone()
                 if self.flip_ratio > 0 and region_len > 0:
                     num_flips = max(1, int(region_len * self.flip_ratio))
@@ -225,14 +297,14 @@ class DraftGenerator:
                                 device=child_tokens.device,
                                 generator=dev_rng,
                             )
-                        elif parent_logits is not None:  # logits_draft
-                            new_tokens = torch.tensor(
-                                [
-                                    self._sample_from_topk(parent_logits[b, pos], generator=dev_rng)
-                                    for pos in flip_positions.tolist()
-                                ],
-                                dtype=child_tokens.dtype,
-                                device=child_tokens.device,
+                        elif logits_source is not None:  # logits_draft / model_draft
+                            new_tokens = self._sample_tokens_from_logits(
+                                logits_source,
+                                b,
+                                flip_positions.tolist(),
+                                child_tokens.dtype,
+                                child_tokens.device,
+                                dev_rng,
                             )
                         else:
                             raise RuntimeError(
@@ -250,20 +322,22 @@ class DraftGenerator:
                             device=child_tokens.device,
                             generator=dev_rng,
                         )
-                    elif parent_logits is not None:
-                        # logits_draft: sample from the last position's top-k
-                        appended = torch.tensor(
+                    elif logits_source is not None:
+                        # logits_draft / model_draft: sample from the last
+                        # position's top-k
+                        appended = torch.stack(
                             [
-                                [
-                                    self._sample_from_topk(
-                                        parent_logits[b, seq_len - 1], generator=dev_rng
-                                    )
-                                    for _ in range(max_new_tokens)
-                                ]
+                                self._sample_tokens_from_logits(
+                                    logits_source,
+                                    b,
+                                    [seq_len - 1] * max_new_tokens,
+                                    child_tokens.dtype,
+                                    child_tokens.device,
+                                    dev_rng,
+                                )
                                 for b in range(batch_size)
                             ],
-                            dtype=child_tokens.dtype,
-                            device=child_tokens.device,
+                            dim=0,
                         )
                     else:
                         raise RuntimeError(

@@ -130,6 +130,43 @@ def test_default_draft_generator_is_suffix_append() -> None:
     assert study.draft_generator.mode == "suffix_append"
 
 
+def test_it511_ablation_with_model_draft_generator() -> None:
+    """IT-511 (AR006 design 4.3): model_draft drafts feed measure_folding.
+
+    The draft model is a tiny 1-layer Transformer (an independent callable
+    ``tokens -> logits``); the study must measure real folding over its
+    model_draft children just like the suffix_append default.
+    """
+    raw = _make_model(num_layers=4)
+    adapter = FastDLLMAdapter(
+        raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100
+    )
+    draft_model = _make_model(num_layers=1)  # independent tiny draft model
+    generator = DraftGenerator(
+        vocab_size=100,
+        mode="model_draft",
+        flip_ratio=0.5,
+        prompt_length=8,
+        top_k=4,
+        draft_model=draft_model,
+    )
+    study = AblationStudy(
+        model=adapter,
+        baseline=None,
+        draft_generator=generator,
+        vocab_size=100,
+        seq_len=16,
+        device="cpu",
+    )
+
+    m: FoldedMeasurement = study.measure_folding(tau=0.90)
+
+    assert study.draft_generator.mode == "model_draft"
+    assert set(m.per_layer_stable.keys()) == {0, 1, 2}
+    assert all(0.0 <= ratio <= 1.0 for ratio in m.per_layer_stable.values())
+    assert m.baseline_tflops > m.actfold_tflops > 0
+
+
 def test_measure_folding_returns_real_per_layer_profile() -> None:
     """measure_folding reports measured per-layer ratios for folded layers."""
     study = _make_study(num_layers=4)

@@ -141,6 +141,62 @@ def test_benchmark_runner_draft_mode_passthrough() -> None:
     assert runner.draft_generator.mode == "copy_flip"
 
 
+def test_benchmark_runner_model_draft_requires_draft_model() -> None:
+    """EX-804 (AR006): model_draft config without a draft model fails loudly.
+
+    The runner must raise ``RuntimeError`` at construction time (AGENTS #10:
+    no silent fallback to another draft mode).
+    """
+    config = ActFoldConfig(
+        model_name_or_path="dummy/real-model",
+        num_layers=2,
+        hidden_dim=64,
+        num_heads=4,
+        seq_len=8,
+        vocab_size=100,
+        device="cpu",
+        use_real_eval=True,
+        eval_backend="auto",
+        draft_mode="model_draft",
+    )
+    model = FastDLLMAdapter(
+        MockTransformer(config.vocab_size, config.hidden_dim, config.num_layers),
+        num_layers=config.num_layers,
+        hidden_dim=config.hidden_dim,
+    )
+    with pytest.raises(RuntimeError, match="draft_model"):
+        BenchmarkRunner(config, model=model)
+
+
+def test_benchmark_runner_model_draft_passthrough() -> None:
+    """AR006: an injected draft_model reaches the runner's DraftGenerator."""
+    config = ActFoldConfig(
+        model_name_or_path="dummy/real-model",
+        num_layers=2,
+        hidden_dim=64,
+        num_heads=4,
+        seq_len=8,
+        vocab_size=100,
+        device="cpu",
+        use_real_eval=True,
+        eval_backend="auto",
+        draft_mode="model_draft",
+    )
+    model = FastDLLMAdapter(
+        MockTransformer(config.vocab_size, config.hidden_dim, config.num_layers),
+        num_layers=config.num_layers,
+        hidden_dim=config.hidden_dim,
+    )
+
+    def draft_model(tokens: torch.Tensor) -> torch.Tensor:
+        batch, seq_len = tokens.shape
+        return torch.zeros(batch, seq_len, config.vocab_size)
+
+    runner = BenchmarkRunner(config, model=model, draft_model=draft_model)
+    assert runner.draft_generator.mode == "model_draft"
+    assert runner.draft_generator.draft_model is draft_model
+
+
 def test_ablation_study() -> None:
     vocab_size = 100
     hidden_dim = 64

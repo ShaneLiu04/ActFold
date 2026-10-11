@@ -394,6 +394,49 @@ def test_branch_ids_bounded_length() -> None:
     assert len(set(ids)) == 50
 
 
+def test_it512_folded_generate_model_draft_candidates() -> None:
+    """IT-512 (AR006 design 4.3): model_draft candidates flow through folding.
+
+    The multi-candidate path produces children whose appended tokens come
+    from the draft model's last-position top-k (first-tier approximation
+    of autoregressive drafting), and generation completes end to end.
+    """
+
+    def draft_model(tokens: torch.Tensor) -> torch.Tensor:
+        vocab = 16
+        batch, seq_len = tokens.shape
+        return (
+            torch.arange(vocab, dtype=torch.float32)
+            .view(1, 1, vocab)
+            .expand(batch, seq_len, vocab)
+        )
+
+    adapter, folded, _ = _make_vectorized_adapter()
+    draft = DraftGenerator(
+        vocab_size=16,
+        mode="model_draft",
+        top_k=3,
+        flip_ratio=0.0,
+        draft_model=draft_model,
+    )
+    prompt = torch.tensor([[1, 2, 3]])
+
+    result = folded_generate(
+        adapter,
+        prompt,
+        max_new_tokens=2,
+        folded_model=folded,
+        draft_generator=draft,
+        num_branches_per_step=2,
+    )
+
+    assert result.tokens.shape[1] == 5
+    # Each appended token must come from the arange top-k set {13, 14, 15}.
+    appended = result.tokens[:, 3:]
+    allowed = torch.tensor([13, 14, 15])
+    assert torch.isin(appended, allowed).all()
+
+
 class _DoublingLayer(nn.Module):
     """Minimal token-wise layer used as a FoldedTransformerLayer base."""
 

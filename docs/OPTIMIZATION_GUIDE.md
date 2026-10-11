@@ -210,7 +210,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 | # | 问题 | 位置 | 修复方案 | 难度 |
 |---|---|---|---|---|
 | M-1 | 无方差/置信区间：所有 `results/*.json` 只有标量；`time_forward` 返回均值不存 std；accuracy 在 num_samples=10 时标准误 ~±15pp | scripts/algo_experiments.py:193-211 等 | `time_forward` 返回 `{mean,std,p50,n}`；每条件 ≥3 seed；accuracy 报 Wilson 区间；图题由数据格式化（make_optimization_figures.py:316-317 目前把 "2.3-2.7x" 硬编码进标题） | 低（脚本）/中（补跑） |
-| M-2 | draft 分布与真实场景脱节（=B10） | draft_generator.py | 三层递进：suffix_append → logits_draft（parent top-k 采样模拟低质 draft）→ 真 draft model | 低→中→高 |
+| M-2 | draft 分布与真实场景脱节（=B10） | draft_generator.py | 三层递进：suffix_append → logits_draft（parent top-k 采样模拟低质 draft）→ 真 draft model | 低→中→高 **✅ 三层全达（AR006 第一档：`model_draft` 模式 + `draft_model` callable 注入；见第十三部分）** |
 | M-3 | "消融"是算术推演非实测：layerwise folding 用线性比例缩放（ablation_study.py:150-163）而非 `FoldingScheduler.disabled_layers` 真跑；cache 预算扫描根本触发不了 LRU 驱逐（四行 stable_ratio 全同） | eval/ablation_study.py:150-163,216-264 | disabled_layers 实测；cache 扫描先 put ≥budget+1 分支制造驱逐 | 低 |
 | M-4 | cost model 硬件常数一刀切：所有 CUDA 设备按 100 TFLOPS/600 GB/s 计（utils/cost_model.py:31-35），实验机实际 400+/1280；且忽略 attention O(T²) 项与 KV 访存、gate/merge 误用算力计时（实为带宽主导） | cost_model.py:31-35,63-106 | `from_device` 按设备名查表 + 启动时一次 micro-bench 自动校准（复用 `exp_cost_model` 逻辑）；补 T² 项与 KV 带宽；`calibrate()` 分 compute/memory 两参数独立校准 | 低 |
 | M-5 | 跨版本对比（opt 前 vs 后）依赖不同时间两次运行，GPU 状态未受控 | results/optimization/baseline/ | 同进程加载两版实现或同日交错重跑（now-内的三实现对比已正确，保持） | 中 |
@@ -279,7 +279,7 @@ AR001（`specs/changes/AR001-deep-optimization/`，T001–T026 全部 passing）
 | P0-1..P0-12 host 同步清零 | T009–T013（profiler 惰性回读、单 sync 三分支、bottom-k 自适应门、legacy cache 连续 buffer、Triton merge 单边读/stride/tail-mask） | ✅ 完成 |
 | P1-1..P1-5 内存 pass 压缩 | T014–T018（删冗余 hidden_states、cache_protocol 契约、fetch_flat+gather_select D3 阈值、split 常驻 hook、get_num_transfer_tokens 全向量化 bit-exact + LLaDA/Dream sampler 向量化） | ✅ 完成 |
 | M-1 无方差 | T020（TimingStats mean/std/p50/n、stats_from_samples、repeat_with_seed、exp_sampling repeats/seed/tokens_reproducible） | ✅ 代码完成；历史数据补跑见 RERUN_CHECKLIST |
-| M-2 draft 分布 | draft 双模式（M1 内）+ suffix_append 作为消融缺省（T024） | ✅ 完成（真 draft model 属 P3/AR002+） |
+| M-2 draft 分布 | draft 双模式（M1 内）+ suffix_append 作为消融缺省（T024）；真 draft model 第一档（AR006 `model_draft`） | ✅ 三层全达（Medusa/Eagle checkpoint 属第二档，需真实权重） |
 | M-3 消融实测化 | T024（measure_folding 逐层实测、disabled_layers、真实驱逐的 cache 扫描） | ✅ 完成 |
 | M-4 cost model 一刀切 | T021（_DEVICE_TABLE + from_device + calibrate、T²/KV 项、gate/merge 改带宽计） | ✅ 完成 |
 | M-5 跨版本对比不受控 | 标注失效（results/optimization/INVALIDATED.md）+ RERUN_CHECKLIST 要求同日同机交错 + 锁频 | ⏳ 待目标机器重跑 |
@@ -357,6 +357,21 @@ AR005（`specs/changes/AR005-ffn-flops-geometry/`，T001–T005 全部 passing�
 | 文档收口 | T004（AGENTS #33 修订、CHANGELOG AR005 节、README demo 样例 78.5%→85.5% 修正 + 本回链 + P3-4 勾选） | ✅ 完成 |
 
 **语义要点**：AR001 只做了参数与 helper，全链无人供参——本 AR 补齐"属性暴露 + 链解析 + 调用点自动供参"三环；`moe_top_k` 是计量触发键（per-token FLOPs 只依赖 top-k，`num_experts` 仅容量校验）；`first_k_dense_replace` 消除"全层 MoE"假设的高估（DeepSeek 系前 k 层 dense）；SwiGLU 族 = HF `hidden_act` ∈ {silu/swish/swiglu}，未知名保守回退 `"mlp"`（不高于现状）；shared expert 按 routed 中间维近似（<5%）；router 门控忽略（<1%）。**遗留**：真实 MoE checkpoint 实测（本机无权重，公式 + 提取为合成实证，RERUN_CHECKLIST 流程）；历史数字（含 demo 合成模型口径）仍基于 4h-MLP 默认几何，真实 checkpoint 的 TFLOPs 自本 AR 起反映真实几何。
+
+---
+
+## 第十三部分 AR006 完成回链（2026-10-10）
+
+AR006（`specs/changes/AR006-model-draft/`，T001–T005 全部 passing）覆盖 P3-3 真 draft 模型**第一档**（M-2 三层递进第三层 / B10 最终修复 / AR004 遗留前奏）：`DraftGenerator` 新模式 `model_draft`——draft logits 来自**独立小模型**的一次 forward（`draft_model(parent.tokens)`），而非 target parent logits（`logits_draft` 作弊上界）或全词表均匀采样（`copy_flip` 平凡下界）。既有五模式逐位零回归（demo 基线不变）。
+
+| 指南条目 | AR006 任务 | 状态 |
+|---|---|---|
+| M-2 第三层第一档：`model_draft` 模式 | T001（`draft_model` callable 构造参数 + generate 期 RuntimeError/三项 ValueError 校验（形状/int dtype/跨 device）+ `_sample_tokens_from_logits` 共用采样 helper + seed 复现/RNG 不污染；UT-501~505 + EX-801~803） | ✅ 完成 |
+| B10 非平凡性验证 | T002（合成梯度 fixture：4 层因果 target + 1 层共享首层 draft，top_k=2；实测 model_draft 接受率 ≈0.45 严格介于 random ≈0.001 与 logits_draft 上界 0.5 之间——论文口径接受率落地） | ✅ 完成 |
+| 端到端接线 | T003（config 白名单 +`model_draft`；BenchmarkRunner 可选 `draft_model` 注入 + 构造期 RuntimeError（AGENTS #10）；AblationStudy/folded_generate 经既有 `draft_generator` 参数零签名改动接入；IT-511/512 + EX-804） | ✅ 完成 |
+| 文档收口 | T004（AGENTS #40 更新、CHANGELOG AR006 节、README 局限性 #5/#8 更新 + 本回链 + M-2 勾选） | ✅ 完成 |
+
+**语义要点**：接受率数学口径——`_sample_from_topk` 是 top-k **均匀**采样，接受率 = P(target argmax ∈ draft top-k)/k（≠ argmax 命中率）；fixture 统一 top_k=2（k=1 使 logits_draft 比较器恒 1.0，k=10 使 model_draft−random gap 上界 1/k−1/V=0.099<0.1 不可达）。**fixture 结构教训**：one-hot-cumsum + 单位阵残差的共享结构使"随机权重"draft 也 0.4 相关——无关 draft 必须去掉 I 残差项（`x @ U.T`）才能落在 random 下界。append 位置从 parent 末位 draft logits 采样是第一档近似（真实 draft 逐 token 自回归属第二档）。**遗留**：Medusa/Eagle checkpoint 加载与 head 结构（第二档，需真实权重）；draft KV cache 逐 token 增量生成。
 
 ---
 

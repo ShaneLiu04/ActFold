@@ -107,7 +107,14 @@ class ActFoldConfig:
             raise ValueError(
                 f"max_branch_steps must be positive, got {self.max_branch_steps}"
             )
-        draft_modes = {"suffix_append", "logits_draft", "random", "perturb", "copy_flip"}
+        draft_modes = {
+            "suffix_append",
+            "logits_draft",
+            "model_draft",
+            "random",
+            "perturb",
+            "copy_flip",
+        }
         if self.draft_mode not in draft_modes:
             raise ValueError(
                 f"draft_mode must be one of {sorted(draft_modes)}, got {self.draft_mode}"

@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR006: Real Draft Model, Tier 1 — `model_draft` Mode (P3-3 first tier / M-2 tier 3 / B10 final fix)
+
+Spec: `specs/changes/AR006-model-draft/` (srs.md / design.md / tasks.md, T001–T005 all passing). The five pre-existing draft modes are bit-identical (full regression zero-regression; demo baseline unchanged — demo uses the default mode). Medusa/Eagle checkpoint loading remains tier 2 (requires real weights).
+
+#### Added
+
+- **`DraftGenerator` mode `"model_draft"` + `draft_model` constructor parameter** (default `None`; a callable mapping tokens `[B, T]` to logits `[B, T, V]` — any `nn.Module` qualifies). The draft logits come from one independent `draft_model(parent.tokens)` forward — the real speculative-decoding semantics — unlike `logits_draft`, whose logits come from a *target* parent forward (the "cheating upper bound"). The `parent_logits` argument is ignored in this mode.
+- Validation at `generate` time (mirroring the `parent_logits` precedent): missing `draft_model` → `RuntimeError`; wrong shape, non-floating dtype, or device mismatch vs. `parent.tokens` → `ValueError`; draft-forward exceptions propagate unchanged.
+- `logits_draft` / `model_draft` share the sampling implementation via `_sample_tokens_from_logits` (the two paths cannot drift apart); append positions sample from the draft logits at the parent's last position (first-tier approximation of autoregressive drafting).
+- `ActFoldConfig.draft_mode` whitelist gains `"model_draft"` (value-domain extension, no new field).
+- `BenchmarkRunner(config, model=..., draft_model=...)`: optional injection; `draft_mode == "model_draft"` without a `draft_model` → construction-time `RuntimeError` (AGENTS #10: no silent fallback). `AblationStudy` / `folded_generate` accept a `model_draft` generator through the existing `draft_generator` parameter — zero signature changes.
+- Acceptance-rate gradient fixtures (tests only): a 4-layer causal token-wise target plus a single-layer correlated draft (sharing the target's first layer) prove `model_draft` acceptance sits strictly between the random floor and the `logits_draft` upper bound (measured ≈0.45 vs. random ≈0.001 vs. upper bound 0.5 at `top_k=2`) — the paper-grade acceptance semantics AR004 anticipated.
+
+#### Changed
+
+- README limitations #5/#8 and AGENTS #40 updated: the mechanism-level acceptance-rate caveat now points at `model_draft` (tier 1); Medusa/Eagle checkpoints remain tier 2.
+
 ### AR005: FFN/MoE FLOPs Geometry Correction (P3-4)
 
 Spec: `specs/changes/AR005-ffn-flops-geometry/` (srs.md / design.md / tasks.md, T001–T005 all passing). Default-geometry paths are bit-identical (synthetic models keep the 4h-MLP estimate; demo baseline 85.5% / 2.35e-03 / 93.75% unchanged); full regression 735+ passed.

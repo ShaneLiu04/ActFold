@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -43,12 +44,17 @@ class BenchmarkRunner:
             unless ``model`` is passed explicitly.
         model: Optional pre-built model adapter. If provided, it overrides the
             config-based model loading.
+        draft_model: Optional callable mapping tokens ``[batch, seq_len]`` to
+            draft logits ``[batch, seq_len, vocab_size]``. Required when
+            ``config.draft_mode == "model_draft"`` (AR006); ignored by every
+            other draft mode.
     """
 
     def __init__(
         self,
         config: ActFoldConfig,
         model: FastDLLMAdapter | None = None,
+        draft_model: Callable[[torch.Tensor], torch.Tensor] | None = None,
     ) -> None:
         self.config = config
         self.device = self._resolve_device(config.device)
@@ -77,10 +83,17 @@ class BenchmarkRunner:
                 folded_model=folded_model,
             )
 
+        if config.draft_mode == "model_draft" and draft_model is None:
+            raise RuntimeError(
+                "config.draft_mode == 'model_draft' requires a draft_model "
+                "(callable tokens -> logits) passed to BenchmarkRunner; "
+                "got None (AGENTS #10: no silent fallback)."
+            )
         self.draft_generator = DraftGenerator(
             vocab_size=self._vocab_size,
             mode=self.config.draft_mode,
             flip_ratio=0.05,
+            draft_model=draft_model,
         )
         self.baseline = SpiffyBaseline(self.model, self.draft_generator)
         self.engine = self._build_engine()
