@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR012: Sampler Stochastic-Branch Numeric Coverage (guide 6.1 :229, test-only)
+
+Spec: `specs/changes/AR012-sampler-stochastic-coverage/` (srs.md / design.md / tasks.md; req and design gates each FAIL→fixed→PASS). Full regression zero-regression (799 passed = 785 + 14 new); demo baseline unchanged; `actfold/` untouched.
+
+#### Added
+
+- Tests: UT-1101~1106 (`tests/test_sampler_stochastic_branches.py`), pinning the numeric semantics of every RNG-consuming sampler branch — the branches a P1-8 vectorization rewrite would most easily break:
+  - **Pure-function exact-recompute pins** (same-seed, operator-by-operator hand rewrite, no production imports in the recompute path): UT-1101 `add_gumbel_noise` with T∈{0.5, 1.0, 2.0} (bit-exact `exp(logits)/(-log u)**T` in float64, plus the first value-level no-op pin for T=0.0 — the pre-existing assertion was shape-only), UT-1105 `sample_tokens` temperature>0 across six filter/confidence combinations including the joint top_p+top_k case mirroring the production order (top_p first), with `-inf`-filtered positions pinned to exactly-zero probability.
+  - **End-to-end stochastic-branch pins** (seed determinism + RNG-call spy as the branch-taken proof + structural invariants): UT-1102 LLaDA `remasking="random"` (recorded `torch.rand` shape, full reveal, suppress-token interaction), UT-1103 `stochastic_transfer=True` with T=0.5 (Binomial proxy spy, in-situ gumbel, history monotonicity), UT-1104 Dream `alg_temp>0` per-row multinomial soft selection (spy + a weak convergence property: at `alg_temp=1e-8` the softmax is exactly one-hot and each row's first sampled index equals the confidence argmax).
+  - **Stochastic-schedule numeric pin**: UT-1106 `get_num_transfer_tokens(stochastic=True)` — same-seed determinism, stochastic≠deterministic distinguishability (a pinned seed), and a 100-seed statistical-mean pin against the analytically recomputed `p₀ = 0.12500083446502686` (production's four f32 roundings replicated by hand; 6σ tolerance).
+- Mutation spot-checks (run at Red, then byte-exact restored): negating the remasking branch, hardcoding `stochastic=False`, and flipping the `alg_temp` condition each turn the corresponding spy-empty assertion red — the tests are not vacuously green.
+
+#### Design
+
+- **Frozen-reference parity deliberately not extended to stochastic branches** (req-gate Major): the T018 frozen reference classes share every RNG call site with production (bit-equal under the same seed), so parity there is a circular pin (proves "code unchanged", not the math) and over-pins the current RNG layout — a legitimate P1-8 RNG reorder would false-alarm. The pinning strategy is seed-determinism + spy + independent recompute instead.
+- Guide 6.1 :229 checked with an erratum: CFG / suppress_tokens / greedy / low_confidence were already covered by T018 reference parity; the real gap was the stochastic branches (closed by this AR).
+
 ### AR011: `gather_select` Unbanned on the Truncated (Parent-Longer) Path (AR007 review follow-up)
 
 Spec: `specs/changes/AR011-gather-select-truncated-path/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (785 passed = 782 + 3 new); demo baseline unchanged; `vectorized_cache.py` and `fused_ops.py` untouched — the unban relies on (and pins) the existing `fetch_flat` contract.

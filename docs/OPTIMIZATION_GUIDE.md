@@ -226,7 +226,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 ### 6.1 测试覆盖盲区（先补测试再动手优化）
 
 - `folded_generate` 多分支路径**零测试**（现有 3 例全是单分支 greedy）；`AcceptancePolicy`、`BranchTree.prune/best_accepted_leaf`（后者是死代码）无测试。
-- samplers 只做形状 smoke test：`stochastic_transfer`、`alg_temp>0` 软选择、`remasking="random"`、CFG、suppress_tokens 均未覆盖——**恰是 P1-8 向量化改造最易破坏的分支**。
+- ~~samplers 只做形状 smoke test：`stochastic_transfer`、`alg_temp>0` 软选择、`remasking="random"`、CFG、suppress_tokens 均未覆盖——**恰是 P1-8 向量化改造最易破坏的分支**。~~ **✅ AR012（随机分支数值覆盖 + 勘误）**：勘误——CFG/suppress_tokens/begin_suppress/greedy/low_confidence 已由 T018（参考对拍）覆盖，本条立项时已部分过时；**真缺口是随机分支**：`add_gumbel_noise` T>0 公式、LLaDA `remasking="random"`、`stochastic_transfer=True` 采样级、Dream `alg_temp>0` 逐行 multinomial 软选择、`sample_tokens` T>0 Categorical 路径、`get_num_transfer_tokens` stochastic 数值语义——UT-1101~1106 钉死（纯函数同种子逐算子重算 bit-exact；端到端种子确定性 + RNG spy 分支命中 + 全揭示/单调结构不变量；schedule 统计均值 6σ 钉）。**钉法认知**：冻结参考对拍对随机分支是循环性钉（参考=生产逐字拷贝、共享 RNG 调用点，只证"代码未变"）且过度钉死 RNG 布局——P1-8 合法 RNG 重排会误报。见第十九部分。
 - `get_num_transfer_tokens` 与官方参考实现无数值对拍（AGENTS.md #21 自我要求但无落地）。
 - `ManualFoldedForward` 无 final-norm 回归测试（B2 有测试就会被抓到）。
 - scripts 的公共 helper（`make_child`/`time_forward`/`fidelity`）无纯函数单测。
@@ -450,6 +450,23 @@ AR011（`specs/changes/AR011-gather-select-truncated-path/`，T001–T004 全部
 | 全量质量门 | T004（全量 785 passed = 782+3 零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列） | ✅ 完成 |
 
 **语义要点**：与等长路径**同一**融合调用（行公式已保证语义，不分叉实现）；环回（start>0）/varlen（total<seq_len）/非向量化缓存（无 fetch_flat）三类安全网全部由既有守卫拦截，行为零变化；`parent_longer` 参数保留（不再门控分发，语义/诊断价值，签名零改动）。**P3-2 系列注**：截断复用（AR007）现已完整覆盖融合路径（AR011），paged 多祖先结构仍是后续大项。**遗留**：无。
+
+---
+
+## 第十九部分 AR012 随机分支数值覆盖（2026-10-12）
+
+AR012（`specs/changes/AR012-sampler-stochastic-coverage/`，纯测试 AR，`actfold/` 零改动）：补齐 6.1 :229 勘误后的真缺口——samplers **随机分支**（RNG 消耗路径）的数值级测试，UT-1101~1106（新文件 `tests/test_sampler_stochastic_branches.py`，14 参数化用例）。
+
+| 项目 | AR012 交付 | 状态 |
+|---|---|---|
+| 纯函数公式钉 | UT-1101（`add_gumbel_noise` T∈{0.5,1,2} 同种子独立重算逐位相等 + float64 + T=0.0 `is` 同对象 no-op——:206-207 原仅有形状断言）；UT-1105（`sample_tokens` T>0 六组合含 top_p+top_k 联合（镜像生产顺序 top_p 先）：双返回值逐位重算 + margin/neg_entropy 覆写 + -inf 位概率精确 0） | ✅ 完成 |
+| 端到端随机分支 | UT-1102（LLaDA `remasking="random"`：种子确定性 + `torch.rand` spy shape 钉 + 全揭示 + suppress 组合）；UT-1103（`stochastic_transfer=True`+T=0.5：Binomial 代理 spy + gumbel 在位 + history 单调）；UT-1104（Dream `alg_temp=1.0`：multinomial spy + 全揭示 + **弱收敛性质**（alg_temp=1e-8 时 softmax 精确 one-hot、每行首采样==置信度 argmax）） | ✅ 完成 |
+| schedule 数值钉 | UT-1106（同种子 `torch.equal` + stochastic≠deterministic 分支可区分（S=0 钉死）+ 100 种子统计均值 |2.70−2.5000167|=0.20 ≤ 6σ=±0.89，p₀=0.12500083446502686 独立重算逐位复刻生产四次 f32 舍入） | ✅ 完成 |
+| 测试自证 | mutation spot-check 三位点全翻红后逐字节还原：remasking 判断反义→UT-1102 spy 空；stochastic 硬编码→UT-1103 spy 空；alg_temp 条件改 `!=`→UT-1104 spy 空（spy 空断言是"空转通过"防护——AR011 教训落地） | ✅ 完成 |
+| 门控 | req 门控 Major-1（冻结参考与生产共享 RNG 调用点、同种子 bit-equal——对拍是循环性钉而非"不可行"，依据更正）；design 门控 Major-1（统计钉构造 Σn 与常数矛盾，首跑必红陷阱——单行全 mask 修正）；两门控 FAIL→修复→PASS | ✅ 完成 |
+| 质量门 | 全量 799 passed（785+14）零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列 | ✅ 完成 |
+
+**语义要点**：随机分支钉"当前平台确定契约"（同种子 bit-equal）而非跨平台分布正确性（AGENTS #21 免责仍立）；独立重算逐算子手写不 import 生产函数（防循环验证）；`(4,20)` 统计构造陷阱（Σn≈48 vs 硬编码 n=20 期望——首跑必红且伪装生产缺陷）由 design 门控拦截。**遗留**：:228 多分支路径、:230 官方对拍、:231 final-norm、:232 scripts helper、:233 conftest seed 耦合仍在债清单。
 
 ---
 
