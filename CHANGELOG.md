@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR011: `gather_select` Unbanned on the Truncated (Parent-Longer) Path (AR007 review follow-up)
+
+Spec: `specs/changes/AR011-gather-select-truncated-path/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (785 passed = 782 + 3 new); demo baseline unchanged; `vectorized_cache.py` and `fused_ops.py` untouched — the unban relies on (and pins) the existing `fetch_flat` contract.
+
+#### Changed
+
+- **`FoldedTransformerLayer._merge_parent_child` no longer skips the fused `gather_select` merge when the parent was truncated (AR007 `parent_longer`)**: the D3 dispatch condition drops `not parent_longer`, so a parent-longer reuse at large shapes (T≥2048, H≥4096, CUDA) merges in a single fused pass like the equal-length path. The AR007-era rationale ("the flat-row layout contract covers exactly `seq_len` stored tokens") was factually wrong — `fetch_flat`'s guard requires the stored tokens to **cover** the request (allowing `total > seq_len`) and its row formula `flat_rows[b*seq_len+t] = t*batch+b` is computed for the requested child length, reading exactly the truncated parent prefix. Safety nets are unchanged and pinned: an eviction-wrapped parent (`start > 0`), a shorter varlen parent (`total < seq_len`, plus the explicit `prefix_len` skip), and non-vectorized caches (no `fetch_flat`) all still fall back — bit-identical. The `parent_longer` parameter is retained (no signature change; no longer gates the dispatch).
+- AGENTS #20 updated (truncated-path merge now fused) and #30's historical threshold wording errata'd to the current D3 values (T≥2048 with H≥4096 on CUDA, pinned by T016).
+
+#### Added
+
+- Tests: UT-1001~1003 (`tests/test_gather_select_truncated.py`, T014/T016 patterns): parent-longer fused equivalence (exactly one recorded `gather_select` call, dual-instance `torch.equal`, output-composition sanity, pre-forward mixed-stability sanity to avoid tau-flakiness), eviction-wrap fallback (independent capacity=6 cache; the child built from the **surviving window** prefix — a naive token-0..3 prefix would compare against the wrong window, go all-divergent, and skip the merge entirely; output-composition sanity proves the merge was reached), and the varlen not-fusable behavior pin.
+
 ### AR010: Model-Family Inference Unification & Fallback Visibility (guide 6.2 :241)
 
 Spec: `specs/changes/AR010-model-family-inference-unification/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (782 passed = 773 + 9 new); demo baseline unchanged; the inference rules are preserved verbatim (the existing `test_registry_resolve_family` assertions pass unchanged as the behavioral-pinning gate).

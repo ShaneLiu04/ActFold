@@ -437,6 +437,22 @@ AR010（`specs/changes/AR010-model-family-inference-unification/`，T001–T004 
 
 ---
 
+## 第十八部分 AR011 完成回链（2026-10-12）
+
+AR011（`specs/changes/AR011-gather-select-truncated-path/`，T001–T004 全部 passing）收口 AR007 的 review 线索：**截断路径 gather_select 解禁**——`_merge_parent_child` 的 D3 分发条件删除 `not parent_longer`，截断复用在大形状下恢复单遍融合合并。
+
+| 条目 | AR011 任务 | 状态 |
+|---|---|---|
+| 解禁核心 | T001（分发条件删除 `and not parent_longer` 一行，其余逐字保留；docstring 勘误——`fetch_flat` 守卫要求**覆盖**而非**恰好** seq_len；`vectorized_cache.py`/`fused_ops.py` 零改动——`fetch_flat` 行公式 `flat_rows[b*seq_len+t]=t*batch+b` 按请求子长计算，天然读父缓存前 T_c token = AR007 截断前缀，req 门控逐行核实） | ✅ 完成 |
+| 安全网钉死 | T001（UT-1002 环回驱逐：独立 capacity=6 构造 + **幸存窗口前缀 child**（环回 fetch 返回 token 2..7 而非 0..3——直觉构造会全 divergent 空转，req 门控 Major）+ 输出组成 sanity → `fetch_flat` start>0 返回 None → gather_select 零调用 + torch.equal；UT-1003 varlen 不可融合行为钉子） | ✅ 完成 |
+| 等价证据 | T001（UT-1001：parent-longer 融合恰一次调用 + 前向前混合稳定 sanity（防 tau=0.95 小扰动 flaky）+ 双实例 torch.equal + 组成 sanity；T014~T016/UT-601~605/IT-611/613 既有全套零改动全过） | ✅ 完成 |
+| 文档收口 | T003（AGENTS #20 修订"conservatively skipped"→解禁表述、**#30 阈值勘误**（历史"H≥8192, or T≥8192"→现行 D3 值 T≥2048/H≥4096/CUDA，T016 钉死）、本回链、CHANGELOG AR011 节） | ✅ 完成 |
+| 全量质量门 | T004（全量 785 passed = 782+3 零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列） | ✅ 完成 |
+
+**语义要点**：与等长路径**同一**融合调用（行公式已保证语义，不分叉实现）；环回（start>0）/varlen（total<seq_len）/非向量化缓存（无 fetch_flat）三类安全网全部由既有守卫拦截，行为零变化；`parent_longer` 参数保留（不再门控分发，语义/诊断价值，签名零改动）。**P3-2 系列注**：截断复用（AR007）现已完整覆盖融合路径（AR011），paged 多祖先结构仍是后续大项。**遗留**：无。
+
+---
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

@@ -400,17 +400,17 @@ class FoldedTransformerLayer(nn.Module):
                 match a shorter parent) and the parent FFN is aligned to the
                 child length with the recomputed suffix before the merge.
             parent_longer: True when the cached parent activation was
-                longer than the child and was truncated (AR007).  The
-                ``gather_select`` fast path is skipped conservatively (its
-                flat-row layout contract covers exactly ``seq_len`` stored
-                tokens per branch; truncation reuse does not depend on it)
-                and the parent FFN is fetched and truncated instead —
-                bit-identical, one less fused kernel.
+                longer than the child and was truncated (AR007).  The fused
+                ``gather_select`` path is enabled (AR011): ``fetch_flat``
+                rows are computed for the requested child length, so they
+                read exactly the truncated parent prefix.  An
+                eviction-wrapped parent (``start > 0``) still falls back —
+                ``fetch_flat`` returns ``None`` and the parent FFN is
+                fetched and truncated instead — bit-identical.
         """
         batch, seq_len, hidden_dim = child_out.shape
         if (
             prefix_len is None
-            and not parent_longer
             and seq_len >= _GATHER_SELECT_MIN_TOKENS
             and hidden_dim >= _GATHER_SELECT_MIN_HIDDEN
             and (not _GATHER_SELECT_REQUIRE_CUDA or child_out.is_cuda)
