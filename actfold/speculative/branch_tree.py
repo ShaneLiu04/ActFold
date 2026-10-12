@@ -85,9 +85,3 @@ class BranchTree:
         for child_id in list(node.children):
             self.prune(child_id)
 
-    def best_accepted_leaf(self) -> BranchNode:
-        """Return the deepest accepted leaf node."""
-        candidates = [n for n in self._nodes.values() if n.accepted]
-        if not candidates:
-            return self._nodes[self.root_id]
-        return max(candidates, key=lambda n: n.depth)

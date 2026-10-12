@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR013: Guide-6.1 Test-Debt List Final Audit & Closure (test-first + dead-code removal)
+
+Spec: `specs/changes/AR013-test-debt-closure/` (srs.md / design.md / tasks.md; req gate first-round PASS, design gate FAIL→fixed→PASS). Full regression zero-regression (807 passed = 799 + 8 new); demo baseline unchanged; production delta is exactly `-6` lines in `branch_tree.py`.
+
+#### Removed
+
+- **`BranchTree.best_accepted_leaf` (branch_tree.py:88-93)**: zero-caller, zero-test dead code (repo-wide scan: only the definition and the guide's own debt line referenced it; the guide itself flagged it "死代码"). The correct disposition for dead code is removal, not tests. A removal pin (UT-1208: `not hasattr(BranchTree, "best_accepted_leaf")` plus a live-API-surface `hasattr` check on add/get/get_ancestors/prune) prevents resurrection.
+
+#### Added
+
+- Tests: UT-1201~1204 (`tests/test_algo_experiment_helpers.py`) pinning the two genuinely-uncovered experiment helpers named by guide :232 — `make_child` (same-seed independent recompute of the Generator→randperm→randint stream, dual-call determinism, cross-seed distinguishability, zero/negative-flip early-return clone semantics, `min` clamping, vocab-1, parent immutability, float32 dtype passthrough) and `fidelity` (identity metrics on a hand-picked exactly-representable-norm tensor, the 1e-12 variance floor, exact four-key schema, fp16→fp32 upcast, and a first-principles hand-computed case with literal constants — mse=0.25 / top1=0.5 exact, rel_mse / cosine via approx; the variance expectation mirrors the explicit unbiased formula `((base-mean)**2).sum()/(n-1)` instead of calling `base.var()`, so a torch default change cannot silently drag the test along).
+- Tests: UT-1205~1207 (`tests/test_branch_tree.py`) — first direct API pins for the live `BranchTree` surface consumed by `folded_generate` (add/get round-trip, parent-child linking, the duplicate-add guard at :57-58, the orphan-parent condition at :55, `BranchNode.seq_len`, `get_ancestors` ordering / include_self / unregistered both arities, and `prune` recursion + parent unlink + missing-id no-op + the dangling `root_id` after pruning the root). Measured-behavior finding: `prune(root)` recursively clears the entire tree including siblings — pinned as current behavior with a docstring note.
+- Mutation spot-checks (byte-exact restored): dropping the `make_child` clamp line reds UT-1202 with `RuntimeError` (shape mismatch 15 vs 12 — `randperm` slicing silently caps but `randint` uses the unclamped count); replacing the `fidelity` variance floor with the raw variance reds UT-1203 with `ZeroDivisionError` (Python-float division, not inf); deleting the `prune` recursion reds UT-1207 with a surviving leaf.
+
+#### Design
+
+- **Guide 6.1 (:228-:233) audited item-by-item and closed 6/6 with errata**: :228's premise was already closed by AR004/AR006 (31 folded_generate tests, 7 direct TargetMatchAcceptancePolicy cases, 59 acceptance.py hits) — the real remainder (direct BranchTree pins + dead code) is what this AR delivered; :230 was closed by T018's frozen pre-T018 reference parity; :231 was closed by AR002's `test_manual_folded_forward_applies_final_norm`; :232 was mostly closed by `test_experiment_stats.py` (16 cases) with `make_child`/`fidelity` as the true gap; :233's wording was inverted — the function-scope autouse seed **resets** per test (a decoupling mechanism, not a coupling source); the residual (implicit reliance on seed 42) is handled by the AR012 explicit-seed discipline for all new tests, and a wholesale rewrite of 800 tests was rejected (huge churn, no flaky-fix payoff).
+- Gate findings worth recording: `seq_len` belongs to `BranchNode`, not `BranchTree` (a literal hasattr on the wrong class would have been a guaranteed first-run red); identity-input `cosine_similarity` returns 0.99999994 rather than 1.0 for ~60% of random tensors (norm sqrt→square round-trip) — exact identity assertions require a hand-picked exactly-representable norm.
+
 ### AR012: Sampler Stochastic-Branch Numeric Coverage (guide 6.1 :229, test-only)
 
 Spec: `specs/changes/AR012-sampler-stochastic-coverage/` (srs.md / design.md / tasks.md; req and design gates each FAIL→fixed→PASS). Full regression zero-regression (799 passed = 785 + 14 new); demo baseline unchanged; `actfold/` untouched.

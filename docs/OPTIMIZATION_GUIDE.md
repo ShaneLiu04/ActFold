@@ -225,12 +225,12 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 ### 6.1 测试覆盖盲区（先补测试再动手优化）
 
-- `folded_generate` 多分支路径**零测试**（现有 3 例全是单分支 greedy）；`AcceptancePolicy`、`BranchTree.prune/best_accepted_leaf`（后者是死代码）无测试。
+- ~~`folded_generate` 多分支路径**零测试**（现有 3 例全是单分支 greedy）；`AcceptancePolicy`、`BranchTree.prune/best_accepted_leaf`（后者是死代码）无测试。~~ **✅ AR013（终审勘误 + 残余收口）**：勘误——本条前提被 AR004/AR006 大面积关闭：`test_folded_generation.py` 现 31 例（多候选 IT-512、model_draft、prune 集成、causal 等价、graph 零干扰、acceptance rate 报告全套）、`TargetMatchAcceptancePolicy` 7 个直接用例（:718-805）、`acceptance.py` 纯函数 59 hits（test_acceptance.py）。**残余由 AR013 收口**：`BranchTree` 活 API（add/get/get_ancestors/prune、`BranchNode.seq_len`）直接钉 UT-1205~1207（prune 原仅集成级间接覆盖；**实测新知**：`prune(root)` 递归清空全树含 sibling）；死代码 `best_accepted_leaf`（零调用零测试）**移除**（guide 自标死代码的正确处置是删而非补测试）+ UT-1208 移除钉防复活。见第二十部分。
 - ~~samplers 只做形状 smoke test：`stochastic_transfer`、`alg_temp>0` 软选择、`remasking="random"`、CFG、suppress_tokens 均未覆盖——**恰是 P1-8 向量化改造最易破坏的分支**。~~ **✅ AR012（随机分支数值覆盖 + 勘误）**：勘误——CFG/suppress_tokens/begin_suppress/greedy/low_confidence 已由 T018（参考对拍）覆盖，本条立项时已部分过时；**真缺口是随机分支**：`add_gumbel_noise` T>0 公式、LLaDA `remasking="random"`、`stochastic_transfer=True` 采样级、Dream `alg_temp>0` 逐行 multinomial 软选择、`sample_tokens` T>0 Categorical 路径、`get_num_transfer_tokens` stochastic 数值语义——UT-1101~1106 钉死（纯函数同种子逐算子重算 bit-exact；端到端种子确定性 + RNG spy 分支命中 + 全揭示/单调结构不变量；schedule 统计均值 6σ 钉）。**钉法认知**：冻结参考对拍对随机分支是循环性钉（参考=生产逐字拷贝、共享 RNG 调用点，只证"代码未变"）且过度钉死 RNG 布局——P1-8 合法 RNG 重排会误报。见第十九部分。
-- `get_num_transfer_tokens` 与官方参考实现无数值对拍（AGENTS.md #21 自我要求但无落地）。
-- `ManualFoldedForward` 无 final-norm 回归测试（B2 有测试就会被抓到）。
-- scripts 的公共 helper（`make_child`/`time_forward`/`fidelity`）无纯函数单测。
-- `conftest.py:22-27` autouse seed 使测试共享随机态序列，测试间隐式耦合。
+- ~~`get_num_transfer_tokens` 与官方参考实现无数值对拍（AGENTS.md #21 自我要求但无落地）。~~ **✅ AR013（终审勘误）**：`test_t018_num_transfer_tokens_reference_parity`（test_sampling_utils.py:225，冻结 pre-T018 逐行参考 :80-154；官方对齐链自证见 sampling_utils.py:158/:166 "bit-identical to the official per-row loop"）+ 非随机/随机双模式钉（T018 :225 + AR012 UT-1106）已在位——本条立项时已被 T018 关闭。见第二十部分。
+- ~~`ManualFoldedForward` 无 final-norm 回归测试（B2 有测试就会被抓到）。~~ **✅ AR013（终审勘误）**：`test_manual_folded_forward_applies_final_norm`（test_architecture_utils.py:216-235，folded vs raw allclose+argmax 双钉，docstring 自标 "srs 3.1 B2"）+ `test_detect_architecture_finds_final_norm`（:202）AR002 时代已钉——本条立项时已被关闭。见第二十部分。
+- ~~scripts 的公共 helper（`make_child`/`time_forward`/`fidelity`）无纯函数单测。~~ **✅ AR013（勘误 + 真缺口补齐）**：勘误——`test_experiment_stats.py` 16 用例已覆盖 `TimingStats`/`stats_from_samples`/`time_forward`/`repeat_with_seed`/`exp_sampling`/`fig_sampling`（AGENTS #32 时代）；**真缺口** `make_child`/`fidelity` 由 UT-1201~1204 钉死（同种子独立重算 + 第一性原理字面常量手算 + 钳位/方差地板/dtype 边角；实测新知：恒等输入的 `cosine_similarity` 经 norm√→² 往返 ~60% 随机张量不 bit-exact 等于 1.0——恒等断言须用 norm 精确可表示张量）。见第二十部分。
+- ~~`conftest.py:22-27` autouse seed 使测试共享随机态序列，测试间隐式耦合。~~ **✅ AR013（终审勘误 + 决策）**：表述失准——function-scope autouse **每测试函数重置** seed=42，是**解耦**机制（测试间不共享随机态）而非耦合源；真实残余是"测试隐式依赖 seed=42 值本身"。**决策**：新测试显式种子纪律已由 AR012 确立为模式（全部新 AR 用例显式 `manual_seed`/`Generator`）；全量重写 800 用例**否决**——churn 巨大、无 flaky 修复收益、旧测试在 autouse 下确定可复现。见第二十部分。
 
 ### 6.2 API/架构设计债
 
@@ -467,6 +467,23 @@ AR012（`specs/changes/AR012-sampler-stochastic-coverage/`，纯测试 AR，`act
 | 质量门 | 全量 799 passed（785+14）零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列 | ✅ 完成 |
 
 **语义要点**：随机分支钉"当前平台确定契约"（同种子 bit-equal）而非跨平台分布正确性（AGENTS #21 免责仍立）；独立重算逐算子手写不 import 生产函数（防循环验证）；`(4,20)` 统计构造陷阱（Σn≈48 vs 硬编码 n=20 期望——首跑必红且伪装生产缺陷）由 design 门控拦截。**遗留**：:228 多分支路径、:230 官方对拍、:231 final-norm、:232 scripts helper、:233 conftest seed 耦合仍在债清单。
+
+---
+
+## 第二十部分 AR013 测试债清单终审收口（2026-10-12）
+
+AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + branch_tree.py 删 6 行死代码）：6.1 清单 **6/6 终态**——AR012 关闭 :229 时发现清单大面积过时（AR008-012 连续五次发现债条目前提腐化），本 AR 对整个 6.1 做系统性终审：:228/:230/:231/:233 四条**勘误勾选**（各自证据与实际关闭者写入条目）、:232 勘误 + 真缺口补齐。
+
+| 项目 | AR013 交付 | 状态 |
+|---|---|---|
+| make_child/fidelity 纯函数钉 | UT-1201~1204（`tests/test_algo_experiment_helpers.py`，168 行）：同种子独立重算（Generator→randperm→randint 序列逐位）+ 双调用确定 + seed 可区分；边角矩阵（零/负翻转 clone 非同对象、钳位、vocab=1、父不可变、float32 dtype 直通）；fidelity 恒等/方差地板/键集/fp16 上转 + 手算例（mse=0.25/top1=0.5 精确，rel_mse/cosine approx——第一性原理字面常量，var 用显式公式镜像而非 `base.var()` 防 torch 默认漂移同步） | ✅ 完成 |
+| BranchTree 活 API 直接钉 | UT-1205~1207（`tests/test_branch_tree.py`，149 行）：add/get 往返、父子链接、重复 add 防护（:57-58）、孤儿条件（:55）、`BranchNode.seq_len` 值钉、get_ancestors 顺序/include_self/未注册双态、prune 递归+解链+no-op+dangling root_id；**实测新知**：`prune(root)` 递归清空全树（sibling 一并移除）——按现行行为钉并 docstring 标注非应然 | ✅ 完成 |
+| 死代码移除 | `branch_tree.py:88-93` `best_accepted_leaf` 删除（-6 行，本 AR 唯一生产改动；仓级扫描零调用零测试）；UT-1208 移除钉（hasattr False + 活 API 面全真）防复活；删除前红/删除后绿为移除生效的天然证据 | ✅ 完成 |
+| mutation 自证 | 三位点均翻红后逐字节还原：make_child 删钳位行 → RuntimeError shape mismatch 15 vs 12；fidelity 地板→var → ZeroDivisionError（Python float 除零非 inf）；prune 删递归 → leaf 残留 | ✅ 完成 |
+| 门控 | req 首轮 PASS（5 Minor 计数/措辞修正：TargetMatch 7 例非 8、experiment_stats 16 例非 17、:230 出处链精确化）；design 首轮 FAIL→修复（**Major-1**：`seq_len` 归属 BranchNode 非 BranchTree，活 API 面字面实现必红；**Major-2**：恒等 cosine 精确断言 ~60% 随机张量不成立——改手选 norm 精确可表示张量） | ✅ 完成 |
+| 质量门 | 全量 **807 passed（799+8）**零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列、`git diff actfold` 恰 -6 行 | ✅ 完成 |
+
+**语义要点**：死代码的正确处置是**移除而非补测试**（给无人使用的路径上保险是反向激励）；6.1 清单恢复可信度后，剩余债集中在 6.2（:237/:238/:243）与大项（P3-2 paged 多祖先、P2-1 超融合）。**遗留**：无（6.1 全清）。
 
 ---
 
