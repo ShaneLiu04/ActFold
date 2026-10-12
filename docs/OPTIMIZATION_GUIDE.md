@@ -238,7 +238,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 - cache 的 `get(token_mask)` 同时承担"选择范围"与"零填充输出"两职（三个实现都要维持该契约）——正是 P1-2 冗余的根源，应拆 API。
 - ~~`AdaptiveQuantileGate` 与 `FoldingScheduler` 互斥但无检测（AGENTS #29）：`FoldedTransformerLayer` 应显式拒绝组合。~~ **✅ AR009（构造期守卫）**：`FoldedTransformerLayer.__init__`（`SplitFoldedTransformerLayer` 经 super 自动覆盖，`ManualFoldedForward` 构造期传递失败）与 `ActFoldVerificationEngine.__init__` 对该组合抛 `RuntimeError`（共享消息常量，含两条修复路径）；AGENTS #29 由文档约定升级为代码契约。见第十六部分。
 - ~~`architecture_utils.find_layer_list` 只认 `nn.ModuleList`（:147），`nn.Sequential`/自定义容器不支持，且 auto-discovery 失败时**静默降级为 embedding 代理测量，用户不知道 folding 没生效**——应返回 `folding_status` 枚举并 WARNING。~~ **✅ AR009（勘误 + 可见性收口）**：勘误——`detect_architecture` 对层栈发现失败已显式 `RuntimeError`（architecture_utils.py:281-285，AGENTS #10 对齐），并非静默降级；`nn.Sequential`/自定义容器不支持属布局限制（AGENTS #23：显式 wiring 是既定出路），`folding_status` 枚举无消费方暂不做。真正的静默点在 `ActFoldVerificationEngine._estimate_stable_ratio` 的 embedding 代理回退——AR009 为其加实例级一次性 `UserWarning`（AGENTS #17/#18 成因指引），回退行为本身不变。见第十六部分。
-- `registry._resolve_family` 子串匹配（"fast" in name）与 `models/utils.infer_model_family` 双份维护；未知 diffusion 家族静默落 `causal_lm`。
+- ~~`registry._resolve_family` 子串匹配（"fast" in name）与 `models/utils.infer_model_family` 双份维护；未知 diffusion 家族静默落 `causal_lm`。~~ **✅ AR010（去重 + 回退可见性）**：`_resolve_family` auto 分支委托 `infer_model_family`（utils 成为唯一规则实现源，规则逐字不变）；auto 回退 causal_lm 时发 UserWarning（含模型名 + 显式传参指引 + 可用家族列表，AGENTS #10 落实；显式 family 与已知子串命中不告警）。勘误——子串规则本身保留：fast+dllm 双子串 AND 误报面极窄，token 化反而破坏 "FastDLLM" 连写命名（lower 后单 alnum token）。见第十七部分。
 - ~~`generic.forward` 恒置 `output_hidden_states=True`（generic.py:112）：7B 模型 T=512 时数百 MB 峰值浪费。~~ **✅ AR008（按需化）**：默认 `False`；输出既无 `logits` 也无 `last_hidden_state` 时置实例标志并带 `True` 递归重跑一次（每实例至多一次双跑，标志粘性安全）；LLaDA/Dream 继承链自动受益；EX-805 CUDA 实证峰值差 ≥150MB（理论 192MB）。见第十五部分。
 - Windows 兼容：evalplus 明确 raise（合理）；bash 脚本全家桶需 WSL；`run_ablation.sh` heredoc 未加引号的变量插值存在注入面。
 
@@ -418,6 +418,22 @@ AR009（`specs/changes/AR009-silent-misconfig-guards/`，T001–T004 全部 pass
 | 全量质量门 | T004（全量 773 passed = 768+5 零回归、demo 85.5%/2.35e-03/93.75% 精确一致、mypy clean/pyflakes 零/100 列） | ✅ 完成 |
 
 **语义要点**：守卫是纯构造期校验——生产消费方（AblationStudy/BenchmarkRunner/demo）均以 `SimilarityGate` 构造折叠栈，零回归面（全库 15 处 `AdaptiveQuantileGate(` 构造均无 scheduler 组合已核实）；告警是**有意新增**的可观测行为（非泄漏），既有 engine 测试（UT-306/307 等走代理路径）开始收到一次性告警但 pyproject 无 `-W error` 不受影响；回退行为本身逐行不变（AGENTS #16/#17 写明的合法降级路径，只加可见性）。**设计要点**：`isinstance` 黑名单语义（子类同样忽略固定 tau）与 #38 fused dispatch 的精确类型白名单意图相反需区分；消息常量两构造器逐字一致防漂移（speculative→core 单向导入无环）。**遗留**：无（两守卫与告警即终态）。
+
+---
+
+## 第十七部分 AR010 完成回链（2026-10-12）
+
+AR010（`specs/changes/AR010-model-family-inference-unification/`，T001–T004 全部 passing）收口 6.2 API 债 :241：**模型家族推断统一与回退可见性**——消除 `_resolve_family`/`infer_model_family` 的逐行双份维护，让 auto 回退的静默默认可见（AGENTS #10 的又一落实，与 AR009 同主题连续）。
+
+| 指南条目 | AR010 任务 | 状态 |
+|---|---|---|
+| 双份维护消除 | T001（`_resolve_family` auto 分支改为 `return infer_model_family(...)`，registry 侧重复子串规则整体删除；utils 成为唯一实现源；既有 `test_registry_resolve_family` 5 断言零改动全过 = 行为不变硬门；UT-901 六组等价矩阵含混合大小写/连写/显式透传） | ✅ 完成 |
+| 回退可见性 | T001（auto 且推断结果为 causal_lm → UserWarning，`stacklevel=3` 经 load 归因用户调用点；消息含 "auto-detect fell back to causal_lm" + 模型名 + 显式传参指引 + `list_models()` 动态家族列表；判据依赖 `infer_model_family` 不变量"返回 causal_lm 当且仅当无已知子串命中"，注记在 registry 侧告警块；UT-902 `pytest.warns(match=...)` + 消息含模型名双断言；UT-903/904 以 `simplefilter("error")` 钉死显式 family 与已知子串命中零告警） | ✅ 完成 |
+| 子串规则勘误 | :241 点名的 "'fast' in name" 子串匹配经分析**保留**——fast+dllm 双子串 AND 误报面极窄（需同时含两子串且非 Fast-dLLM）；token 化破坏 "FastDLLM" 连写命名（lower→`fastdllm` 单 alnum token，子串命中 ✓/token 等值 ✗）；基于 `AutoConfig.model_type` 的二次校验因需权重/config 可得而 Out of Scope | ✅ 完成 |
+| 文档收口 | T003（指南 :241 勾选 + 本回链、CHANGELOG AR010 节；README 经审查不需更——现有文档只示例显式 family，无 auto 行为描述） | ✅ 完成 |
+| 全量质量门 | T004（全量 782 passed = 773+9 零回归、demo 85.5%/2.35e-03/93.75% 精确一致、mypy clean/pyflakes 零/100 列） | ✅ 完成 |
+
+**语义要点**：`infer_model_family` 保持纯函数（告警在 registry 层——唯一同时握有 `model_family` 原值与推断结果的点）；回退**返回值不变**（真因果模型继续正确落 causal_lm，告警是提示而非强制）；registry 导入 utils 无环（utils 零 actfold 内部依赖，req/design 门控双核实）；scripts 全部显式传 `spec["family"]`（grep 核实），批量加载无告警噪音。**测试形态**：UT-901/903/904 为回归钉子（Red 期即过——规则未变/显式与命中路径今日就不告警），UT-902 是唯一真 Red（`DID NOT WARN`）——与 AR009 UT-803 钉子模式互为印证。**遗留**：无。
 
 ---
 

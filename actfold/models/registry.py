@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import warnings
 from typing import Any
 
 from actfold.models.base import DiffusionLLM
@@ -10,6 +11,7 @@ from actfold.models.dream import DreamModel
 from actfold.models.fast_dllm import FastDLLMModel
 from actfold.models.generic import GenericDiffusionLLM
 from actfold.models.llada import LLaDAModel
+from actfold.models.utils import infer_model_family
 
 
 class ModelRegistry:
@@ -79,15 +81,21 @@ class ModelRegistry:
         if model_family != "auto":
             return model_family
 
-        name_lower = model_name_or_path.lower()
-        if "llada" in name_lower:
-            return "llada"
-        if "dream" in name_lower:
-            return "dream"
-        if "fast" in name_lower and "dllm" in name_lower:
-            return "fast_dllm"
-        # Default to causal LM as the safest AutoModel-based fallback.
-        return "causal_lm"
+        family = infer_model_family(model_name_or_path)
+        # AR010: the keyword rules are implemented once, in
+        # ``infer_model_family``. Its invariant — ``"causal_lm"`` is returned
+        # if and only if no known keyword matched — doubles as the fallback
+        # signal here, so make the silent default visible (AGENTS #10).
+        if family == "causal_lm":
+            warnings.warn(
+                f"auto-detect fell back to causal_lm for "
+                f"'{model_name_or_path}': no known family keyword matched. "
+                f"If this is a diffusion model, pass model_family explicitly "
+                f"(available: {', '.join(cls.list_models())}).",
+                UserWarning,
+                stacklevel=3,
+            )
+        return family
 
 
 def load_model(

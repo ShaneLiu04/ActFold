@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR010: Model-Family Inference Unification & Fallback Visibility (guide 6.2 :241)
+
+Spec: `specs/changes/AR010-model-family-inference-unification/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (782 passed = 773 + 9 new); demo baseline unchanged; the inference rules are preserved verbatim (the existing `test_registry_resolve_family` assertions pass unchanged as the behavioral-pinning gate).
+
+#### Changed
+
+- **`ModelRegistry._resolve_family` no longer duplicates the keyword rules**: the `auto` branch now delegates to `actfold.models.utils.infer_model_family` (previously a line-for-line duplicate; `infer_model_family` had zero production callers). The rules themselves — lowercase folding, the `"llada"` / `"dream"` / `"fast" and "dllm"` substring checks, the `causal_lm` fallback — are preserved verbatim in `utils`, which becomes the single source of truth; the explicit `model_family != "auto"` path returns unchanged.
+- **Substring matching kept (guide erratum)**: the :241 complaint about `'fast' in name` was analyzed and retained — the fast-dllm rule requires both substrings to match (a very narrow false-positive surface), while token-based matching would break the concatenated "FastDLLM" naming (lowercased `fastdllm` is a single alphanumeric token). Config-based (`AutoConfig.model_type`) revalidation stays out of scope.
+
+#### Added
+
+- **`UserWarning` on the silent auto fallback**: when `model_family="auto"` and inference falls back to `causal_lm` (no known keyword matched — the production default via `ActFoldConfig.model_family="auto"`), `_resolve_family` warns with the model name, an explicit-`model_family` pointer for diffusion models, and the dynamic list of registered families (`stacklevel=3`, attributed to the caller through `load`). Explicit family selections and known-keyword matches never warn; the fallback return value is unchanged (genuine causal models keep working — this is visibility, per AGENTS #10, not a behavior change).
+- Tests: UT-901~904 (`tests/test_model_family_inference.py`): six-case equivalence matrix (mixed case / concatenated names / explicit passthrough), `pytest.warns(match="auto-detect fell back to causal_lm")` plus model-name assertion with a recording dummy registry (no `from_pretrained`), and `simplefilter("error")`-based zero-warning pins for the explicit-family and known-keyword paths.
+
 ### AR009: Silent-Misconfiguration Guards for Folding (guide 6.2 :239/:240 visibility fix)
 
 Spec: `specs/changes/AR009-silent-misconfig-guards/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (773 passed = 768 + 5 new); demo baseline unchanged; the fallback behavior itself is preserved line-for-line (AGENTS #16/#17 legitimate degradation path — only visibility is added).
