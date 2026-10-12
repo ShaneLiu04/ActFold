@@ -236,8 +236,8 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 - `FoldedModel` 原地替换层（B12）：建议 context manager 协议 + `__del__` 兜底，或全面转向不替换式的 `ManualFoldedForward`（hook 方案已证明不替换也可注入逻辑，两种手段应统一）。
 - cache 的 `get(token_mask)` 同时承担"选择范围"与"零填充输出"两职（三个实现都要维持该契约）——正是 P1-2 冗余的根源，应拆 API。
-- `AdaptiveQuantileGate` 与 `FoldingScheduler` 互斥但无检测（AGENTS #29）：`FoldedTransformerLayer` 应显式拒绝组合。
-- `architecture_utils.find_layer_list` 只认 `nn.ModuleList`（:147），`nn.Sequential`/自定义容器不支持，且 auto-discovery 失败时**静默降级为 embedding 代理测量，用户不知道 folding 没生效**——应返回 `folding_status` 枚举并 WARNING。
+- ~~`AdaptiveQuantileGate` 与 `FoldingScheduler` 互斥但无检测（AGENTS #29）：`FoldedTransformerLayer` 应显式拒绝组合。~~ **✅ AR009（构造期守卫）**：`FoldedTransformerLayer.__init__`（`SplitFoldedTransformerLayer` 经 super 自动覆盖，`ManualFoldedForward` 构造期传递失败）与 `ActFoldVerificationEngine.__init__` 对该组合抛 `RuntimeError`（共享消息常量，含两条修复路径）；AGENTS #29 由文档约定升级为代码契约。见第十六部分。
+- ~~`architecture_utils.find_layer_list` 只认 `nn.ModuleList`（:147），`nn.Sequential`/自定义容器不支持，且 auto-discovery 失败时**静默降级为 embedding 代理测量，用户不知道 folding 没生效**——应返回 `folding_status` 枚举并 WARNING。~~ **✅ AR009（勘误 + 可见性收口）**：勘误——`detect_architecture` 对层栈发现失败已显式 `RuntimeError`（architecture_utils.py:281-285，AGENTS #10 对齐），并非静默降级；`nn.Sequential`/自定义容器不支持属布局限制（AGENTS #23：显式 wiring 是既定出路），`folding_status` 枚举无消费方暂不做。真正的静默点在 `ActFoldVerificationEngine._estimate_stable_ratio` 的 embedding 代理回退——AR009 为其加实例级一次性 `UserWarning`（AGENTS #17/#18 成因指引），回退行为本身不变。见第十六部分。
 - `registry._resolve_family` 子串匹配（"fast" in name）与 `models/utils.infer_model_family` 双份维护；未知 diffusion 家族静默落 `causal_lm`。
 - ~~`generic.forward` 恒置 `output_hidden_states=True`（generic.py:112）：7B 模型 T=512 时数百 MB 峰值浪费。~~ **✅ AR008（按需化）**：默认 `False`；输出既无 `logits` 也无 `last_hidden_state` 时置实例标志并带 `True` 递归重跑一次（每实例至多一次双跑，标志粘性安全）；LLaDA/Dream 继承链自动受益；EX-805 CUDA 实证峰值差 ≥150MB（理论 192MB）。见第十五部分。
 - Windows 兼容：evalplus 明确 raise（合理）；bash 脚本全家桶需 WSL；`run_ablation.sh` heredoc 未加引号的变量插值存在注入面。
@@ -402,6 +402,22 @@ AR008（`specs/changes/AR008-generic-hidden-states-on-demand/`，T001–T004 全
 | 全量质量门 | T004（全量零回归、demo 基线不变、mypy/pyflakes/100 列） | ✅ 完成 |
 
 **语义要点**：重跑仅在"输出本就不可用"的路径发生（AGENTS #10 论证：修复而非静默切换）；标志单向 False→True 且粘性安全（True 态下 logits-first 模型仍走早退分支，仅付内存代价不损正确性）；train 模式双跑可接受（首跑输出不可用，重跑是唯一可用结果）。调用链覆盖（req 门控逐路径核实）：基类 AR fallback 与 LLaDA/Dream sampler 非折叠路径经继承的 generic.forward ✓；sampler 折叠路径与 `_native_sampler` 裸 model 今日即绕过 → 行为零变化。**测试教训（design 门控 WARN-1）**：hidden_states-only stub 必须旗标条件式（False → 字段 None，模拟真实 HF 语义），恒返回元组的 stub 使"首跑双调"断言成为假 Red。**遗留**：真实 7B checkpoint 实测（RERUN_CHECKLIST）。
+
+---
+
+## 第十六部分 AR009 完成回链（2026-10-12）
+
+AR009（`specs/changes/AR009-silent-misconfig-guards/`，T001–T004 全部 passing）收口 6.2 API 债中两条"折叠静默失效"项：**折叠未生效/被错误配置时的可见性防护**——AGENTS #10 的直接代码落实。
+
+| 指南条目 | AR009 任务 | 状态 |
+|---|---|---|
+| :239 互斥检测 | T001（`_ADAPTIVE_GATE_SCHEDULER_MSG` 模块级常量 + `FoldedTransformerLayer.__init__` 守卫（super 后、属性赋值前 fail-fast，`isinstance` 覆盖子类，Split 经 super 自动覆盖，`ManualFoldedForward` 构造期传递失败）+ `ActFoldVerificationEngine.__init__` 同守卫；UT-804/805：守卫触发 + 消息关键词 `gate.tau` + 四种合法组合对照钉死） | ✅ 完成 |
+| :240 静默降级 | T001（`_estimate_stable_ratio` embedding 代理回退分支入口加实例级一次性 `UserWarning`（`_proxy_ratio_warned` 标志，AR002 `_graph_degraded_warned` 先例；消息含 AGENTS #17/#18 成因指引；`stacklevel=3` 归因用户调用点）；UT-801/802/803：同实例恰好 1 条 + 双实例 2 条（实例级语义）+ 层级 profile 零告警且返回 profiler 均值；UT-801 返回值逐位等于独立计算的 gate 均值（防恒真）） | ✅ 完成 |
+| 勘误 | :240 前提过时——`detect_architecture` 对层栈失败已显式 `RuntimeError`（architecture_utils.py:281-285）；`nn.Sequential` 不支持属布局限制（#23 显式 wiring）；`folding_status` 枚举无消费方不做（本 AR 在 :240 勾选注中勘误） | ✅ 完成 |
+| 文档收口 | T003（指南 6.2 双条目勾选 + 本回链、AGENTS #29 修订为代码契约、CHANGELOG AR009 节） | ✅ 完成 |
+| 全量质量门 | T004（全量 773 passed = 768+5 零回归、demo 85.5%/2.35e-03/93.75% 精确一致、mypy clean/pyflakes 零/100 列） | ✅ 完成 |
+
+**语义要点**：守卫是纯构造期校验——生产消费方（AblationStudy/BenchmarkRunner/demo）均以 `SimilarityGate` 构造折叠栈，零回归面（全库 15 处 `AdaptiveQuantileGate(` 构造均无 scheduler 组合已核实）；告警是**有意新增**的可观测行为（非泄漏），既有 engine 测试（UT-306/307 等走代理路径）开始收到一次性告警但 pyproject 无 `-W error` 不受影响；回退行为本身逐行不变（AGENTS #16/#17 写明的合法降级路径，只加可见性）。**设计要点**：`isinstance` 黑名单语义（子类同样忽略固定 tau）与 #38 fused dispatch 的精确类型白名单意图相反需区分；消息常量两构造器逐字一致防漂移（speculative→core 单向导入无环）。**遗留**：无（两守卫与告警即终态）。
 
 ---
 

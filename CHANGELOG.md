@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR009: Silent-Misconfiguration Guards for Folding (guide 6.2 :239/:240 visibility fix)
+
+Spec: `specs/changes/AR009-silent-misconfig-guards/` (srs.md / design.md / tasks.md, T001–T004 all passing). Full regression zero-regression (773 passed = 768 + 5 new); demo baseline unchanged; the fallback behavior itself is preserved line-for-line (AGENTS #16/#17 legitimate degradation path — only visibility is added).
+
+#### Added
+
+- **One-time `UserWarning` on the embedding-proxy fallback**: `ActFoldVerificationEngine._estimate_stable_ratio` warns once per engine instance (`_proxy_ratio_warned` flag, the AR002 `_graph_degraded_warned` precedent) when the stable ratio had to be estimated from layer-0 embeddings because no per-layer profile was recorded — i.e., folding did not run through a folded forward pass. The message points at the two common causes (adapter without a folded model, AGENTS #17; base model not propagating branch kwargs, AGENTS #18) and is attributed to the caller via `stacklevel=3`. A fresh engine instance warns again; the layered-profile path never warns.
+- **Construction-time rejection of `AdaptiveQuantileGate` × `FoldingScheduler`** (AGENTS #29 upgraded from a documentation convention to a code contract): `FoldedTransformerLayer.__init__` and `ActFoldVerificationEngine.__init__` raise `RuntimeError` with the shared `_ADAPTIVE_GATE_SCHEDULER_MSG` (folded_transformer.py) when given that combination — the scheduler's dynamic `gate.tau` overwrites would silently have no effect on the quantile gate's top-k semantics. `SplitFoldedTransformerLayer` inherits the guard via `super().__init__`, `ManualFoldedForward` fails at construction through `_wrap_layer`, and `isinstance` covers AdaptiveQuantileGate subclasses. Legal combos (`SimilarityGate`+scheduler, `AdaptiveQuantileGate`+`scheduler=None`) are pinned by tests; all 15 existing `AdaptiveQuantileGate(` constructions carry no scheduler (zero regression surface, verified).
+- Tests: UT-801~805 (`tests/test_silent_misconfig_guards.py`): exactly-once warning per instance / two-instance semantics (2 warnings) / layered-profile zero-warning with profiler mean / layer+split guard with legal-combo controls / engine guard with legal-combo controls; UT-801's returned ratio is pinned bit-exact against an independently computed gate mean (anti-tautology).
+
+#### Changed
+
+- **Guide 6.2 :240 erratum**: `detect_architecture` already raises `RuntimeError` on layer-stack discovery failure (architecture_utils.py:281-285, AGENTS #10-aligned) — the "silent degradation" premise was stale; the remaining silent spot was the engine's proxy fallback, now visible via the warning above. `nn.Sequential`/custom containers remain an explicit-wiring limitation (AGENTS #23) and the `folding_status` enum has no consumer (not built).
+- AGENTS #29 now documents the enforced construction-time `RuntimeError`.
+
 ### AR008: On-Demand `output_hidden_states` in `GenericDiffusionLLM.forward` (guide 6.2 memory-debt fix)
 
 Spec: `specs/changes/AR008-generic-hidden-states-on-demand/` (srs.md / design.md / tasks.md, T001–T004 all passing). Three output shapes (logits / last_hidden_state / hidden_states-only) behave identically; the RuntimeError text is preserved verbatim; full regression zero-regression; demo baseline unchanged. Real 7B checkpoint measurement remains deferred to the RERUN_CHECKLIST.

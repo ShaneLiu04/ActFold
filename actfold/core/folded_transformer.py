@@ -8,6 +8,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
+from actfold.core.adaptive_gate import AdaptiveQuantileGate
 from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_context import FOLDING_CONTEXT
 from actfold.core.folding_scheduler import FoldingScheduler
@@ -18,6 +19,17 @@ from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 # Keywords that belong to ActFold and must never be forwarded to the original
 # Transformer layer.
 _ACTFOLD_KWARGS = {"branch_id", "parent_branch_id", "step_idx"}
+
+# AR009: AdaptiveQuantileGate selects the top-k most similar tokens and
+# ignores fixed thresholds, so a FoldingScheduler overwriting ``gate.tau``
+# would silently have no effect. Every constructor accepting a gate plus a
+# scheduler rejects the combination with this exact message (AGENTS #29).
+_ADAPTIVE_GATE_SCHEDULER_MSG = (
+    "AdaptiveQuantileGate cannot be combined with FoldingScheduler: the "
+    "scheduler overwrites gate.tau, but the quantile gate ignores fixed "
+    "thresholds (AGENTS #29). Use SimilarityGate with the scheduler, or "
+    "pass scheduler=None with AdaptiveQuantileGate."
+)
 
 # D3 thresholds for the fused single-pass gather/select merge (F8): below
 # these shapes the kernel launch overhead outweighs the saved memory pass, so
@@ -58,6 +70,8 @@ class FoldedTransformerLayer(nn.Module):
         scheduler: FoldingScheduler | None = None,
     ) -> None:
         super().__init__()
+        if scheduler is not None and isinstance(gate, AdaptiveQuantileGate):
+            raise RuntimeError(_ADAPTIVE_GATE_SCHEDULER_MSG)
         self.original_layer = original_layer
         self.cache = cache
         self.gate = gate

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 
 import torch
 
+from actfold.core.adaptive_gate import AdaptiveQuantileGate
 from actfold.core.cache_factory import ActivationCacheType
 from actfold.core.folding_scheduler import FoldingScheduler
+from actfold.core.folded_transformer import _ADAPTIVE_GATE_SCHEDULER_MSG
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER, StabilityProfile
 from actfold.speculative.acceptance import (
@@ -83,6 +86,8 @@ class ActFoldVerificationEngine:
             raise ValueError(f"acceptance_threshold must be in [0, 1], got {acceptance_threshold}")
         if not 0.0 < ema_alpha <= 1.0:
             raise ValueError(f"ema_alpha must be in (0, 1], got {ema_alpha}")
+        if scheduler is not None and isinstance(gate, AdaptiveQuantileGate):
+            raise RuntimeError(_ADAPTIVE_GATE_SCHEDULER_MSG)
 
         self.model = model
         self.cache = cache
@@ -93,6 +98,9 @@ class ActFoldVerificationEngine:
         self.ema_acceptance_rate: float = 0.0
         self._ema_initialized: bool = False
         self._current_seq_len: int = 1
+        # AR009: set once when the embedding-level proxy fallback is entered,
+        # so the degradation warning fires at most once per engine instance.
+        self._proxy_ratio_warned: bool = False
         self.cost_model = cost_model or ComputeBandwidthCostModel(
             HardwareProfile.from_device(cache.device)
         )
@@ -273,6 +281,17 @@ class ActFoldVerificationEngine:
             return float(profile.mean_stable_ratio)
 
         # Fallback: compare input embeddings.
+        if not self._proxy_ratio_warned:
+            self._proxy_ratio_warned = True
+            warnings.warn(
+                "The stable_ratio for this verification is an embedding-level "
+                "proxy: no per-layer stability profile was recorded, so folding "
+                "did not run through a folded forward pass. Attach a folded "
+                "model (e.g. ManualFoldedForward) via the adapter and make sure "
+                "the base model propagates branch kwargs (AGENTS #17/#18).",
+                UserWarning,
+                stacklevel=3,
+            )
         h_child = self._token_to_hidden(child_branch.tokens)
         h_parent = self._token_to_hidden(parent_branch.tokens)
 
