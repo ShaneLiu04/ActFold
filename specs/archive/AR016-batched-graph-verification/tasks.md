@@ -12,7 +12,7 @@
 | T006 | 质量门 | ✅ | mypy clean（65 文件）/ pyflakes 零（actfold+tests+demo+脚本）/ 100 列零 / 全量 838 passed / demo 锚点精确一致 |
 | T007 | review 门控：只读子代理审查 srs/design/实现/测试/基准工件合规 | ✅ | 首轮 FAIL（3 Major 全为文档数字转录/遗留收口——生产/测试/工件本体全合规，838/mypy/demo 子代理复验通过）→ 修复 → 复核 PASS（逐值复算验证；1 Minor 豁免记录、1 Minor 撤回为审查方编码误报）；门控记录见下 |
 | T008 | ST 验收：st-cases.md 场景用例一次成 Go | ✅ | **7/7 Go（一次成）**：ST-01 端到端分发对拍/ST-02 退化-恢复/ST-03 串行+AR015 零干扰（36 passed）/ST-04 UT 9 passed/ST-05 工件逐字段（graph 6/6，verdicts 与文档一致）/ST-06 文档一致性（执行中修正 1 格墙钟表舍入 12.52→12.51——工件精确值 vs 控制台转录，review 教训再应用）/ST-07 838 passed+demo 锚点+静态检查 |
-| T009 | 归档 + git commit + gitee 推送 + 树验证 | ◐ | `specs/changes/AR016-*` → `specs/archive/`；本地 commit；commit-tree 推 gitee；双端树一致 |
+| T009 | 归档 + git commit + gitee 推送 + 树验证 | ✅ | `specs/archive/AR016-batched-graph-verification/`（4 文件整目录）；本地 commit `5ee8342`；commit-tree `3fa29a3` -p `43f81d8` 推 gitee；双端树一致 `9c1b444ab730ea5811f9963374682936dfe5d0ec` |
 
 ## 门控记录
 
