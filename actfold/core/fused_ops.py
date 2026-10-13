@@ -151,8 +151,48 @@ if _HAS_TRITON:
             tl.store(dst + h * out_hidden_stride, vec, mask=mask)
 
 
+# Manual kill-switches: set True to force the whole kernel onto the PyTorch
+# path (debugging / test forcing). Failures no longer set these flags (AR014);
+# they are recorded per (kernel, dtype, hidden-bucket) key in
+# ``_TRITON_FAILED_KEYS`` instead.
 _TRITON_MERGE_DISABLED = False
 _TRITON_GATHER_SELECT_DISABLED = False
+
+# Failed Triton launches, keyed by (kernel_name, dtype_name, hidden_bucket).
+# A key present here means that (kernel, dtype, shape-class) combination
+# silently falls back to PyTorch; other dtypes/buckets/kernels keep trying.
+_TRITON_FAILED_KEYS: set[tuple[str, str, int]] = set()
+
+
+def _hidden_bucket(hidden_dim: int) -> int:
+    """Return the pow2-ceiling shape class of ``hidden_dim``.
+
+    Coarse bucketing (4096 -> 4096, 5000 -> 8192, 1 -> 1) keeps the
+    failure registry bounded while isolating compile/launch failures that
+    depend on the dtype and hidden-dimension tail-masking shape.
+    """
+    return 1 << max(hidden_dim - 1, 0).bit_length()
+
+
+def _record_triton_failure(
+    key: tuple[str, str, int], kernel_desc: str, exc: Exception
+) -> None:
+    """Record a failed Triton launch key once, with a diagnostic warning.
+
+    The warning fires only for the first failure of each
+    ``(kernel, dtype, hidden_bucket)`` key; subsequent dispatches with the
+    same key fall back silently (the dispatch-side registry check keeps the
+    kernel from being retried).
+    """
+    if key in _TRITON_FAILED_KEYS:
+        return
+    _TRITON_FAILED_KEYS.add(key)
+    warnings.warn(
+        f"Triton {kernel_desc} unavailable (dtype={key[1]}, "
+        f"hidden-class={key[2]}): {exc}; falling back to the PyTorch path.",
+        RuntimeWarning,
+        stacklevel=3,
+    )
 
 
 def _merge_stable_divergent_triton(
@@ -165,12 +205,10 @@ def _merge_stable_divergent_triton(
     Falls back to PyTorch if inputs do not live on CUDA or use unsupported
     dtypes.  Arbitrary hidden sizes are handled via tail masking and arbitrary
     strides are passed to the kernel, so no caller-side ``.contiguous()``
-    copies are made.  If the kernel fails to compile or launch on the
-    installed Triton version, the PyTorch fallback is used for all subsequent
-    calls.
+    copies are made.  If the kernel fails to compile or launch, the
+    ``(dtype, hidden-bucket)`` class is recorded and falls back to PyTorch for
+    subsequent calls of the same class; other classes still attempt Triton.
     """
-    global _TRITON_MERGE_DISABLED
-
     if not _HAS_TRITON or _TRITON_MERGE_DISABLED:
         return _merge_stable_divergent_torch(parent_ffn, child_out, stable_mask)
 
@@ -191,6 +229,10 @@ def _merge_stable_divergent_triton(
         return _merge_stable_divergent_torch(parent_ffn, child_out, stable_mask)
 
     batch_size, seq_len, hidden_dim = parent_ffn.shape
+
+    key = ("merge", str(parent_ffn.dtype), _hidden_bucket(hidden_dim))
+    if key in _TRITON_FAILED_KEYS:
+        return _merge_stable_divergent_torch(parent_ffn, child_out, stable_mask)
 
     block_size = 128
 
@@ -223,13 +265,7 @@ def _merge_stable_divergent_triton(
             BLOCK_SIZE=block_size,
         )
     except Exception as exc:
-        _TRITON_MERGE_DISABLED = True
-        warnings.warn(
-            f"Triton merge kernel unavailable on this Triton installation ({exc}); "
-            "falling back to the PyTorch merge.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        _record_triton_failure(key, "merge kernel", exc)
         return _merge_stable_divergent_torch(parent_ffn, child_out, stable_mask)
     return out
 
@@ -295,7 +331,6 @@ def gather_select(
     Returns:
         Merged tensor ``[batch, seq_len, hidden]``.
     """
-    global _TRITON_GATHER_SELECT_DISABLED
     if child_out.ndim != 3 or stable_mask.shape != child_out.shape[:2]:
         raise ValueError(
             f"child_out must be [B, T, H] and stable_mask [B, T], got "
@@ -314,9 +349,11 @@ def gather_select(
     flat_mask = mask.reshape(-1)
     flat_child = child_out.reshape(batch * seq_len, hidden_dim)
 
+    key = ("gather_select", str(child_out.dtype), _hidden_bucket(hidden_dim))
     use_triton = (
         _HAS_TRITON
         and not _TRITON_GATHER_SELECT_DISABLED
+        and key not in _TRITON_FAILED_KEYS
         and child_out.is_cuda
         and parent_buffer.is_cuda
         and child_out.dtype in (torch.float32, torch.float16, torch.bfloat16)
@@ -345,12 +382,7 @@ def gather_select(
             BLOCK_H=128,
         )
     except Exception as exc:
-        _TRITON_GATHER_SELECT_DISABLED = True
-        warnings.warn(
-            f"Triton gather/select kernel unavailable ({exc}); using PyTorch fallback.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        _record_triton_failure(key, "gather/select kernel", exc)
         gathered = parent_buffer.index_select(0, flat_rows).reshape(batch, seq_len, hidden_dim)
         return torch.where(mask.unsqueeze(-1), gathered, child_out)
     return out.reshape(batch, seq_len, hidden_dim)
@@ -588,8 +620,9 @@ def fused_gate_mask_count(
     Dispatches to a single Triton kernel when CUDA + Triton are available, the
     dtype is fp32/fp16/bf16, and ``batch * seq >= _FUSED_GATE_MIN_TOKENS``;
     otherwise it falls back to the PyTorch gate chain.  A compile/launch
-    failure permanently disables the Triton path with a single
-    ``RuntimeWarning`` (AGENTS #9).
+    failure records the ``(dtype, hidden-bucket)`` class with a single
+    ``RuntimeWarning``; that class falls back silently afterwards while other
+    classes still attempt Triton (AGENTS #9, AR014).
 
     Args:
         h_child: Child hidden states ``[batch, seq, hidden]``.
@@ -603,8 +636,6 @@ def fused_gate_mask_count(
     Raises:
         ValueError: If shapes/dtypes/devices are inconsistent.
     """
-    global _TRITON_GATE_DISABLED
-
     if h_child.dim() != 3:
         raise ValueError(
             f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}"
@@ -634,10 +665,12 @@ def fused_gate_mask_count(
             f"h_child device {h_child.device} must match h_parent device {h_parent.device}"
         )
 
-    batch, seq_len, _ = h_child.shape
+    batch, seq_len, hidden = h_child.shape
+    key = ("gate", str(h_child.dtype), _hidden_bucket(hidden))
     use_triton = (
         _HAS_TRITON
         and not _TRITON_GATE_DISABLED
+        and key not in _TRITON_FAILED_KEYS
         and h_child.device.type == "cuda"
         and out_mask.device.type == "cuda"
         and out_count.device.type == "cuda"
@@ -679,11 +712,5 @@ def fused_gate_mask_count(
             BLOCK_H=block_h,
         )
     except Exception as exc:
-        _TRITON_GATE_DISABLED = True
-        warnings.warn(
-            f"Triton fused gate kernel unavailable on this Triton installation ({exc}); "
-            "falling back to the PyTorch gate chain.",
-            RuntimeWarning,
-            stacklevel=2,
-        )
+        _record_triton_failure(key, "fused gate kernel", exc)
         _fused_gate_mask_count_torch(h_child, h_parent, float(tau), float(eps), out_mask, out_count)

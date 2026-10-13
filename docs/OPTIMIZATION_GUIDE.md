@@ -32,7 +32,7 @@
 | CPU | Xeon Gold 6234（8 核 16 线程） | — | 够用 |
 | 内存 | 128 GB | — | 充足 |
 | 磁盘 | D: 剩余 412 GB | — | 充足（三个模型权重共 ~33GB） |
-| Triton | **可在原生 Windows 编译运行**（实测 `merge_stable_divergent` bit-exact 通过，`_TRITON_MERGE_DISABLED=False`） | Linux | 意外可用，但时序数字不可比 |
+| Triton | **可在原生 Windows 编译运行**（实测 `merge_stable_divergent` bit-exact 通过，`_TRITON_MERGE_DISABLED=False`——该布尔现为手动总开关，失败降级自 AR014 起按 (kernel, dtype, hidden bucket) 键记入 `_TRITON_FAILED_KEYS`，不再自动置位） | Linux | 意外可用，但时序数字不可比 |
 | WSL | 有 `hypos` 发行版（WSL1，已停止） | — | 需升级到 WSL2 才能跑 evalplus/CUDA |
 | transformers | 5.15.1 | 4.53.1（Fast-dLLM v2 锁定；LLaDA/Dream remote code 在 5.x 损坏，AGENTS.md #24） | **必须建独立 venv 降级** |
 
@@ -171,17 +171,17 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 
 | # | 优化点 | 位置 | 方案 | 预期收益 | 难度 |
 |---|---|---|---|---|---|
-| P1-1 | **cache 同时存 layer 输入与输出，输入=上层输出** | folded_transformer.py:298-311 | 残差流上 layer L−1 的 ffn_out 恒等于 layer L 的输入；只存 `ffn_out`（+ layer 0 embedding），gate 跨层读 `ffn_out[L-1]` | **cache 显存 −50%、put 带宽 −50%**（单项最大内存收益） | 中 |
-| P1-2 | cache.get 零填充被 merge 立即覆盖 | vectorized_cache.py:184-221；chunked_cache.py:221；fused_ops.py:469 | 拆分 `fetch()`（原始数据）/`fetch_masked()`（兼容层）；merge 路径走前者（需审计 verification_engine.py:185 的零填充语义依赖） | 每 layer 省 2–3 个 [B,T,H] pass | 低-中 |
-| P1-3 | 单 pass `gather_select` 未接入主路径 | fused_ops.py:230-342 | 以 vectorized buffer 为源，主流程用 gather_select 替代「get+merge」两步 | folding 辅助 pass 从 ~5 → 2 | 中 |
+| P1-1 | **cache 同时存 layer 输入与输出，输入=上层输出** | folded_transformer.py:298-311 | 残差流上 layer L−1 的 ffn_out 恒等于 layer L 的输入；只存 `ffn_out`（+ layer 0 embedding），gate 跨层读 `ffn_out[L-1]` | **cache 显存 −50%、put 带宽 −50%**（单项最大内存收益） | 中 **✅ 已落地（AR014 勘误勾选）**：现行 `folded_transformer.py:572-574` 每层只 put `{"ffn_out"}`（layer 0 加 `embedding`），gate 跨层读 L−1（:163-167 `gate_layer = layer_idx - 1`/`gate_name = "ffn_out"`）正是本行处方——历次 AR 已完成未勾选 |
+| P1-2 | cache.get 零填充被 merge 立即覆盖 | vectorized_cache.py:184-221；chunked_cache.py:221；fused_ops.py:469 | 拆分 `fetch()`（原始数据）/`fetch_masked()`（兼容层）；merge 路径走前者（需审计 verification_engine.py:185 的零填充语义依赖） | 每 layer 省 2–3 个 [B,T,H] pass | 低-中 **✅ 已落地（AR014 勘误勾选）**：三 cache 均有 `fetch()`（原始数据视图，activation_cache.py:257）+ `fetch_masked()`（get 兼容别名 :309-317）；merge/热路径全走 fetch（folded_transformer.py:176/:293/:466、architecture_utils.py:525/:533、cuda_graph.py:333/:340）；`cache.get(token_mask)` 生产零调用方（全仓 grep 仅别名转发）——见第二十一部分 |
+| P1-3 | 单 pass `gather_select` 未接入主路径 | fused_ops.py:230-342 | 以 vectorized buffer 为源，主流程用 gather_select 替代「get+merge」两步 | folding 辅助 pass 从 ~5 → 2 | 中 **✅ AR002 M4b/AR011（D3 阈值 + truncated 路径接入）** |
 | P1-4 | split 的 zeros 全量 + merge 再覆盖 | split_layer.py:134-139 | `out = parent_ffn.clone()` + 仅 scatter divergent 行 | split+merge 4–5 pass → 2 pass | 中 |
-| P1-5 | (branch,step) 缓存无限增长 | vectorized_cache.py:224-247 + folded_generation.py | 保留 N 个最近 step 的 ring；prune 时真正 `clear_branch`（修复 B9） | 长生成显存 O(N)→O(1) | 低 |
-| P1-6 | verification engine 重复 parent 前向 | verification_engine.py:146-168 | cache 增 `contains()`；多分支共享一次 parent forward（SpiffyBaseline 式 N 分支场景） | 多分支验证成本 −50% 以上 | 低 |
+| P1-5 | (branch,step) 缓存无限增长 | vectorized_cache.py:224-247 + folded_generation.py | 保留 N 个最近 step 的 ring；prune 时真正 `clear_branch`（修复 B9） | 长生成显存 O(N)→O(1) | 低 **✅ 已落地（AR014 勘误勾选）**：vectorized_cache.py:63/:66 `_evict_old_branch_steps` ring 驱逐（`max_entries_per_layer`，:33 legacy 无界可关）+ folded_generation.py:170-172 prune 时 `clear_branch`——见第二十一部分 |
+| P1-6 | verification engine 重复 parent 前向 | verification_engine.py:146-168 | cache 增 `contains()`；多分支共享一次 parent forward（SpiffyBaseline 式 N 分支场景） | 多分支验证成本 −50% 以上 | 低 **◐ `contains()` 已落地（AR014 勘误注）**：verification_engine.py:238 `_ensure_parent_cache` 消费 `cache.contains()`；"多分支共享一次 parent forward" 批量化主体 = P1-7 仍开放——见第二十一部分 |
 | P1-7 | 多分支验证串行 | verification_engine.py + folded_generation.py:114-117 | N 个 child 拼成 batch 一次 forward（分支 batch 维对齐，core 的 cache/gate 需支持 batch 分支语义） | 多分支墙钟 ~1/N（GPU 未饱和时）；**让 folded 验证真正快于 baseline 的关键** | 中-高 |
-| P1-8 | samplers 每步每行同步 + 逐行 topk | llada_sampler.py:131-227；dream_sampler.py:166-178；sampling_utils.py:160-210 | 批量 topk（k_max + 行掩码）；`get_num_transfer_tokens` 全向量化（一次 `.tolist()`）；LLaDA 补早停（dream 已有，行为不一致）；`x_` 提出行循环 | 每步 B 次同步 → 0–1 次；block 提前解完省整段 forward；steps=128 时省 10–100ms/请求 | 中 |
-| P1-9 | gate 读带宽：parent norm 每层重算 | similarity_gate.py:86 | `cache.put` 时顺带存 per-token L2 norm（[T] 向量，可忽略） | gate 读带宽 −1/3 | 低 |
-| P1-10 | `ManualFoldedForward` 缺 final norm | architecture_utils.py:384-395 | `detect_architecture` 增加 final_norm 发现（`model.norm`/`transformer.ln_f`/`encoder.norm`）+ 对拍回归测试（修复 B2） | 正确性 | 低 |
-| P1-11 | Triton 降级粒度过粗 | fused_ops.py:143,304-311 | 按 kernel、按 (dtype, shape 类别) 独立降级；失败一次性告警 | 可诊断性 | 低 |
+| P1-8 | samplers 每步每行同步 + 逐行 topk | llada_sampler.py:131-227；dream_sampler.py:166-178；sampling_utils.py:160-210 | 批量 topk（k_max + 行掩码）；`get_num_transfer_tokens` 全向量化（一次 `.tolist()`）；LLaDA 补早停（dream 已有，行为不一致）；`x_` 提出行循环 | 每步 B 次同步 → 0–1 次；block 提前解完省整段 forward；steps=128 时省 10–100ms/请求 | 中 **✅ 已落地（AR014 勘误勾选）**：sampling_utils.py:255 批量 `torch.topk(..., dim=-1)` + :162-166 `get_num_transfer_tokens` 全向量化（docstring 自证 "no per-row or per-step host readback"）+ llada_sampler.py:194-197 早停（F10）——T018/F10 系已关闭，见第二十一部分 |
+| P1-9 | gate 读带宽：parent norm 每层重算 | similarity_gate.py:86 | `cache.put` 时顺带存 per-token L2 norm（[T] 向量，可忽略） | gate 读带宽 −1/3 | 低 **✗ 失效勘误（AR014）**：前提不成立——cosine 路径单 pass 融合 `F.cosine_similarity`（similarity_gate.py:114，norm 在同一次归约内，无独立 norm 读）；l2/pearson 同为单 pass（:119/:126-133）；fused gate kernel 寄存器内计算（AGENTS #38）。无"第二次读 parent"可省——方案对象不存在，见第二十一部分 |
+| P1-10 | `ManualFoldedForward` 缺 final norm | architecture_utils.py:384-395 | `detect_architecture` 增加 final_norm 发现（`model.norm`/`transformer.ln_f`/`encoder.norm`）+ 对拍回归测试（修复 B2） | 正确性 | 低 **✅ 已落地（AR014 勘误勾选）**：AR002 `detect_architecture` final_norm 发现 + `test_manual_folded_forward_applies_final_norm`（test_architecture_utils.py:216-235）+ `test_detect_architecture_finds_final_norm`（:202）——AR013 :231 勘误已证 |
+| P1-11 | Triton 降级粒度过粗 | fused_ops.py:143,304-311 | 按 kernel、按 (dtype, shape 类别) 独立降级；失败一次性告警 | 可诊断性 | 低 **✅ AR014**：失败注册表 `_TRITON_FAILED_KEYS`（键 = (kernel, dtype, hidden pow2 bucket)）+ 共享 `_record_triton_failure`（每键一条 RuntimeWarning，含 dtype/hidden-class/异常）；三布尔收窄为手动总开关（失败不再自动置位）；UT-1301~1306（dtype/bucket 隔离 + launch-count spy 同键静默钉）+ T013/T006 三断言迁移——见第二十一部分 |
 | P1-12 | tuple 契约 / past_key_values 丢弃 | folded_transformer.py:220-221；model_wrapper.py:253-275 | 记录原始输出结构模板（元素数+类型）而非 bool；unwrap 丢弃 KV 时告警 | 健壮性 | 低 |
 
 ### P2 战略级优化（把 folded 前向推向理论极限）
@@ -211,13 +211,13 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 |---|---|---|---|---|
 | M-1 | 无方差/置信区间：所有 `results/*.json` 只有标量；`time_forward` 返回均值不存 std；accuracy 在 num_samples=10 时标准误 ~±15pp | scripts/algo_experiments.py:193-211 等 | `time_forward` 返回 `{mean,std,p50,n}`；每条件 ≥3 seed；accuracy 报 Wilson 区间；图题由数据格式化（make_optimization_figures.py:316-317 目前把 "2.3-2.7x" 硬编码进标题） | 低（脚本）/中（补跑） |
 | M-2 | draft 分布与真实场景脱节（=B10） | draft_generator.py | 三层递进：suffix_append → logits_draft（parent top-k 采样模拟低质 draft）→ 真 draft model | 低→中→高 **✅ 三层全达（AR006 第一档：`model_draft` 模式 + `draft_model` callable 注入；见第十三部分）** |
-| M-3 | "消融"是算术推演非实测：layerwise folding 用线性比例缩放（ablation_study.py:150-163）而非 `FoldingScheduler.disabled_layers` 真跑；cache 预算扫描根本触发不了 LRU 驱逐（四行 stable_ratio 全同） | eval/ablation_study.py:150-163,216-264 | disabled_layers 实测；cache 扫描先 put ≥budget+1 分支制造驱逐 | 低 |
-| M-4 | cost model 硬件常数一刀切：所有 CUDA 设备按 100 TFLOPS/600 GB/s 计（utils/cost_model.py:31-35），实验机实际 400+/1280；且忽略 attention O(T²) 项与 KV 访存、gate/merge 误用算力计时（实为带宽主导） | cost_model.py:31-35,63-106 | `from_device` 按设备名查表 + 启动时一次 micro-bench 自动校准（复用 `exp_cost_model` 逻辑）；补 T² 项与 KV 带宽；`calibrate()` 分 compute/memory 两参数独立校准 | 低 |
+| M-3 | "消融"是算术推演非实测：layerwise folding 用线性比例缩放（ablation_study.py:150-163）而非 `FoldingScheduler.disabled_layers` 真跑；cache 预算扫描根本触发不了 LRU 驱逐（四行 stable_ratio 全同） | eval/ablation_study.py:150-163,216-264 | disabled_layers 实测；cache 扫描先 put ≥budget+1 分支制造驱逐 | 低 **✅ 已落地（AR014 勘误勾选）**：`disabled_layers` 实测 + cache 扫描强制驱逐（ablation_study.py:153/:168）；AGENTS #35 明示 "sweeps are real measurements" 与 "Do not reintroduce linear extrapolation as the reported value"（linear_estimate 仅作对照列） |
+| M-4 | cost model 硬件常数一刀切：所有 CUDA 设备按 100 TFLOPS/600 GB/s 计（utils/cost_model.py:31-35），实验机实际 400+/1280；且忽略 attention O(T²) 项与 KV 访存、gate/merge 误用算力计时（实为带宽主导） | cost_model.py:31-35,63-106 | `from_device` 按设备名查表 + 启动时一次 micro-bench 自动校准（复用 `exp_cost_model` 逻辑）；补 T² 项与 KV 带宽；`calibrate()` 分 compute/memory 两参数独立校准 | 低 **◐ 主体已落地（AR014 勘误注）**：设备名查表（cost_model.py:23-38）+ `HardwareProfile.from_device(calibrate=True)` micro-bench（AGENTS #33）已在；O(T²)/KV 带宽项未逐项核实——残余待独立评估 |
 | M-5 | 跨版本对比（opt 前 vs 后）依赖不同时间两次运行，GPU 状态未受控 | results/optimization/baseline/ | 同进程加载两版实现或同日交错重跑（now-内的三实现对比已正确，保持） | 中 |
 | M-6 | lm-eval 内部 API 依赖（`fewshot_context`/`process_results`）随版本漂移；metric key 按 `("exact_match","acc",...)` 顺序取第一个命中，gsm8k 变体 key 可能拿错 | eval/judges.py:119-134,187-223 | 按 task 显式声明 metric 映射；改走 lm-eval 官方 `simple_evaluate` 的 `LM` adapter 接口 | 中 |
 | M-7 | 硬编码 AutoDL 镜像与缓存路径（`HF_ENDPOINT=hf-mirror`、`HF_HOME=/root/autodl-tmp`，7 处脚本）；Windows 上静默在 `D:\root\...` 建目录 | scripts/*.py:25-36 | 改 `--hf-home`/`--repo-override` CLI 参数 + 环境变量 fallback **✅ 已完成（T019，`scripts/_hf_env.py`）** | 极低 |
 | M-8 | 评测路径不测量墙钟：`_evaluate` 只产 accuracy/tflops，无 latency/throughput；论文需要"同质量下快多少"的墙钟证据 | eval/base_adapter.py:197-235 | `_generate_one` 内包 `gpu_profile` 按路径聚合 | 低 |
-| M-9 | 全局 RNG 污染：7 处 `torch.manual_seed` 重置进程级随机态 | draft_generator.py:63 等 | 统一改 `torch.Generator` 显式传递 | 低 |
+| M-9 | 全局 RNG 污染：7 处 `torch.manual_seed` 重置进程级随机态 | draft_generator.py:63 等 | 统一改 `torch.Generator` 显式传递 | 低 **◐ 部分完成（AR014 勘误注）**：guide 点名位置 draft_generator.py（原 :64）已改全程局部 `torch.Generator`（AR002）；ablation_study:43 被 `measure_folding` 快照/恢复包裹（:181/:244）。**残余 5 处仍裸全局播种**：dream_sampler:106、llada_sampler:120、fast_dllm_sampler:123、diffusion_sampler:108、base_adapter:266——定性为 sampler/adapter 顶层 config.seed **显式**播种（eval 复现性语义、官方 recipe 对齐），非静默污染；若需彻底局部化另立独立小项（改语义须评估复现性契约），本 AR 不勾选整条 |
 
 ---
 
@@ -235,7 +235,7 @@ ActFold 的主张：Diffusion LLM 投机解码验证阶段，多 child 分支与
 ### 6.2 API/架构设计债
 
 - `FoldedModel` 原地替换层（B12）：建议 context manager 协议 + `__del__` 兜底，或全面转向不替换式的 `ManualFoldedForward`（hook 方案已证明不替换也可注入逻辑，两种手段应统一）。
-- cache 的 `get(token_mask)` 同时承担"选择范围"与"零填充输出"两职（三个实现都要维持该契约）——正是 P1-2 冗余的根源，应拆 API。
+- ~~cache 的 `get(token_mask)` 同时承担"选择范围"与"零填充输出"两职（三个实现都要维持该契约）——正是 P1-2 冗余的根源，应拆 API。~~ **✅ AR014（终审勘误）**：拆分已落地——三 cache 均有 `fetch()`（原始数据视图）/`fetch_masked()`（get 兼容别名）；merge/热路径全走 fetch（folded_transformer/architecture_utils/cuda_graph 六处）；`cache.get(token_mask)` 生产零调用方（全仓 grep 仅别名转发）。本条与 :175 P1-2 表行同源于 AR014 勘误（两处 checkbox 均关）。见第二十一部分。
 - ~~`AdaptiveQuantileGate` 与 `FoldingScheduler` 互斥但无检测（AGENTS #29）：`FoldedTransformerLayer` 应显式拒绝组合。~~ **✅ AR009（构造期守卫）**：`FoldedTransformerLayer.__init__`（`SplitFoldedTransformerLayer` 经 super 自动覆盖，`ManualFoldedForward` 构造期传递失败）与 `ActFoldVerificationEngine.__init__` 对该组合抛 `RuntimeError`（共享消息常量，含两条修复路径）；AGENTS #29 由文档约定升级为代码契约。见第十六部分。
 - ~~`architecture_utils.find_layer_list` 只认 `nn.ModuleList`（:147），`nn.Sequential`/自定义容器不支持，且 auto-discovery 失败时**静默降级为 embedding 代理测量，用户不知道 folding 没生效**——应返回 `folding_status` 枚举并 WARNING。~~ **✅ AR009（勘误 + 可见性收口）**：勘误——`detect_architecture` 对层栈发现失败已显式 `RuntimeError`（architecture_utils.py:281-285，AGENTS #10 对齐），并非静默降级；`nn.Sequential`/自定义容器不支持属布局限制（AGENTS #23：显式 wiring 是既定出路），`folding_status` 枚举无消费方暂不做。真正的静默点在 `ActFoldVerificationEngine._estimate_stable_ratio` 的 embedding 代理回退——AR009 为其加实例级一次性 `UserWarning`（AGENTS #17/#18 成因指引），回退行为本身不变。见第十六部分。
 - ~~`registry._resolve_family` 子串匹配（"fast" in name）与 `models/utils.infer_model_family` 双份维护；未知 diffusion 家族静默落 `causal_lm`。~~ **✅ AR010（去重 + 回退可见性）**：`_resolve_family` auto 分支委托 `infer_model_family`（utils 成为唯一规则实现源，规则逐字不变）；auto 回退 causal_lm 时发 UserWarning（含模型名 + 显式传参指引 + 可用家族列表，AGENTS #10 落实；显式 family 与已知子串命中不告警）。勘误——子串规则本身保留：fast+dllm 双子串 AND 误报面极窄，token 化反而破坏 "FastDLLM" 连写命名（lower 后单 alnum token）。见第十七部分。
@@ -484,6 +484,23 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 | 质量门 | 全量 **807 passed（799+8）**零回归、demo 三指标精确一致、mypy clean/pyflakes 零/100 列、`git diff actfold` 恰 -6 行 | ✅ 完成 |
 
 **语义要点**：死代码的正确处置是**移除而非补测试**（给无人使用的路径上保险是反向激励）；6.1 清单恢复可信度后，剩余债集中在 6.2（:237/:238/:243）与大项（P3-2 paged 多祖先、P2-1 超融合）。**遗留**：无（6.1 全清）。
+
+---
+
+## 第二十一部分 AR014 Triton 降级粒度细化 + 优先级表勘误（2026-10-13）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | P1-11 落地（fused_ops 三 Triton kernel 失败降级从"每 kernel 全局布尔一次失败永久全域禁用"细化为按 (kernel, dtype, hidden pow2 bucket) 键独立降级 + 每键一次性告警）+ P1/M 优先级表系统性勘误（连续第三个 AR 发现清单腐化，本轮扩展到优先级表） | ✅ 完成 |
+| 生产改动 | `fused_ops.py` 唯一（58+/31-）：`_TRITON_FAILED_KEYS` 注册表 + `_hidden_bucket`（pow2 上取整类别）+ `_record_triton_failure` 共享 helper（每键一条 RuntimeWarning，含 kernel/dtype/hidden-class/异常，stacklevel=3 对齐落点）；merge（:193 解包后插入）/gather_select/gate（use_triton 表达式）三入口；三布尔收窄为**手动总开关**（失败不再自动置位，`global` 声明移除）；docstring "permanently disables" 两处更正 | ✅ 完成 |
+| 新测试 | UT-1301~1306（`tests/test_triton_fallback_granularity.py`，284 行 10 项）：dtype 隔离三步序列（失败路径合法回退→forbidden 区间真 Triton 自证→恢复后第二失败键第二告警）、同键静默（**launch-count spy 计数==0** 直接钉"不尝试 kernel"）、bucket 隔离（512 爆/2048 真）、总开关兼容（monkeypatch 强制回退零告警零增长）、告警三要素可诊断、bucket 纯函数 CPU 钉 | ✅ 完成 |
+| 既有钉迁移 | T013/T006 三处布尔断言→注册表键断言（实测键值 gather_select/32、merge/128、gate/64）+ 布尔 `is False` + setattr 注册表隔离；两处存在性钉补 `isinstance(..., set)`；**零改动消费点**四处实测通过（test_ar002_perf_proxy:365、test_cuda_graph:596、test_fused_gate:217、test_fused_ops:440-461——后者向进程级注册表泄漏一键，与现行布尔泄漏同构、粒度更细，风险降不升） | ✅ 完成 |
+| mutation 自证 | 三变异均翻红后逐字节还原：①注册表不写入→3 例红（注册表空集断言）；②分发不查→1 例红（UT-1302 spy 计数==1，精确命中设计观测面）；③键缺 dtype 维→4 例红（dtype 隔离面+消息面）。"告警去条件"变异黑盒不可达（dispatch 使 helper 对已注册键不可达）——从集合移除并记录，guard 保留为纵深防御 | ✅ 完成 |
+| 优先级表勘误 | P1-1/P1-2/P1-5/P1-8/P1-10 勾选（历次 AR 已落地未勾选）；P1-9 **✗ 失效勘误**（单 pass 融合算子下无独立 norm 读可省——方案对象不存在）；P1-6/P1-3/M-4 ◐（contains/D3 接入/设备表已落地，批量化主体归 P1-7 等仍开放）；M-3 勾选；M-9 ◐（点名位置已修，残余 5 处为顶层显式 seed 定性，不勾选整条——req 门控 Major-2 教训：七处仅证两处即宣称"已落地"即复制清单腐化）；:238 与 :175 P1-2 两处 checkbox 同关 | ✅ 完成 |
+| 门控 | req 首轮 FAIL→修复→复核 PASS（Major-1 FR6 漏 :175 表行/Major-2 M-9 过度声明；12 项全 RESOLVED）；design 首轮 FAIL→修复→复核新 Major-3（"全程 forbidden"阻断失败路径合法回退——**失败注入测试的 forbidden 区间必须精确圈定在成功路径调用上**）→免重读放行 | ✅ 完成 |
+| 质量门 | 全量 **817 passed（807+10）**/3 skipped 零回归、demo 三指标精确一致（85.5%/2.35e-03/93.75%）、mypy clean（65 文件）/pyflakes 零/100 列、`git diff actfold` 仅 fused_ops.py | ✅ 完成 |
+
+**语义要点**：(1) 失败降级的可观测投影是 **launch 计数**而非告警缺席——同键静默有 dispatch/helper 双守卫，仅观察告警无法区分"移除其一"的变异（design 门控 Major-1 教训）。(2) 债清单腐化是**系统性**的：6.1（AR013）、6.2+P1/M 表（AR014）连续三轮大面积过时，选题勘察逐行核实不可省；整条勾选前必须逐子项取证（M-9 教训）。(3) P1-9 类"优化点"可能**前提失效**——勘误注明失效比照单实现更有价值。**遗留**：P1-7 多分支批量验证（真遗留主体，中-高）；P1-12 tuple 契约/KV 告警（部分由 AGENTS #13 覆盖）；P2-4 baseline KV cache；P3-2 paged 多祖先；P3-3 真 draft checkpoint；:237/:243（低值）。
 
 ---
 

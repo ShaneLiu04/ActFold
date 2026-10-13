@@ -313,6 +313,7 @@ def test_t013_gather_select_disabled_flag_exists() -> None:
     """Module must expose an independent gather/select disable flag, default False."""
     assert hasattr(fused_ops, "_TRITON_GATHER_SELECT_DISABLED")
     assert fused_ops._TRITON_GATHER_SELECT_DISABLED is False
+    assert isinstance(fused_ops._TRITON_FAILED_KEYS, set)
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA not available")
@@ -412,9 +413,11 @@ def test_t013_flags_independent(monkeypatch: pytest.MonkeyPatch) -> None:
     """A disabled merge path must not stop gather_select from attempting Triton.
 
     With ``_TRITON_MERGE_DISABLED=True`` and a failing gather/select kernel,
-    ``gather_select`` must warn, return the correct fallback result, and set
-    ``_TRITON_GATHER_SELECT_DISABLED=True`` so later calls skip Triton silently.
+    ``gather_select`` must warn, return the correct fallback result, and
+    register its failure key so later calls of the same key skip Triton
+    silently (AR014: the boolean stays a manual switch only).
     """
+    monkeypatch.setattr(fused_ops, "_TRITON_FAILED_KEYS", set())
     monkeypatch.setattr(fused_ops, "_TRITON_MERGE_DISABLED", True)
     monkeypatch.setattr(fused_ops, "_TRITON_GATHER_SELECT_DISABLED", False, raising=False)
     monkeypatch.setattr(fused_ops, "_gather_select_kernel", _T013BoomKernel())
@@ -425,7 +428,8 @@ def test_t013_flags_independent(monkeypatch: pytest.MonkeyPatch) -> None:
     with pytest.warns(RuntimeWarning, match="boom"):
         out = gather_select(parent, rows, child, mask)
     assert torch.equal(out, expected)
-    assert fused_ops._TRITON_GATHER_SELECT_DISABLED is True
+    assert ("gather_select", "torch.float32", 32) in fused_ops._TRITON_FAILED_KEYS
+    assert fused_ops._TRITON_GATHER_SELECT_DISABLED is False
 
     with warnings.catch_warnings(record=True) as caught:
         warnings.simplefilter("always")
@@ -467,6 +471,7 @@ def test_t013_merge_failure_does_not_disable_gather_select(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """A merge Triton failure must leave the gather/select Triton path enabled."""
+    monkeypatch.setattr(fused_ops, "_TRITON_FAILED_KEYS", set())
     monkeypatch.setattr(fused_ops, "_TRITON_MERGE_DISABLED", False)
     monkeypatch.setattr(fused_ops, "_TRITON_GATHER_SELECT_DISABLED", False, raising=False)
 
@@ -479,7 +484,8 @@ def test_t013_merge_failure_does_not_disable_gather_select(
     with pytest.warns(RuntimeWarning, match="boom"):
         out_m = merge_stable_divergent(mp, mc, mmask)
     assert torch.equal(out_m, expected_m)
-    assert fused_ops._TRITON_MERGE_DISABLED is True
+    assert ("merge", "torch.float32", 128) in fused_ops._TRITON_FAILED_KEYS
+    assert fused_ops._TRITON_MERGE_DISABLED is False
 
     # gather_select must still attempt Triton despite the merge failure.
     monkeypatch.setattr(fused_ops, "_gather_select_kernel", _T013BoomKernel())

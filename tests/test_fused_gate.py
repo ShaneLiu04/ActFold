@@ -201,6 +201,7 @@ def test_fused_gate_min_tokens_constant_exists() -> None:
     assert isinstance(fused_ops._FUSED_GATE_MIN_TOKENS, int)
     assert fused_ops._FUSED_GATE_MIN_TOKENS >= 1
     assert hasattr(fused_ops, "_TRITON_GATE_DISABLED")
+    assert isinstance(fused_ops._TRITON_FAILED_KEYS, set)
 
 
 def test_fused_gate_forced_disabled_fallback_bit_exact(
@@ -414,12 +415,14 @@ def test_ut006c_compile_failure_warns_once_and_disables(monkeypatch: pytest.Monk
     """AR002 design UT-006c: kernel failure -> one RuntimeWarning + fallback.
 
     The first call falls back to the PyTorch gate chain (bit-exact vs the
-    reference gate), sets the module-level disable flag, and warns exactly
-    once; subsequent calls stay on the fallback without warning again.
+    reference gate), registers its failure key (AR014: the boolean stays a
+    manual switch), and warns exactly once; subsequent calls stay on the
+    fallback without warning again.
     """
     fused_gate_mask_count = _load_fused_gate_mask_count()
     from actfold.core import fused_ops
 
+    monkeypatch.setattr(fused_ops, "_TRITON_FAILED_KEYS", set())
     monkeypatch.setattr(fused_ops, "_TRITON_GATE_DISABLED", False, raising=False)
     monkeypatch.setattr(fused_ops, "_fused_gate_kernel", _ExplodingKernel())
 
@@ -439,8 +442,9 @@ def test_ut006c_compile_failure_warns_once_and_disables(monkeypatch: pytest.Monk
     # Fallback result is bit-exact vs the reference gate chain.
     assert torch.equal(out_mask, ref_mask)
     assert int(out_count) == int(ref_mask.sum())
-    # The failure permanently disabled the Triton path.
-    assert fused_ops._TRITON_GATE_DISABLED is True
+    # The failure registered its key; the boolean stays a manual switch (AR014).
+    assert ("gate", "torch.float32", 64) in fused_ops._TRITON_FAILED_KEYS
+    assert fused_ops._TRITON_GATE_DISABLED is False
 
     # Second call: no new warning (the kernel is not attempted again) and
     # the result is still correct.
