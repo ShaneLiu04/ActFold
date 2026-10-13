@@ -12,7 +12,7 @@
 | T006 | 质量门 | ✅ | mypy clean（**66 文件**，adaptive_capacity.py 新增）/ pyflakes 零 / 100 列零（python len 复核）/ 全量 846 passed / demo 锚点 |
 | T007 | review 门控：只读子代理审查 srs/design/实现/测试/工件合规 | ✅ | 门控记录见下 |
 | T008 | ST 验收：st-cases.md 场景用例 | ✅ | 16 用例一次成 Go（16 PASS / 0 FAIL / 0 BLOCKED，需求覆盖 6/6=100%）；执行证据：本日新跑 `pytest tests\test_adaptive_capacity.py` 8 passed、config 边界探针（6 默认值 + 三非法构造 ValueError）、工件全字段探针（4 配置 reps=30/warmup=5/parity=True×4/allclose=True×4/tracks_demand=True×4/verdicts 与文档一致/p1_7 overall=inconclusive 诚实）、文档在场探针（guide :180+Part24+交叉注记/CHANGELOG 最前/AGENTS #37）、T006 质量门与 mutation 记录复用；3 项 Minor 遗留均为已记录诚实边界（(256,8,4) WDDM 展布 inconclusive/串行路径后续档/n=34 采样缺口），不阻塞 |
-| T009 | 归档 + git commit + gitee 推送 + 树验证 | ☐ | 两步交付先例：主体 commit → T009 标记 commit → 各自 commit-tree 推 gitee → 双端树验证 |
+| T009 | 归档 + git commit + gitee 推送 + 树验证 | ✅ | 两步交付先例：主体 commit `f11cae5`（15 文件 +4304/-9，含 specs/archive/AR017-adaptive-capacity 归档）→ T009 标记 commit → 各自 commit-tree 推 gitee → 双端树验证 |
 
 ## 门控记录
 
