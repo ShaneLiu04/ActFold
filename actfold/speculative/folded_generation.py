@@ -136,11 +136,23 @@ def folded_generate(
                 break
 
             # Register candidates in the tree and run the folded forward pass.
-            evaluated = []
-            for node in candidates:
-                tree.add(node)
-                _run_folded_forward(model, node, folded_model, step_idx)
-                evaluated.append(node)
+            evaluated: list[BranchNode] = []
+            if isinstance(folded_model, ManualFoldedForward) and _batched_forward_supported(
+                folded_model, candidates
+            ):
+                # AR015 (P1-7 first tranche): same-parent equal-length
+                # candidates share one batched folded forward instead of N
+                # serial passes; every other shape takes the exact serial
+                # loop below.
+                for node in candidates:
+                    tree.add(node)
+                _run_folded_forward_batched(model, candidates, folded_model, step_idx)
+                evaluated = list(candidates)
+            else:
+                for node in candidates:
+                    tree.add(node)
+                    _run_folded_forward(model, node, folded_model, step_idx)
+                    evaluated.append(node)
 
             accepted = policy.select(evaluated)
             accepted.accepted = True
@@ -293,3 +305,66 @@ def _run_folded_forward(
     profile = GLOBAL_STABILITY_PROFILER.get_profile(node.branch_id)
     if profile is not None:
         node.metadata["stable_ratio"] = profile.mean_stable_ratio
+
+
+def _batched_forward_supported(
+    folded_model: FoldedModel | ManualFoldedForward | None,
+    candidates: list[BranchNode],
+) -> bool:
+    """Whether ``candidates`` can share one batched folded forward (AR015).
+
+    Conditions (all required): the folded model is the supported
+    :class:`~actfold.models.architecture_utils.ManualFoldedForward` path,
+    there are at least two candidates, they share one non-None parent, and
+    they are equal-length with parent-batch 1 (the generate-loop shape:
+    candidates derive from ``parent.tokens`` by appending one token, so the
+    candidate batch equals the parent batch).
+    """
+    if folded_model is None or not isinstance(folded_model, ManualFoldedForward):
+        return False
+    if len(candidates) <= 1:
+        return False
+    if len({node.parent_id for node in candidates}) != 1:
+        return False
+    if candidates[0].parent_id is None:
+        return False
+    first_shape = tuple(candidates[0].tokens.shape)
+    if any(tuple(node.tokens.shape) != first_shape for node in candidates):
+        return False
+    return first_shape[0] == 1
+
+
+def _run_folded_forward_batched(
+    model: FastDLLMAdapter,
+    nodes: list[BranchNode],
+    folded_model: ManualFoldedForward,
+    step_idx: int,
+) -> None:
+    """Execute one batched folded forward for all ``nodes`` (AR015).
+
+    Mirrors :func:`_run_folded_forward` per node: profiles are reset per
+    branch, row ``i`` of the stacked batch belongs to ``nodes[i]``, and
+    logits are stored as read-only ``[1, seq_len, vocab]`` row views.
+    """
+    del model  # The batched path always routes through the folded model.
+    parent_id = nodes[0].parent_id
+
+    for node in nodes:
+        # Reset any stale profile so the profiler only records the current pass.
+        GLOBAL_STABILITY_PROFILER.reset_branch(node.branch_id)
+
+    stacked = torch.cat([node.tokens for node in nodes], dim=0)
+    logits = folded_model(
+        stacked,
+        branch_id=None,
+        branch_ids=[node.branch_id for node in nodes],
+        parent_branch_id=parent_id,
+        step_idx=step_idx,
+    )
+
+    for row_idx, node in enumerate(nodes):
+        node.logits = logits[row_idx : row_idx + 1]
+
+        profile = GLOBAL_STABILITY_PROFILER.get_profile(node.branch_id)
+        if profile is not None:
+            node.metadata["stable_ratio"] = profile.mean_stable_ratio

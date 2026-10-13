@@ -9,6 +9,7 @@ works without architecture-specific wiring.
 from __future__ import annotations
 
 import warnings
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
@@ -446,27 +447,43 @@ class ManualFoldedForward(nn.Module):
     def forward(
         self,
         tokens: Any,
-        branch_id: str,
+        branch_id: str | None,
         parent_branch_id: str | None = None,
         attention_mask: Any | None = None,
         step_idx: int = 0,
+        branch_ids: Sequence[str] | None = None,
     ) -> Any:
         """Run a folded forward pass and return logits or hidden states.
 
         Args:
-            tokens: Input token ids ``[batch, seq_len]``.
-            branch_id: Identifier of the current branch.
+            tokens: Input token ids ``[batch, seq_len]`` (``[N, seq_len]``
+                when ``branch_ids`` is set).
+            branch_id: Identifier of the current branch (serial calls);
+                must be ``None`` for batched calls.
             parent_branch_id: Optional parent branch identifier for reuse.
             attention_mask: Optional attention mask.
             step_idx: Current diffusion step index.
+            branch_ids: Batched-branch identifiers (AR015): row ``i`` of
+                ``tokens`` is verified as branch ``branch_ids[i]`` sharing
+                ``parent_branch_id``. Batched calls always run eager — the
+                CUDA graph captures only the same-shape serial workload
+                (AGENTS #37).
 
         Returns:
-            Output of the language modeling head, typically logits.
+            Output of the language modeling head, typically logits
+            (``[N, seq_len, vocab]`` for batched calls).
         """
+        if branch_ids is not None:
+            if branch_id is not None:
+                raise ValueError(
+                    "ManualFoldedForward accepts either branch_id (serial) "
+                    "or branch_ids (batched), not both."
+                )
         # Opt-in CUDA graph fast path (AR002/T008): replay the captured
         # static folded forward when every precondition holds; any miss falls
-        # back to the eager body below.
-        if self.use_cuda_graph:
+        # back to the eager body below. Batched-branch calls (AR015) bypass
+        # the graph entirely — silently, like the varlen fallback (#20).
+        elif self.use_cuda_graph and branch_id is not None:
             graph_out = self._graph_forward_or_none(
                 tokens, branch_id, parent_branch_id, attention_mask, step_idx
             )
@@ -482,6 +499,7 @@ class ManualFoldedForward(nn.Module):
                 parent_branch_id=parent_branch_id,
                 attention_mask=attention_mask,
                 step_idx=step_idx,
+                branch_ids=branch_ids,
             )
 
         # Apply the final normalization (e.g. LLaMA ``model.norm``) before the
