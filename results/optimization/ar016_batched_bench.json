@@ -1,0 +1,354 @@
+{
+  "configs": [
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "supported",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.84375,
+        "folded_batched_graph": 0.84375,
+        "folded_serial_eager": 0.84375
+      },
+      "num_candidates": 2,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.4974,
+        "verdict": "inconclusive"
+      },
+      "seq_len": 128,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 7.121520000509918,
+          "n": 10,
+          "p50": 6.997999997111037,
+          "std": 1.4234506189393612
+        },
+        "folded_batched_eager": {
+          "mean": 12.034370005130768,
+          "n": 10,
+          "p50": 12.183049984741956,
+          "std": 1.4193090726301965
+        },
+        "folded_batched_graph": {
+          "mean": 5.401359999086708,
+          "n": 10,
+          "p50": 4.673299990827218,
+          "std": 1.076370476006285
+        },
+        "folded_serial_eager": {
+          "mean": 26.057400013087317,
+          "n": 10,
+          "p50": 25.371299998369068,
+          "std": 3.8757392101287547
+        }
+      }
+    },
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "supported",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.8671875,
+        "folded_batched_graph": 0.8671875,
+        "folded_serial_eager": 0.8671875
+      },
+      "num_candidates": 2,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.3651,
+        "verdict": "inconclusive"
+      },
+      "seq_len": 512,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 6.9480399950407445,
+          "n": 10,
+          "p50": 7.019499986199662,
+          "std": 0.7565809306372194
+        },
+        "folded_batched_eager": {
+          "mean": 12.055270001292229,
+          "n": 10,
+          "p50": 12.28764999541454,
+          "std": 1.111549822819148
+        },
+        "folded_batched_graph": {
+          "mean": 5.555659998208284,
+          "n": 10,
+          "p50": 5.142199981492013,
+          "std": 0.9639954116652669
+        },
+        "folded_serial_eager": {
+          "mean": 24.15196000947617,
+          "n": 10,
+          "p50": 24.424450006335974,
+          "std": 1.334022969475536
+        }
+      }
+    },
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "supported",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.84375,
+        "folded_batched_graph": 0.84375,
+        "folded_serial_eager": 0.84375
+      },
+      "num_candidates": 4,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.6708,
+        "verdict": "supported"
+      },
+      "seq_len": 128,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 12.915949994930997,
+          "n": 10,
+          "p50": 12.514950009062886,
+          "std": 1.3262497875250305
+        },
+        "folded_batched_eager": {
+          "mean": 14.23600001144223,
+          "n": 10,
+          "p50": 14.550499996403232,
+          "std": 1.4170153937227632
+        },
+        "folded_batched_graph": {
+          "mean": 7.70386999938637,
+          "n": 10,
+          "p50": 7.490550022339448,
+          "std": 0.7114399339857295
+        },
+        "folded_serial_eager": {
+          "mean": 52.25561000406742,
+          "n": 10,
+          "p50": 50.33795002964325,
+          "std": 5.030874666019695
+        }
+      }
+    },
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "supported",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.8671875,
+        "folded_batched_graph": 0.8671875,
+        "folded_serial_eager": 0.8671875
+      },
+      "num_candidates": 4,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.4635,
+        "verdict": "supported"
+      },
+      "seq_len": 512,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 12.656130007235333,
+          "n": 10,
+          "p50": 12.219800002640113,
+          "std": 1.564834418650205
+        },
+        "folded_batched_eager": {
+          "mean": 14.117690012790263,
+          "n": 10,
+          "p50": 14.346100040711462,
+          "std": 1.1878507443013755
+        },
+        "folded_batched_graph": {
+          "mean": 8.624760014936328,
+          "n": 10,
+          "p50": 8.349850017111748,
+          "std": 0.5143074666462302
+        },
+        "folded_serial_eager": {
+          "mean": 49.20055001275614,
+          "n": 10,
+          "p50": 47.0620000269264,
+          "std": 4.2528423969469475
+        }
+      }
+    },
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "inconclusive",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.84375,
+        "folded_batched_graph": 0.84375,
+        "folded_serial_eager": 0.84375
+      },
+      "num_candidates": 8,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.7747,
+        "verdict": "supported"
+      },
+      "seq_len": 128,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 24.73157000495121,
+          "n": 10,
+          "p50": 23.569699988001958,
+          "std": 3.6876320279297645
+        },
+        "folded_batched_eager": {
+          "mean": 18.738829996436834,
+          "n": 10,
+          "p50": 18.236599978990853,
+          "std": 2.6957692781792346
+        },
+        "folded_batched_graph": {
+          "mean": 14.738719997694716,
+          "n": 10,
+          "p50": 13.280949991894886,
+          "std": 3.0487043262941467
+        },
+        "folded_serial_eager": {
+          "mean": 102.0124499918893,
+          "n": 10,
+          "p50": 100.63964998698793,
+          "std": 7.655195810754525
+        }
+      }
+    },
+    {
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__folded_batched_eager": 1.0,
+        "baseline_eager__vs__folded_batched_graph": 1.0,
+        "baseline_eager__vs__folded_serial_eager": 1.0,
+        "folded_batched_eager__vs__folded_batched_graph": 1.0,
+        "folded_serial_eager__vs__folded_batched_eager": 1.0,
+        "folded_serial_eager__vs__folded_batched_graph": 1.0
+      },
+      "folded_paths_allclose_1e-4": true,
+      "graph_captured": true,
+      "graph_validated_last_step": true,
+      "h1_batched_vs_serial": "supported",
+      "h2_graph_vs_batched_eager": "inconclusive",
+      "logits_parity_argmax_exact": true,
+      "mean_stable_ratio": {
+        "folded_batched_eager": 0.867431640625,
+        "folded_batched_graph": 0.867431640625,
+        "folded_serial_eager": 0.867431640625
+      },
+      "num_candidates": 8,
+      "p1_7_graph_vs_baseline": {
+        "speedup_p50": 1.4637,
+        "verdict": "inconclusive"
+      },
+      "seq_len": 512,
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 27.05122999032028,
+          "n": 10,
+          "p50": 25.422600010642782,
+          "std": 4.106423499207503
+        },
+        "folded_batched_eager": {
+          "mean": 17.738820001250133,
+          "n": 10,
+          "p50": 17.978599993512034,
+          "std": 1.175984909548442
+        },
+        "folded_batched_graph": {
+          "mean": 18.170609994558617,
+          "n": 10,
+          "p50": 17.368650005664676,
+          "std": 2.2306136839474373
+        },
+        "folded_serial_eager": {
+          "mean": 103.77277999650687,
+          "n": 10,
+          "p50": 101.09854998881929,
+          "std": 5.246496255110747
+        }
+      }
+    }
+  ],
+  "hypotheses_declared": {
+    "H1": "batched eager significantly faster than folded serial (~Nx)",
+    "H2": "batched graph further reduces per-step wall clock vs batched eager",
+    "H3": "four paths produce consistent logits (exact argmax agreement)"
+  },
+  "hypotheses_verdicts": {
+    "H1": "supported",
+    "H2": "inconclusive",
+    "H3": "supported"
+  },
+  "meta": {
+    "capacity_ratio": 0.5,
+    "command": "python -m scripts.ar016_batched_bench",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "interleaving": "round-robin per repetition: baseline_eager -> folded_serial_eager -> folded_batched_eager -> folded_batched_graph",
+    "kernel_count": null,
+    "kernel_count_note": "this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel counts omitted rather than fabricated - rerun on a CUPTI-capable host to record them",
+    "model": "synthetic LLaMA-layout L=8 H=256 V=1000",
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + >=10 reps + p50 + per-rep round-robin",
+    "reps": 10,
+    "run_date_utc": "2026-10-13T10:54:37.801286+00:00",
+    "seed": 2026,
+    "timing_method": "time.perf_counter around torch.cuda.synchronize() boundaries (host-side prefill/readback/publish included; CUDA-event timing would exclude them)",
+    "torch_version": "2.5.1+cu121",
+    "warmup": 3
+  },
+  "p1_7_verdict": {
+    "note": "recorded either way; per-config verdicts and speedups in configs[].p1_7_graph_vs_baseline",
+    "overall": "inconclusive",
+    "question": "is folded batched-graph verification faster than the raw baseline (P1-7)?"
+  }
+}

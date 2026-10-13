@@ -417,6 +417,17 @@ class ManualFoldedForward(nn.Module):
         self._graph_shape_warned = False
         self._graph_budget_warned = False
         self._graph_capture_failed = False
+        # Batched-branch CUDA graph state (AR016): a separate runner for the
+        # [N, T] capture shape (the serial runner holds [1, T] — the two
+        # shapes can never share a runner). The shared degradation flag
+        # above covers the scheduler/gate/CUDA/capture-fail family (one
+        # warning per family, cross-reason suppression — serial precedent);
+        # the shape/budget/capture-failed flags below are per-side.
+        self.graph_runner_batched: Any = None
+        self._graph_batched_mask: Any = None
+        self._graph_batched_shape_warned = False
+        self._graph_batched_budget_warned = False
+        self._graph_batched_capture_failed = False
         self._wrapped_layers = nn.ModuleList(
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
@@ -465,9 +476,10 @@ class ManualFoldedForward(nn.Module):
             step_idx: Current diffusion step index.
             branch_ids: Batched-branch identifiers (AR015): row ``i`` of
                 ``tokens`` is verified as branch ``branch_ids[i]`` sharing
-                ``parent_branch_id``. Batched calls always run eager — the
-                CUDA graph captures only the same-shape serial workload
-                (AGENTS #37).
+                ``parent_branch_id``. Batched calls use the batched CUDA
+                graph path when ``use_cuda_graph`` is set and every batched
+                precondition holds (AR016); any miss falls back to the
+                batched eager body below.
 
         Returns:
             Output of the language modeling head, typically logits
@@ -479,10 +491,20 @@ class ManualFoldedForward(nn.Module):
                     "ManualFoldedForward accepts either branch_id (serial) "
                     "or branch_ids (batched), not both."
                 )
+            # Batched CUDA graph fast path (AR016): mirror the serial
+            # dispatch below for the [N, T] capture shape; any miss falls
+            # through to the batched eager body (a parent cached at
+            # batch != 1 keeps its #41 RuntimeError — the graph layer never
+            # swallows or alters the eager contract).
+            if self.use_cuda_graph:
+                graph_out = self._graph_forward_batched_or_none(
+                    tokens, branch_ids, parent_branch_id, attention_mask, step_idx
+                )
+                if graph_out is not None:
+                    return graph_out
         # Opt-in CUDA graph fast path (AR002/T008): replay the captured
         # static folded forward when every precondition holds; any miss falls
-        # back to the eager body below. Batched-branch calls (AR015) bypass
-        # the graph entirely — silently, like the varlen fallback (#20).
+        # back to the eager body below.
         elif self.use_cuda_graph and branch_id is not None:
             graph_out = self._graph_forward_or_none(
                 tokens, branch_id, parent_branch_id, attention_mask, step_idx
@@ -707,6 +729,207 @@ class ManualFoldedForward(nn.Module):
                 tau=self.gate.tau,
                 metric="cosine",
             )
+
+    def _graph_forward_batched_or_none(
+        self,
+        tokens: Any,
+        branch_ids: Sequence[str],
+        parent_branch_id: str | None,
+        attention_mask: Any,
+        step_idx: int,
+    ) -> Any:
+        """Try the batched CUDA graph fast path; return logits or ``None``.
+
+        Degradation matrix (AR016, mirrors the serial :meth:`_graph_forward_or_none`
+        with batched differences): a token shape other than the captured one warns
+        once (batched shape flag) and never re-captures; scheduler / non-cosine
+        gate / non-CUDA warn once through the shared family flag; a mask other
+        than the one pinned at capture silently uses the eager path; an
+        incomplete parent cache, a sequence-length mismatch, or a parent cached
+        at batch != 1 silently refuses **before every replay** (host-side shape
+        metadata only — no device sync): the first two fall back to eager which
+        succeeds, the last falls back to eager which raises the #41
+        ``RuntimeError`` before any store (zero cache/profiler pollution — the
+        graph layer never swallows the eager contract); an exceeded divergent
+        budget discards the replay output (one-time warning) and recomputes
+        eagerly; a failed capture permanently disables the batched graph path
+        (EX-002, one-time warning, no retry) without touching the serial one.
+        """
+        from actfold.core.similarity_gate import SimilarityGate
+
+        if self._graph_batched_capture_failed:
+            # EX-002: a failed capture permanently disables the batched graph
+            # path; never retry — capture is expensive and its failure mode
+            # is not transient.
+            return None
+        runner = self.graph_runner_batched
+        if runner is not None and tuple(tokens.shape) != tuple(
+            runner.tokens_static.shape
+        ):
+            if not self._graph_batched_shape_warned:
+                self._graph_batched_shape_warned = True
+                warnings.warn(
+                    "ManualFoldedForward batched graph path captured shape "
+                    f"{tuple(runner.tokens_static.shape)}; tokens of shape "
+                    f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return None
+        if parent_branch_id is None:
+            # Parent passes always run eager: they populate the cache.
+            return None
+        if self.scheduler is not None:
+            self._warn_graph_degraded_once("a folding scheduler is attached")
+            return None
+        if type(self.gate) is not SimilarityGate or self.gate.metric != "cosine":
+            self._warn_graph_degraded_once(
+                "the gate is not an exact-type cosine SimilarityGate"
+            )
+            return None
+        if not tokens.is_cuda:
+            self._warn_graph_degraded_once("CUDA is unavailable")
+            return None
+        if len(branch_ids) != tokens.shape[0]:
+            return None
+
+        if runner is None:
+            # First batched graph-eligible call: capture once. A parent
+            # cached at batch != 1 or a sequence-length mismatch is refused
+            # silently here (the eager body decides the outcome — the #41
+            # contract for batch != 1).
+            if not self._parent_cache_complete_batched(parent_branch_id, tokens):
+                return None
+            if attention_mask is not None and not attention_mask.is_cuda:
+                return None
+            from actfold.core.cuda_graph import FoldedGraphRunner
+
+            new_runner = FoldedGraphRunner(
+                wrapped_layers=self._wrapped_layers,
+                embed_fn=self.profile.embed_module,
+                final_norm_fn=self.profile.final_norm,
+                head_fn=self.profile.head_module,
+                cache=self.cache,
+                gate_tau=self.gate.tau,
+                gate_eps=self.gate.eps,
+                capacity_ratio=self.graph_capacity_ratio,
+                attention_mask_static=attention_mask,
+            )
+            try:
+                new_runner.capture(tokens, branch_ids[0], parent_branch_id)
+            except RuntimeError as exc:
+                self._warn_graph_degraded_once(f"CUDA graph capture failed ({exc})")
+                self._graph_batched_capture_failed = True
+                return None
+            self.graph_runner_batched = new_runner
+            self._graph_batched_mask = attention_mask
+            runner = new_runner
+        elif attention_mask is not self._graph_batched_mask:
+            # The captured graph bakes the attention mask in; a different
+            # mask object must not silently reuse it.
+            return None
+
+        # Replay-time parent re-validation (AR016 Major-1): re-check before
+        # EVERY replay. A parent re-cached at [N, T, H] after capture would
+        # copy cleanly into the [N, T, H] static parent buffers (each branch
+        # folding against a different parent row) with the budget check none
+        # the wiser — refuse here so the eager body raises the #41
+        # RuntimeError before any store. Shape checks are host-side metadata
+        # (no device-to-host sync).
+        if not self._parent_cache_complete_batched(parent_branch_id, tokens):
+            return None
+        logits = runner.replay(tokens, parent_branch_id, branch_ids[0])
+        if logits is None:
+            # Parent cache incomplete for this step: plain eager fallback.
+            return None
+        if runner.budget_exceeded:
+            if not self._graph_batched_budget_warned:
+                self._graph_batched_budget_warned = True
+                warnings.warn(
+                    "Batched CUDA graph replay exceeded the divergent budget; "
+                    "discarding the replay output and recomputing eagerly "
+                    "(correctness first).",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            return None
+        self._publish_graph_children(
+            runner, tokens, branch_ids, parent_branch_id, step_idx
+        )
+        return logits.clone()
+
+    def _parent_cache_complete_batched(self, parent_branch_id: str, tokens: Any) -> bool:
+        """Check the parent branch has every batched capture/replay input.
+
+        Mirrors :meth:`_parent_cache_complete` with the expand contract
+        (#41): the expected parent shape is ``[1, seq]`` — a parent cached at
+        any other batch (including ``N``) or sequence length is refused, so
+        the distinction between "incomplete", "seq mismatch", and "batch
+        != 1" is delegated to the eager body (the first two succeed there,
+        the last raises the #41 RuntimeError before any store).
+        """
+        expected = (1, tokens.shape[1])
+        try:
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get(
+                "embedding"
+            )
+            if embedding is None:
+                return False
+            if tuple(embedding.shape[:2]) != expected:
+                return False
+            for layer_idx in range(len(self._wrapped_layers)):
+                ffn_out = self.cache.fetch(
+                    branch_id=parent_branch_id, layer_idx=layer_idx
+                ).get("ffn_out")
+                if ffn_out is None:
+                    return False
+                if tuple(ffn_out.shape[:2]) != expected:
+                    return False
+        except (KeyError, RuntimeError):
+            return False
+        return True
+
+    def _publish_graph_children(
+        self,
+        runner: Any,
+        tokens: Any,
+        branch_ids: Sequence[str],
+        parent_branch_id: str,
+        step_idx: int,
+    ) -> None:
+        """Publish a validated batched replay into the cache and the profiler.
+
+        Row-sliced mirror of :meth:`_publish_graph_child`: each branch ``i``
+        receives the ``[1, T, H]`` slice of the static child buffer
+        (**cloned** — the static buffers are reused across replays) plus the
+        layer-0 embedding row, and a per-layer stability record derived from
+        the static mask buffer row (device-side sums, no host readback).
+        """
+        from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
+
+        embedding = self.profile.embed_module(tokens)
+        num_layers = len(self._wrapped_layers)
+        for layer_idx in range(num_layers):
+            for row, branch_id in enumerate(branch_ids):
+                activations: dict[str, Any] = {
+                    "ffn_out": runner.child_buf[layer_idx][row : row + 1].clone()
+                }
+                if layer_idx == 0:
+                    activations["embedding"] = embedding[row : row + 1]
+                self.cache.put(
+                    branch_id=branch_id,
+                    layer_idx=layer_idx,
+                    activations=activations,
+                )
+                GLOBAL_STABILITY_PROFILER.record(
+                    branch_id=branch_id,
+                    parent_branch_id=parent_branch_id,
+                    layer_idx=layer_idx,
+                    step_idx=step_idx,
+                    stable_mask=runner.mask_buf[layer_idx][row : row + 1],
+                    tau=self.gate.tau,
+                    metric="cosine",
+                )
 
     @property
     def folding_applied(self) -> bool:
