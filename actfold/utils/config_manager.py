@@ -82,6 +82,17 @@ class ActFoldConfig:
     split_min_tokens: int = 512
     use_cuda_graph: bool = False
     graph_capacity_ratio: float = 0.5
+    # Adaptive divergent-capacity re-capture on the batched graph path
+    # (AR017). The five knobs mirror
+    # actfold.core.adaptive_capacity.AdaptiveCapacityConfig; the config
+    # object itself is assembled at the consumption site
+    # (eval.benchmark_runner) to keep utils decoupled from core.
+    graph_adaptive_capacity: bool = False
+    graph_adaptive_grow_factor: float = 1.25
+    graph_adaptive_shrink_threshold: float = 0.5
+    graph_adaptive_shrink_patience: int = 3
+    graph_adaptive_min_recapture_interval: int = 2
+    graph_adaptive_max_recaptures: int = 8
     cache_chunk_size: int = 64
     use_cost_model: bool = True
     use_folded_generation: bool = True
@@ -136,6 +147,33 @@ class ActFoldConfig:
             raise ValueError(
                 "graph_capacity_ratio must satisfy 0 < ratio <= 1, got "
                 f"{self.graph_capacity_ratio}"
+            )
+        # Bounds mirror AdaptiveCapacityConfig (AR017); validated regardless
+        # of the switch so an illegal knob cannot hide behind "off".
+        if self.graph_adaptive_grow_factor < 1.0:
+            raise ValueError(
+                "graph_adaptive_grow_factor must be >= 1.0, got "
+                f"{self.graph_adaptive_grow_factor}"
+            )
+        if not 0.0 < self.graph_adaptive_shrink_threshold < 1.0:
+            raise ValueError(
+                "graph_adaptive_shrink_threshold must be in (0, 1), got "
+                f"{self.graph_adaptive_shrink_threshold}"
+            )
+        if self.graph_adaptive_shrink_patience < 1:
+            raise ValueError(
+                "graph_adaptive_shrink_patience must be >= 1, got "
+                f"{self.graph_adaptive_shrink_patience}"
+            )
+        if self.graph_adaptive_min_recapture_interval < 1:
+            raise ValueError(
+                "graph_adaptive_min_recapture_interval must be >= 1, got "
+                f"{self.graph_adaptive_min_recapture_interval}"
+            )
+        if self.graph_adaptive_max_recaptures < 1:
+            raise ValueError(
+                "graph_adaptive_max_recaptures must be >= 1, got "
+                f"{self.graph_adaptive_max_recaptures}"
             )
         if self.torch_dtype is not None and self.torch_dtype not in {
             "float32",

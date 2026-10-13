@@ -107,6 +107,10 @@ class FoldedGraphRunner:
         self._logits_buf: torch.Tensor | None = None
         self._graph: Any = None
         self._budget_exceeded = False
+        # Divergence staging (AR017): per-layer divergent counts from the
+        # last validate_budgets call; None until the first validation (a
+        # capture without a replay stages nothing).
+        self._last_layer_divergences: list[int] | None = None
 
     # ------------------------------------------------------------------
     # Public properties
@@ -120,6 +124,18 @@ class FoldedGraphRunner:
     def budget_exceeded(self) -> bool:
         """Whether the most recent ``validate_budgets`` call failed."""
         return self._budget_exceeded
+
+    @property
+    def last_layer_divergences(self) -> list[int] | None:
+        """Per-layer divergent counts staged by the last budget validation.
+
+        ``None`` until the first :meth:`validate_budgets` call (a capture
+        without a replay stages nothing); refreshed on every validation
+        (replays and explicit calls alike), never left stale. Readback-free
+        by contract: the values reuse the single ``count_buf.tolist()``
+        inside :meth:`validate_budgets` -- no extra host sync (AR017 FR1).
+        """
+        return self._last_layer_divergences
 
     # ------------------------------------------------------------------
     # Static-buffer accessors (host-side; caller clones before next replay)
@@ -298,8 +314,10 @@ class FoldedGraphRunner:
     def validate_budgets(self) -> bool:
         """Check ``D_l = N - stable_count_l <= C`` for every captured layer.
 
-        Performs exactly one host readback (``count_buf.tolist()``) and
-        updates :attr:`budget_exceeded`.
+        Performs exactly one host readback (``count_buf.tolist()``), updates
+        :attr:`budget_exceeded`, and stages the per-layer divergent counts in
+        :attr:`last_layer_divergences` (AR017 FR1 -- the staging reuses this
+        readback; reading it costs no extra host sync).
 
         Returns:
             ``True`` when every layer's divergent count fits the fixed
@@ -308,7 +326,13 @@ class FoldedGraphRunner:
         """
         self._require_captured()
         counts = self._count_buf.tolist()  # type: ignore[union-attr]
-        ok = all(self._num_tokens - count <= self._capacity for count in counts)
+        self._last_layer_divergences = [
+            self._num_tokens - count for count in counts
+        ]
+        ok = all(
+            divergence <= self._capacity
+            for divergence in self._last_layer_divergences
+        )
         self._budget_exceeded = not ok
         return ok
 

@@ -11,6 +11,7 @@ import torch
 from tqdm import tqdm
 
 from actfold.core import SimilarityGate
+from actfold.core.adaptive_capacity import AdaptiveCapacityConfig
 from actfold.core.cache_factory import make_activation_cache
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.eval.evalplus_adapter import EvalPlusAdapter
@@ -197,6 +198,19 @@ class BenchmarkRunner:
                 num_layers=getattr(diffusion_model, "num_layers", 1),
                 num_steps=self.config.num_steps,
             )
+        # Adaptive capacity (AR017): assemble the policy config only when the
+        # feature is on -- default-off stays call-identical to AR016.
+        adaptive_config = None
+        if self.config.graph_adaptive_capacity:
+            adaptive_config = AdaptiveCapacityConfig(
+                grow_factor=self.config.graph_adaptive_grow_factor,
+                shrink_threshold=self.config.graph_adaptive_shrink_threshold,
+                shrink_patience=self.config.graph_adaptive_shrink_patience,
+                min_recapture_interval=(
+                    self.config.graph_adaptive_min_recapture_interval
+                ),
+                max_recaptures=self.config.graph_adaptive_max_recaptures,
+            )
         try:
             return ManualFoldedForward(
                 raw_model,
@@ -207,6 +221,8 @@ class BenchmarkRunner:
                 split_min_tokens=self.config.split_min_tokens,
                 use_cuda_graph=self.config.use_cuda_graph,
                 graph_capacity_ratio=self.config.graph_capacity_ratio,
+                graph_adaptive_capacity=self.config.graph_adaptive_capacity,
+                graph_adaptive_config=adaptive_config,
             )
         except RuntimeError:
             # detect_architecture found no layer stack / embedding module

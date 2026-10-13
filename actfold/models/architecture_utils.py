@@ -8,6 +8,7 @@ works without architecture-specific wiring.
 
 from __future__ import annotations
 
+import math
 import warnings
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -382,6 +383,16 @@ class ManualFoldedForward(nn.Module):
         graph_capacity_ratio: Fraction of tokens per layer reserved for
             divergent recompute under graph replay; must satisfy
             ``0 < ratio <= 1``.
+        graph_adaptive_capacity: Opt in to adaptive divergent-capacity
+            re-capture on the batched graph path (AR017): per-step
+            divergence demand is observed and the runner is re-captured
+            when the fixed capacity is persistently over- or
+            under-provisioned. Inert without ``use_cuda_graph``.
+        graph_adaptive_config: Optional
+            :class:`~actfold.core.adaptive_capacity.AdaptiveCapacityConfig`
+            policy hyper-parameters; a default config is constructed when
+            ``None``. Must be ``None`` or a config instance when
+            ``graph_adaptive_capacity`` is off too (type-checked always).
     """
 
     def __init__(
@@ -394,6 +405,8 @@ class ManualFoldedForward(nn.Module):
         split_min_tokens: int = 512,
         use_cuda_graph: bool = False,
         graph_capacity_ratio: float = 0.5,
+        graph_adaptive_capacity: bool = False,
+        graph_adaptive_config: Any | None = None,
     ) -> None:
         super().__init__()
         if not 0.0 < graph_capacity_ratio <= 1.0:
@@ -409,6 +422,34 @@ class ManualFoldedForward(nn.Module):
         self.split_min_tokens = int(split_min_tokens)
         self.use_cuda_graph = bool(use_cuda_graph)
         self.graph_capacity_ratio = float(graph_capacity_ratio)
+        # Adaptive capacity (AR017): the policy exists only when the feature
+        # is on -- the public probe ``graph_adaptive_policy`` reads ``None``
+        # otherwise (UT-1606 zero-state contract: default-off must be
+        # bit-identical to the AR016 wiring, no policy state ever built).
+        if graph_adaptive_config is not None:
+            from actfold.core.adaptive_capacity import AdaptiveCapacityConfig
+
+            if not isinstance(graph_adaptive_config, AdaptiveCapacityConfig):
+                raise ValueError(
+                    "graph_adaptive_config must be an AdaptiveCapacityConfig "
+                    f"instance, got {type(graph_adaptive_config).__name__}"
+                )
+        self.graph_adaptive_capacity = bool(graph_adaptive_capacity)
+        self._graph_adaptive_policy: Any = None
+        if self.graph_adaptive_capacity:
+            from actfold.core.adaptive_capacity import (
+                AdaptiveCapacityConfig,
+                AdaptiveCapacityPolicy,
+            )
+
+            adaptive_config = (
+                graph_adaptive_config
+                if graph_adaptive_config is not None
+                else AdaptiveCapacityConfig()
+            )
+            self._graph_adaptive_policy = AdaptiveCapacityPolicy(adaptive_config)
+        self._graph_adaptive_retire_warned = False
+        self._graph_adaptive_fail_warned = False
         # Lazily created by the CUDA graph path (AR002/T007); ``None`` on
         # the eager path.
         self.graph_runner: Any = None
@@ -597,9 +638,15 @@ class ManualFoldedForward(nn.Module):
         the one pinned at capture silently uses the eager path; an incomplete
         parent cache silently uses eager without disabling future captures;
         an exceeded divergent budget discards the replay output (one-time
-        warning) and recomputes eagerly; a failed capture permanently disables
-        the graph path (EX-002, one-time warning, no retry) — correctness
-        first.
+        warning) and recomputes eagerly; a failed capture permanently
+        disables the batched graph path (EX-002, one-time warning, no
+        retry) without touching the serial one. With
+        ``graph_adaptive_capacity`` on (AR017), two observation hooks
+        bracket the outcome: the budget-exceeded branch runs the growth
+        evaluation before the eager fallback, and a successful publish
+        runs the shrink evaluation after the row-sliced publishes (the
+        capacity swap never precedes the publish, which consumes the old
+        runner's static buffers).
         """
         from actfold.core.similarity_gate import SimilarityGate
 
@@ -852,9 +899,31 @@ class ManualFoldedForward(nn.Module):
                     UserWarning,
                     stacklevel=2,
                 )
+            # Growth hook (AR017): the violation is the growth signal, so the
+            # observation must happen inside the exceeded branch -- after the
+            # one-time warning, before the eager fallback.
+            self._observe_adaptive_capacity(
+                runner,
+                tokens,
+                branch_ids,
+                parent_branch_id,
+                attention_mask,
+                exceeded=True,
+            )
             return None
         self._publish_graph_children(
             runner, tokens, branch_ids, parent_branch_id, step_idx
+        )
+        # Shrink hook (AR017): placed after the publish -- the swap must
+        # never precede it (the publish reads the old runner's static
+        # buffers).
+        self._observe_adaptive_capacity(
+            runner,
+            tokens,
+            branch_ids,
+            parent_branch_id,
+            attention_mask,
+            exceeded=False,
         )
         return logits.clone()
 
@@ -931,7 +1000,139 @@ class ManualFoldedForward(nn.Module):
                     metric="cosine",
                 )
 
+    def _observe_adaptive_capacity(
+        self,
+        runner: Any,
+        tokens: Any,
+        branch_ids: Sequence[str],
+        parent_branch_id: str,
+        attention_mask: Any,
+        exceeded: bool,
+    ) -> None:
+        """Run the adaptive-capacity policy hook (AR017; no-op when off).
+
+        Called from exactly two points in
+        :meth:`_graph_forward_batched_or_none`: inside the budget-exceeded
+        branch (``exceeded=True`` -- the growth evaluation must see the
+        violation) and after a successful publish (``exceeded=False`` -- the
+        shrink evaluation). Steps whose replay returned ``None`` (incomplete
+        parent cache) never reach this hook, so the staged divergences are
+        always fresh here. A ``"recapture"`` verdict re-captures through
+        :meth:`_recapture_batched_runner`; a ``"retired"`` verdict warns
+        exactly once (the capacity stays fixed from here on).
+        """
+        policy = self._graph_adaptive_policy
+        if policy is None:
+            return
+        divergences = runner.last_layer_divergences
+        if divergences is None:
+            # Defensive: unreachable through the two call sites (replay ran
+            # validate_budgets before either hook); never consume a stale
+            # staging.
+            return
+        num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
+        action = policy.observe(
+            max(divergences), exceeded, int(runner.capacity), num_tokens
+        )
+        if action.kind == "recapture" and action.target_capacity is not None:
+            self._recapture_batched_runner(
+                action.target_capacity,
+                int(runner.capacity),
+                tokens,
+                branch_ids,
+                parent_branch_id,
+                attention_mask,
+            )
+        elif action.kind == "retired":
+            if not self._graph_adaptive_retire_warned:
+                self._graph_adaptive_retire_warned = True
+                warnings.warn(
+                    "Adaptive graph capacity reached the max_recaptures cap; "
+                    "the capacity is now fixed at the current value.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+
+    def _recapture_batched_runner(
+        self,
+        target_capacity: int,
+        current_capacity: int,
+        tokens: Any,
+        branch_ids: Sequence[str],
+        parent_branch_id: str,
+        attention_mask: Any,
+    ) -> None:
+        """Re-capture the batched runner at a new capacity (AR017).
+
+        Capture-new-first, swap-on-success, drop-old-last: a failed
+        re-capture keeps the old runner in service and retires only the
+        adaptive path. ``_graph_batched_capture_failed`` is deliberately
+        untouched -- its semantics disable the whole batched graph path and
+        would discard the healthy old runner (req Major-3); the adaptive
+        retirement flag is an independent, weaker degradation.
+
+        The decision uses the capacity the new ratio will actually produce
+        (``ceil(ratio * N * T)``), not the policy's target: the IEEE product
+        ``target / n * n`` only rounds up (the ceil lands in
+        ``{target, target + 1}``), so a shrink at ``target == C - 1`` may
+        collapse back to the current capacity -- skip instead of paying for
+        a pointless capture. Exact for power-of-two token totals (design
+        SS4.4; all in-scope graph geometries).
+        """
+        num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
+        new_ratio = min(1.0, target_capacity / num_tokens)
+        prospective = max(
+            1, min(math.ceil(new_ratio * num_tokens), num_tokens)
+        )
+        if prospective == current_capacity:
+            return
+        from actfold.core.cuda_graph import FoldedGraphRunner
+
+        new_runner = FoldedGraphRunner(
+            wrapped_layers=self._wrapped_layers,
+            embed_fn=self.profile.embed_module,
+            final_norm_fn=self.profile.final_norm,
+            head_fn=self.profile.head_module,
+            cache=self.cache,
+            gate_tau=self.gate.tau,
+            gate_eps=self.gate.eps,
+            capacity_ratio=new_ratio,
+            attention_mask_static=attention_mask,
+        )
+        try:
+            new_runner.capture(tokens, branch_ids[0], parent_branch_id)
+        except RuntimeError as exc:
+            if not self._graph_adaptive_fail_warned:
+                self._graph_adaptive_fail_warned = True
+                warnings.warn(
+                    f"Adaptive capacity re-capture failed ({exc}); adaptive "
+                    "capacity retired, keeping the current graph.",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            policy = self._graph_adaptive_policy
+            if policy is not None:
+                policy.retire()
+            return
+        self.graph_runner_batched = new_runner
+        self._graph_batched_mask = attention_mask
+        policy = self._graph_adaptive_policy
+        if policy is not None:
+            policy.note_recaptured()
+
     @property
     def folding_applied(self) -> bool:
         """Return ``True`` because layers are explicitly wrapped."""
         return True
+
+    @property
+    def graph_adaptive_policy(self) -> Any:
+        """The adaptive-capacity policy instance (AR017 public probe).
+
+        ``None`` when ``graph_adaptive_capacity`` is off (no policy state is
+        ever built); otherwise the live
+        :class:`~actfold.core.adaptive_capacity.AdaptiveCapacityPolicy`
+        whose ``events`` list records successful re-captures and the
+        retirement.
+        """
+        return self._graph_adaptive_policy
