@@ -31,6 +31,7 @@
 | 评测（`run_benchmarks.sh`，`max_new_tokens=256`） | lm-eval gsm8k/math/ifeval 等 | 与模型权重同量级；7B/8B ≥24 GiB |
 | `demo.py` 基线对拍 | 合成小模型 | CPU 即可 |
 | `ar019_real_e2e_bench`（真实块验证三路径） | Fast-dLLM-v2-1.5B bf16（28 层, H=1536，本地权重目录） | 实测峰值 5624/7640/8949 MB（三配置），16 GB 卡可跑 |
+| `ar021_generation_loop_bench`（生产生成回路三模式） | Fast-dLLM-v2-1.5B bf16（同上权重；AR019 venv） | 实测峰值 ≤5374.5 MB（~5.4 GB），16 GB 卡可跑 |
 
 ## 3. 重跑步骤
 
@@ -99,6 +100,24 @@ python demo.py
 #    16.809→9.510 / 8.708→4.425 ms（1.80/1.77/1.97×），账本 116/232/116→1，
 #    正确性门 116/232/116 张量全 bit-equal，e2e 最小配置严格改善
 #    3.900ms > 2σ=3.712ms，no_fallback 38/38，峰值 VRAM 10027 MB
+#
+# 11) AR021 生产生成回路三模式基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#    a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录
+#    b) 基准（真实 generate() 三模式 baseline/folded-serial/folded-batched；
+#       预承诺单次纪律，不重跑钓鱼；全量 reps=30 全程 ~10min（timed 段
+#       ~7min），峰值 VRAM ~5.4GB；--quick 冒烟 = 单 prompt/reps=3/2 块 ≤5min）：
+<venv目录>\Scripts\python -m scripts.ar021_generation_loop_bench \
+    --model-path <本地权重目录> --hf-home <HF缓存目录> --reps 30
+#    工件：results/optimization/ar021_generation_loop_bench.json
+#    （判定式全文/c=4/canary 二分口径/A5 摊销注记冻结于 meta）
+#    对照数字：p50 baseline 2840.7 / folded-serial 2948.3 / folded-batched
+#    1193.9 ms（batched vs serial 2.4695×、vs baseline 2.3795×）；
+#    H1 supported（真实 checkpoint bit-exact：token 一致率 1.0、逐前向
+#    max_abs_diff=0.0）；H2 inconclusive（Δ=−107.5181ms 未越 2σ=265.3231ms，
+#    小形状串行折叠开销>收益，如实记录）；H3 supported（速度分面；质量分面
+#    report-only：exact-match 0.0、置信低于 baseline）；H4 supported（在域窗
+#    串行捕获/重放>0、批量捕获 5/5 窗、账本 c=4 界内、canary 降级类 timed=0、
+#    AR017 事件全落 warmup=中性）
 ```
 
 ## 4. 方法学要求（重跑必须满足）
