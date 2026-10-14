@@ -12,7 +12,7 @@
 | T006 | 质量门 | ✅ | 2026-10-14 完成：mypy clean（66 文件）/ pyflakes 零 / 100 列零（7 触碰文件逐行复核）/ 全量 855 passed / demo 锚点一致 |
 | T007 | review 门控：只读子代理审查 srs/design/实现/测试/工件合规 | ✅ | 2026-10-14 完成：PASS（六清单属实）；4 非阻断 Minor——M-1/M-2 文档数字转写已修、M-3 脚本命令串恒含 --reps（工件不手改注记）、M-4 slow 用例环境注记；记录见下 |
 | T008 | ST 验收：st-cases.md 场景用例 | ✅ | 2026-10-14 完成：16 用例 16 PASS 一次成 Go（正常 8/边界 3/异常 1/回归 4）；需求覆盖 6/6（FR1-FR5+NFR）；工件结构 13/13 检查过、H2/H3 复算 4/4、全量新鲜复跑 855 passed；3 条 Minor 注记级已记录；st-cases.md 已写 |
-| T009 | 归档 + git commit + gitee 推送 + 树验证 | ◐ | 两步交付先例：主体 commit → T009 标记 commit → 各自 commit-tree 推 gitee → 双端树验证 |
+| T009 | 归档 + git commit + gitee 推送 + 树验证 | ✅ | 2026-10-14 完成：归档 `specs/archive/AR018-publish-cost/`（四件含 tasks.md，AR016/017 先例）；主体 commit `b5da617` + 本标记 commit；gitee commit-tree 推送 + 双端树验证见门控记录 |
 
 ## 门控记录
 
