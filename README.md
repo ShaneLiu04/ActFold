@@ -73,6 +73,7 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 6 | **批量 CUDA Graph 捕获**（AR002/AR016） | 热路径由 launch 与宿主侧开销主导，eager 无法再压 | 固定发散容量 padded 消除每层数据依赖同步（graph 前置条件）+ 独立 `[N,T]` runner 捕获 + **重放前父缓存再校验**（防同形覆写静默错值） | 折叠子步 **−47.1%**（AR002）；graph vs 裸基线 1.37–1.77× 首次墙钟证据（AR016） |
 | 7 | **自适应发散容量重捕获**（AR017） | 固定容量 C=0.5 vs 实测发散需求 D_frac 仅 13–16% → **FFN 重算过配 3.0–3.8×**；反向低容量则每突发一次违例即丢失 graph 收益 | 观测驱动状态机：违例→增长重捕获、连续耐心观测→收缩重捕获、节流 + 上限退役保证稳定；发散计数由既有预算读回**零额外同步暂存** | 深几何 adaptive vs baseline **2.30×/2.46×**（2σ 阈值的 9–12× 裕量，decisively supported）；容量较固定值缩减 3.01–3.02× |
 | 8 | **发布路径宿主成本压缩**（AR018） | 六相探针实测：发布相位占自适应全步 **60.7%/71.2%/29.7%/31.5%**（最大单项），其中逐行 clone 是纯冗余（put 自带拷贝） | 单次整块 `child_buf.clone()` fresh 快照（by-reference cache 安全的防别名论证）+ 单次 `mask_buf.sum(dim=2)` 批量归约经 `record_precomputed` 入账；launch 账本 **3·L·N → L·N+2** | 发布占比降至 **45.3%/50.9%/15.7%/17.6%**；最终加速比 **2.40/2.67/2.66/2.95×** |
+| 9 | **position_embeddings 线程化 + 真实 checkpoint 端到端**（AR019） | 前三代墙钟证据全部来自合成 LLaMA-layout 模型；探针实测确证 remote 层必须收 rotary——`ManualFoldedForward` 不透传 `position_embeddings` 则 Fast-dLLM parent prefill 即 `TypeError` | `forward` 末位 `position_embeddings=(cos, sin)` 新参线程化**四构建面**（串行/批量 eager、graph 捕获静态体 by-reference 烘焙、AR017 自适应重捕获），镜像 attention_mask 契约（入口 ValueError 校验 + 重放期 `is` 对象恒一静默回退）；层接口零改动（`**kwargs` 通道）；`None` 不附加 kwarg，既有调用逐字节不变 | Fast-dLLM-v2-1.5B 真实块验证三路径 **2.44–2.62×**（p50，n=30）+ 逐位一致（maxdiff=0.0、argmax 一致率 1.0）+ 完美块二分（stable ratio 精确 = K_PROMPT/T） |
 
 ### 机理详解（按创新演进顺序）
 
@@ -137,11 +138,87 @@ AR018 以两项正交机制压缩为 L·N+2：
 
 发布内容逐位不变（对拍 UT 钉住），无新开关、无新语义——纯实现优化。
 
+#### 8. position_embeddings 线程化（AR019）：真实 checkpoint 的最后一块拼图
+
+P1-7 前四档把合成基准的 adaptive vs baseline 推进到 2.40–2.95×，但**全部证据
+来自合成 LLaMA-layout 模型**——本机探针实测确证：Fast-dLLM v2 remote attention
+第一行就解包 `cos, sin = position_embeddings`，`ManualFoldedForward` 不透传该
+参数则 parent prefill 即 `TypeError`，综合框架此前**根本无法在真实 remote-code
+checkpoint 上运行**。AR019 补上这块拼图：
+
+- **四构建面线程化**：`ManualFoldedForward.forward` 末位新参
+  `position_embeddings=(cos, sin)`（默认 `None`，向后兼容），贯穿串行 eager /
+  批量 eager / graph 捕获静态体（`FoldedGraphRunner(position_embeddings_static=...)`
+  by-reference 烘焙，镜像 mask 不 clone）/ AR017 自适应重捕获（新 runner 必收
+  钉定对象，否则 shrink/growth 后静默错算）；
+- **镜像 attention_mask 契约**：入口纯宿主元数据校验（二元组/张量/seq 维/
+  cos-sin head_dim 一致，失配 `ValueError`）；重放期 `is` 对象恒一检查
+  （换对象静默回退 eager，不告警不吞错）；成立前提明文化——position_ids 恒为
+  `arange(T)` 的常量位置方案下 cos/sin 对固定形状图是常量；
+- **层接口零改动**：`position_embeddings` 经层 `**kwargs` 通道与
+  `_recompute_all` 的 accepted/varkw 过滤天然承载，仅透传给接受它的原始层，
+  合成层自动忽略；`None` 不附加 kwarg，既有调用方**逐字节不变**（现状绿钉
+  UT 钉住）。
+
+以此为前提，Fast-dLLM-v2-1.5B 真实块验证工作负载（parent = K_PROMPT
+prompt + 32×MASK(151665) 全遮块，children = top-10 采样填充；块因果掩码
+`(q//32) ≥ (kv//32)`；pe = 模型自身 rotary_emb）给出三路径端到端墙钟：
+**2.44–2.62×（p50）+ 逐位一致（maxdiff=0.0）+ 完美块二分（stable ratio
+精确 = K_PROMPT/T，n=112/224/112 全等）**——P1-7 在真实 checkpoint 上的
+收官证据（详见[最新实验结果](#最新实验结果)）。
+
 ---
 
 ## 最新实验结果
 
-### 端到端墙钟：折叠验证 vs 裸基线（P1-7 四级演进）
+### 真实 checkpoint 端到端墙钟（AR019）：Fast-dLLM-v2-1.5B 三路径（最新头条）
+
+**工作负载**：Fast-dLLM-v2-1.5B bf16（H=1536/L=28/V=151936，remote code）真实
+块验证——parent = K_PROMPT prompt token + 32×MASK(151665) 全遮块，children =
+top-10 模型采样填充；块因果掩码 `(q//32) ≥ (kv//32)`；position_embeddings 由
+模型自身 rotary_emb 按常量位置方案计算（AR019 新接口供给）。
+
+**三路径 p50 ms**（Quadro RTX 5000 16GB，AR019 venv transformers 4.53.1，
+seed 2026，n=30 round-robin 交错；每步 = N 候选完整验证）：
+
+| 配置 | baseline eager | graph 固定 C=0.5 | graph 自适应（AR019） | adaptive vs baseline | fixed vs baseline | 容量轨迹（固定→右移） | 峰值 VRAM | H1（2σ） |
+|------|---------------|-----------------|----------------------|---------------------|-------------------|----------------------|-----------|----------|
+| T=256, N=4 | 796.148  | 450.645  | **326.890**  | **2.44×** | 1.77× | 512→160（需求 128）  | 5624 MB | inconclusive |
+| T=256, N=8 | 1393.528 | 815.931  | **532.513**  | **2.62×** | 1.71× | 1024→320（需求 256） | 7640 MB | supported |
+| T=512, N=4 | 1349.446 | 868.789  | **520.735**  | **2.59×** | 1.55× | 1024→160（需求 128） | 8949 MB | supported |
+
+**假设判定（声明与判定分离，如实呈现）**：
+
+- **H1 自适应显著快于 baseline：整体 inconclusive（2/3 配置 supported）**——
+  三配置 p50 加速比全部 2.44/2.62/2.59×，方向压倒性；(256,4) 为首个配置，
+  WDDM 热身窗方差（baseline std 497ms ≈ p50 的 62%）淹没 2σ 判定，后两配置
+  std 5–40ms 干净且 supported——与 AR017/18 同类"首配置欠功效"先例一致，
+  按预承诺单次运行纪律如实记录；
+- **H2 三路径一致：supported（3/3）**——三配置两 graph 路径 vs baseline
+  **maxdiff=0.0、argmax 一致率 1.0**（逐位一致，强于 allclose(1e-2,1e-1) 档）；
+- **H3 门控块二分：supported（3/3）**——每 (layer, branch) stable ratio
+  **精确等于** K_PROMPT/T（0.875/0.875/0.9375，n=112/224/112 全部相等，零偏差
+  ——块因果语义下 prompt 块位级稳定、mask 嵌入强发散，门控完美二分）；
+- **H4 容量右移：supported（3/3）**——捕获形状 [N,T] ✓、轨迹恰一次收缩重捕获
+  后收敛、稳态违例 0、末容量 160/320/160 ≥ 需求 128/256/128 且 < 固定
+  512/1024/1024。
+
+**侧车证据**：pe 恒一回退计数全程 **0**（脚本层 canary `is` 匹配，图路径无一次
+静默回退）；Triton bf16 gate/merge 双 kernel 因本机无 C 编译器走 PyTorch 回退
+（AR014 键记录，warmup 侧流先回退再捕获，不进捕获体）——即便如此三配置仍
+2.44–2.62×。这是**真实 checkpoint 图捕获首证**：bf16 1.5B 权重 + remote
+28 层 + 块因果掩码 + rotary 全链路 CUDA graph 捕获/重放成功。
+
+工件：`results/optimization/ar019_real_e2e_bench.json`（含权重 SHA256、venv
+标记、容量轨迹、Triton 回退键、CUPTI null 注记）；复现
+`python -m scripts.ar019_real_e2e_bench`（AR019 venv + 本地权重，详参
+[`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) 第 9 步；`--quick` 冒烟）。
+
+> 谱系：本表是 P1-7 端到端证据链的**第五档（真实 checkpoint 收官）**——其四级
+> 合成基准演进（AR015→AR016→AR017→AR018）见下表，两表同口径（三路径、
+> round-robin、p50、同型 GPU）。
+
+### 合成基准端到端墙钟（AR018）：折叠验证 vs 裸基线（P1-7 四级演进）
 
 **最终结果**（合成 LLaMA-layout，V=1000，T=512，Quadro RTX 5000 16GB，
 WDDM，驱动 556.18，seed 2026，n=30 round-robin 交错，p50 ms；
@@ -156,7 +233,8 @@ WDDM，驱动 556.18，seed 2026，n=30 round-robin 交错，p50 ms；
 
 > 演进链：AR015 批量前向（eager 串行 → 批量 2.0–5.6×）→ AR016 批量图捕获
 > （vs baseline 1.37–1.77×，方向全正）→ AR017 自适应容量（深几何 2.30/2.46×
-> decisively）→ AR018 发布压缩（四配置全面抬升，小几何从 ~1.6× 抬到 ~2.5×）。
+> decisively）→ AR018 发布压缩（四配置全面抬升，小几何从 ~1.6× 抬到 ~2.5×）
+> → AR019 真实 checkpoint 复测（Fast-dLLM-v2-1.5B 2.44–2.62×，逐位一致）。
 > 全部配置三路径 argmax 精确一致 + 自适应 vs 固定 allclose 1e-4；每分支
 > stable_ratio 与独立逐行重算逐值相等。
 
@@ -260,7 +338,8 @@ T=8192, H=4096 时融合 Triton kernel 达 **3.43×**（逐位精确，仅大形
 
 | 场景 | 配置 |
 |---|---|
-| 多分支验证（同父等长候选） | `ManualFoldedForward(use_cuda_graph=True, graph_adaptive_capacity=True)`——批量图路径，2.4–2.95× vs 裸基线 |
+| 多分支验证（同父等长候选） | `ManualFoldedForward(use_cuda_graph=True, graph_adaptive_capacity=True)`——批量图路径，真实 checkpoint **2.44–2.62×**（AR019）/ 合成 2.40–2.95×（AR018）vs 裸基线 |
+| remote-code 模型（Fast-dLLM v2 等） | 供给 `position_embeddings=(cos, sin)`（AR019 新参，模型自身 rotary_emb 产出）；transformers 4.53.1 venv（remote code 版本钉住） |
 | 长序列 / 大 batch（B×T ≥ 2048） | 追加 `use_split_layers: true`；T ≥ 8192 时融合 kernel 自动启用 |
 | 保真敏感复用 | `AdaptiveQuantileGate(target_stable_ratio=...)`；Dream 仅折叠后 1/3 层 |
 | 采样质量优先 | τ ≥ 0.99 或自适应目标 0.9–0.95；Fast-dLLM 容忍跨步折叠 |
@@ -286,16 +365,20 @@ python scripts/opt2_shape_bench.py --out results/optimization/opt2/shape
 python scripts/opt3_adaptive_bench.py --model dream --out results/optimization/opt3/dream
 python scripts/opt4_fused_bench.py --out results/optimization/opt4
 
-# 端到端墙钟（P1-7 四级演进）
+# 端到端墙钟（P1-7 五档演进）
 python -m scripts.ar016_batched_bench          # 批量图首证
 python -m scripts.ar017_adaptive_bench         # 自适应容量
-python -m scripts.ar018_publish_bench          # 发布压缩（最终结果）
+python -m scripts.ar018_publish_bench          # 发布压缩（合成最终结果）
 python -m scripts.ar018_publish_bench --quick  # 冒烟
+
+# 真实 checkpoint 端到端（AR019，P1-7 第五档收官；AR019 venv + 本地权重）
+<venv目录>\Scripts\python -m scripts.ar019_real_e2e_bench \
+    --model-path <本地权重目录> --reps 30 --warmup 8
 ```
 
 完整报告：[`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md)、
 [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md)、
-[`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md)（全部 25 个 AR 的
+[`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md)（全部 26 个 AR 的
 机制与证据链）、[`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md)。
 
 ---
@@ -305,10 +388,12 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
 | 特性 | 说明 |
 |------|------|
 | **Branch Folding 引擎** | `ManualFoldedForward`（推荐路径）零侵入包装任意 Transformer 栈，逐 token 激活复用；`FoldedModel` 仍可用（已弃用） |
+| **position_embeddings 线程化**（AR019） | `position_embeddings=(cos, sin)` 新参贯穿四构建面（含 graph 烘焙与自适应重捕获），remote-code 模型（Fast-dLLM v2）可跑；`None` 时既有调用逐字节不变 |
 | **批量分支验证**（AR015） | `branch_ids` 复数 kwarg：同父等长候选单次批量前向，其余形态自动串行回退 |
 | **CUDA Graph 验证**（AR002/AR016） | `use_cuda_graph=True` 固定形状捕获 + 独立批量 runner + 重放前父缓存再校验；变长负载静默 eager 回退 |
 | **自适应发散容量**（AR017） | `graph_adaptive_capacity=True`：观测驱动重捕获状态机，容量跟随实测需求，失败退化永不劣于现状 |
 | **压缩发布路径**（AR018） | 单次整块快照 + 批量稳定度归约（launch 3·L·N → L·N+2），发布内容逐位不变，零新增同步 |
+| **真实 checkpoint 端到端**（AR019） | Fast-dLLM-v2-1.5B 真实块验证三路径 2.44–2.62×（p50），逐位一致 + 完美块二分 |
 | **前缀折叠**（AR003/AR007） | 变长生成步前缀对齐折叠；父比子长时截断前缀复用，门控作语义安全网 |
 | **真接受语义**（AR004/AR006） | 同位置约定的接受率/log-prob 计量；`model_draft` 模式接入独立草稿模型（论文级指标） |
 | **向量化激活缓存** | 连续缓冲 + `index_select`；put/get 快 12–183× / 30–429× |
@@ -338,6 +423,10 @@ pip install -r requirements-bench.txt  # 评测后端
 pip install -r requirements-dev.txt    # 开发工具
 pip install -e .                       # 可编辑安装
 ```
+
+> remote-code diffusion LM（Fast-dLLM v2）钉住 `transformers==4.53.1`——主环境
+> 不可降级时按 [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) 第 9 步建
+> AR019 venv（`--system-site-packages` 继承 torch）。
 
 ---
 
@@ -412,9 +501,29 @@ logits = mff(
     branch_ids=["c0", "c1", "c2", "c3"],
     parent_branch_id="parent",
 )
+
+# remote-code 模型（Fast-dLLM v2 / Qwen 系）：层需要 rotary（AR019）——
+# 供给 position_embeddings=(cos, sin)（模型自身 rotary_emb 产出；
+# arange(T) 常量位置方案；重放期须为捕获时同一对象）
+logits = mff(
+    stacked_candidates,
+    branch_id=None,
+    branch_ids=["c0", "c1", "c2", "c3"],
+    parent_branch_id="parent",
+    attention_mask=block_causal_mask,        # 块因果掩码 (q//32) >= (kv//32)
+    position_embeddings=(cos, sin),          # AR019：None 则不附加，现状不变
+)
 ```
 
-### 4. 端到端折叠生成
+### 4. 真实 checkpoint 端到端基准（AR019 venv + 本地权重）
+
+```bash
+# 详参 docs/RERUN_CHECKLIST.md 第 9 步（权重 curl 下载 + venv 创建）
+<venv目录>\Scripts\python -m scripts.ar019_real_e2e_bench \
+    --model-path <本地权重目录> --reps 30 --warmup 8   # --quick 冒烟
+```
+
+### 5. 端到端折叠生成
 
 ```python
 from actfold.speculative.folded_generation import folded_generate
@@ -430,7 +539,7 @@ print(result.stable_ratio)    # 实测逐层平均 stable ratio
 print(result.acceptance_rate) # 真接受率（AR004）
 ```
 
-### 5. 运行评测
+### 6. 运行评测
 
 ```bash
 bash scripts/run_real_model_benchmark.sh
@@ -453,7 +562,7 @@ bash scripts/run_benchmarks.sh actfold/configs/real_model_example.yaml
             ┌──────────▼──────────┐
             │   Parent Branch     │
             └──────────┬──────────┘
-                     │ │ │ │  N 个候选
+                      │ │ │ │  N 个候选
           ┌─────────▼──▼─▼──▼──────────┐
           │   ActFold 批量验证          │
           │  （AR015 批量 + AR016 图）  │
@@ -477,6 +586,9 @@ bash scripts/run_benchmarks.sh actfold/configs/real_model_example.yaml
                         │
              ┌──────────▼──────────┐
              │   Accepted Branch   │
+             │（AR019 真实 checkpoint│
+             │  position_embeddings │
+             │  线程化全链路贯通）    │
              └─────────────────────┘
 ```
 
@@ -545,7 +657,8 @@ bash scripts/run_ablation.sh --synthetic
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
 - **mypy**（`--ignore-missing-imports`，66 文件）clean
-- **pytest** 快速套件 **855 passed**（CUDA 实测，含逐位对拍与 spy 计数钉）
+- **pytest** 快速套件 **864 passed**（855 基线 + AR019 UT-1901~1908，
+  CUDA 实测，含逐位对拍与 spy 计数钉；3 skipped）
 - 每个机制的验收面：Red/Green 分离 TDD + **mutation 测试**（删机制必红，
   SHA256 逐字节还原）+ 跨工件墙钟基准（声明与判定分离，2σ 判据，
   inconclusive 诚实照收）
@@ -567,30 +680,41 @@ python demo.py
 - [`docs/ALGORITHM.md`](docs/ALGORITHM.md) — Branch Folding 形式化描述
 - [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — 复现工作流
 - [`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md) — 两阶段深度实验报告（诊断 + 优化，真实模型实测）
-- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **25 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
+- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **26 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令，第 9 步 = AR019）
 - [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR018）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR019）
 
 ---
 
 ## 当前限制与路线图
 
-1. **端到端墙钟数字来自合成 LLaMA-layout 模型**。2.40–2.95× 的四配置矩阵
-   在真实 checkpoint（LLaDA-8B / Dream-7B / Fast-dLLM）上的端到端复测是
-   下一步主目标；真实模型两阶段实验（TFLOPs 削减与逐层结论）已在
-   [最新实验结果](#最新实验结果) 覆盖。
-2. **批量路径要求同父、等长、parent-batch==1**。变长/多父批量仍是串行回退
-   （变长步已在前缀折叠下获益，AR003/AR007）；多祖先激活树是路线图主体。
-3. **小几何剩余宿主开销**。发布压缩后小几何发布相位仍占 45–51%——剩余主项
-   是 L·N 次 put 拷贝带宽与 Python 循环开销；(256,8,4) 级小形状的 2σ 展布
-   检验受 WDDM 限制（效应 delta 稳定方向正）。
-4. **采样质量是模型敏感的**。Fast-dLLM 跨步折叠 token 一致率 1.000；
+1. **P1-7 五档证据链全部收官，剩余为外延与工程化**。批量前向（AR015）→
+   批量图捕获（AR016）→ 自适应容量（AR017）→ 发布压缩（AR018）→ 真实
+   checkpoint 复测（AR019）：合成基准 2.40–2.95×，Fast-dLLM-v2-1.5B
+   **2.44–2.62×**（逐位一致 + 完美块二分）。唯一保留判定：AR019 (256,4)
+   首配置 H1 因 WDDM 热身方差欠功效（加速比方向压倒性），按预承诺单次运行
+   纪律如实记录为 inconclusive。
+2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
+   图缓冲不可行——机制对其同样适用，待更大 GPU 按同法扩展；真实模型两阶段
+   实验（TFLOPs 削减与逐层结论）已在[最新实验结果](#最新实验结果)覆盖。
+3. **`FastDLLMAdapter` 生成回路接线**：AR019 基准直接构造
+   `ManualFoldedForward`（沿 AR016–18 先例）；把 `position_embeddings`
+   供给接入 adapter 的端到端生成/评测回路是下一独立条目。
+4. **批量路径要求同父、等长、parent-batch==1**。变长/多父批量仍是串行回退
+   （变长步已在前缀折叠下获益，AR003/AR007）；多祖先激活树是路线图主体
+   （AR016 遗留）。
+5. **小几何首配置 WDDM 方差**。锁时钟需管理员权限；(256,4) 级 2σ 检验
+   欠功效先例在案（AR017/18/19 三代同类，效应 delta 稳定方向正）；合成小几何
+   发布相位剩余主项是 L·N 次 put 拷贝带宽——cache 批量 put API 为
+   AR018 §1.3 排除决策的延续项。
+6. **采样质量是模型敏感的**。Fast-dLLM 跨步折叠 token 一致率 1.000；
    LLaDA/Dream 在 stable≈0.99 时为 0.71–0.73（提高 τ 或用自适应目标缓解）。
-5. **专用 draft 架构（Medusa/Eagle）为 tier 2**。`model_draft` 已支持任意
+7. **专用 draft 架构（Medusa/Eagle）为 tier 2**。`model_draft` 已支持任意
    独立草稿模型的论文级接受率计量（AR006）。
-6. **逐模型 YAML 是模板**——请填入实际 Hugging Face 标识或本地 checkpoint 路径。
+8. **逐模型 YAML 是模板**——请填入实际 Hugging Face 标识或本地 checkpoint 路径。
 
 ---
 
@@ -600,10 +724,11 @@ python demo.py
 |------|------|------|
 | `RuntimeError: A real tokenizer is required...` | 评测路径缺 tokenizer | 传入带 tokenizer 的模型或用 `--synthetic` |
 | `TypeError: Can't instantiate abstract class ... with abstract method embed` | 自定义 `DiffusionLLM` 缺 `embed()` | 实现 `embed(tokens)` 返回 `[B, T, H]` |
-| CUDA 上未用 Triton kernel | 未装 `triton` 或 hidden dim 不被 128 整除 | Linux/WSL 安装 `triton>=2.0`；PyTorch 回退恒正确 |
+| remote 模型前向 `TypeError: cannot unpack non-iterable NoneType` | remote attention 层需要 rotary（`cos, sin = position_embeddings`）而调用未供给 | 经 `ManualFoldedForward(..., position_embeddings=(cos, sin))` 供给（AR019；模型自身 rotary_emb 产出） |
+| CUDA 上未用 Triton kernel | 未装 `triton` / 无 C 编译器（bf16 键记录） / hidden dim 不被 128 整除 | Linux/WSL 安装 `triton>=2.0`；PyTorch 回退恒正确（AR014 键记录） |
 | `evalplus` 在 Windows 失败 | 沙箱依赖 Unix `resource` 模块 | WSL 内运行 evalplus，或 Windows 用 lm-eval |
 | 慢测试超时 | 真实后端需加载模型与数据集 | 快速套件 `-m "not slow"`，慢测试单独跑 |
-| CUDA Graph 不生效 | 形状与捕获不一致 / attention mask 对象不同 / 非 cosine `SimilarityGate` / 挂了 `FoldingScheduler` | 图路径前置条件见 AGENTS #37；变长步会静默 eager 回退（前缀折叠仍生效） |
+| CUDA Graph 不生效 | 形状与捕获不一致 / attention mask 或 position_embeddings 对象不同 / 非 cosine `SimilarityGate` / 挂了 `FoldingScheduler` | 图路径前置条件见 AGENTS #37（AR019 起 pe 亦须同对象）；变长步会静默 eager 回退（前缀折叠仍生效） |
 
 ---
 

@@ -128,7 +128,12 @@ class FoldedTransformerLayer(nn.Module):
                 ``i`` of ``hidden_states`` belongs to ``branch_ids[i]`` and
                 every branch shares ``parent_branch_id`` (which must be
                 cached at batch 1). Mutually exclusive with ``branch_id``.
-            **kwargs: Extra arguments forwarded to ``original_layer``.
+            **kwargs: Extra arguments forwarded to ``original_layer``
+                (filtered to its signature). This channel carries
+                ``position_embeddings`` (AR019): a rotary ``(cos, sin)``
+                tuple supplied by ``ManualFoldedForward.forward`` reaches
+                layers that accept it and is silently dropped by synthetic
+                layers that do not (no layer-interface change).
 
         Returns:
             Updated hidden states ``[batch, seq_len, hidden_dim]``.

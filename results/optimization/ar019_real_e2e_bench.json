@@ -1,0 +1,470 @@
+{
+  "configs": [
+    {
+      "adaptive_state": {
+        "capacity_trajectory": [
+          512,
+          512,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160
+        ],
+        "divergence_p50": 128,
+        "final_capacity": 160,
+        "fixed_capacity": 512,
+        "observed_max_divergence": 128,
+        "recapture_count": 1,
+        "recapture_events": [
+          {
+            "from": 512,
+            "kind": "recapture",
+            "observe": 3,
+            "target": 160,
+            "trigger": "shrink"
+          }
+        ],
+        "steady_state_violations": 0,
+        "trajectory_converged": true
+      },
+      "budget_violations": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "expected_stable_ratio": 0.875,
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_adaptive_vs_baseline": "inconclusive",
+      "h2_parity": "supported",
+      "h3_block_split": "supported",
+      "h4_capacity_tracking": "supported",
+      "k_prompt": 224,
+      "num_candidates": 4,
+      "num_tokens": 1024,
+      "parity": {
+        "graph_adaptive": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        },
+        "graph_fixed": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        }
+      },
+      "pe_identity_mismatches": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "peak_vram_mb": 5623.9,
+      "seq_len": 256,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.4355,
+        "adaptive_vs_fixed": 1.3786,
+        "fixed_vs_baseline": 1.7667
+      },
+      "stable_ratios": {
+        "graph_adaptive": {
+          "max": 0.875,
+          "mean": 0.875,
+          "min": 0.875,
+          "n": 112
+        },
+        "graph_fixed": {
+          "max": 0.875,
+          "mean": 0.875,
+          "min": 0.875,
+          "n": 112
+        }
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 1185.6331833289005,
+          "n": 30,
+          "p50": 796.1477499920875,
+          "std": 497.3134435814239
+        },
+        "graph_adaptive": {
+          "mean": 468.0690066578488,
+          "n": 30,
+          "p50": 326.8899999675341,
+          "std": 197.12919044853126
+        },
+        "graph_fixed": {
+          "mean": 681.8425166692274,
+          "n": 30,
+          "p50": 450.64500003354624,
+          "std": 291.07459654821963
+        }
+      }
+    },
+    {
+      "adaptive_state": {
+        "capacity_trajectory": [
+          1024,
+          1024,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320,
+          320
+        ],
+        "divergence_p50": 256,
+        "final_capacity": 320,
+        "fixed_capacity": 1024,
+        "observed_max_divergence": 256,
+        "recapture_count": 1,
+        "recapture_events": [
+          {
+            "from": 1024,
+            "kind": "recapture",
+            "observe": 3,
+            "target": 320,
+            "trigger": "shrink"
+          }
+        ],
+        "steady_state_violations": 0,
+        "trajectory_converged": true
+      },
+      "budget_violations": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "expected_stable_ratio": 0.875,
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_adaptive_vs_baseline": "supported",
+      "h2_parity": "supported",
+      "h3_block_split": "supported",
+      "h4_capacity_tracking": "supported",
+      "k_prompt": 224,
+      "num_candidates": 8,
+      "num_tokens": 2048,
+      "parity": {
+        "graph_adaptive": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        },
+        "graph_fixed": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        }
+      },
+      "pe_identity_mismatches": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "peak_vram_mb": 7639.7,
+      "seq_len": 256,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.6169,
+        "adaptive_vs_fixed": 1.5322,
+        "fixed_vs_baseline": 1.7079
+      },
+      "stable_ratios": {
+        "graph_adaptive": {
+          "max": 0.875,
+          "mean": 0.875,
+          "min": 0.875,
+          "n": 224
+        },
+        "graph_fixed": {
+          "max": 0.875,
+          "mean": 0.875,
+          "min": 0.875,
+          "n": 224
+        }
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 1413.6164233166103,
+          "n": 30,
+          "p50": 1393.5275499825366,
+          "std": 40.54353436736498
+        },
+        "graph_adaptive": {
+          "mean": 541.0844433315409,
+          "n": 30,
+          "p50": 532.5129500124604,
+          "std": 17.430444045992225
+        },
+        "graph_fixed": {
+          "mean": 828.2726466655731,
+          "n": 30,
+          "p50": 815.9309499897063,
+          "std": 22.78008974249365
+        }
+      }
+    },
+    {
+      "adaptive_state": {
+        "capacity_trajectory": [
+          1024,
+          1024,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160,
+          160
+        ],
+        "divergence_p50": 128,
+        "final_capacity": 160,
+        "fixed_capacity": 1024,
+        "observed_max_divergence": 128,
+        "recapture_count": 1,
+        "recapture_events": [
+          {
+            "from": 1024,
+            "kind": "recapture",
+            "observe": 3,
+            "target": 160,
+            "trigger": "shrink"
+          }
+        ],
+        "steady_state_violations": 0,
+        "trajectory_converged": true
+      },
+      "budget_violations": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "expected_stable_ratio": 0.9375,
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_adaptive_vs_baseline": "supported",
+      "h2_parity": "supported",
+      "h3_block_split": "supported",
+      "h4_capacity_tracking": "supported",
+      "k_prompt": 480,
+      "num_candidates": 4,
+      "num_tokens": 2048,
+      "parity": {
+        "graph_adaptive": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        },
+        "graph_fixed": {
+          "allclose_rtol1e-2_atol1e-1": true,
+          "argmax_agreement": 1.0,
+          "maxdiff": 0.0
+        }
+      },
+      "pe_identity_mismatches": {
+        "graph_adaptive": 0,
+        "graph_fixed": 0
+      },
+      "peak_vram_mb": 8948.8,
+      "seq_len": 512,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.5914,
+        "adaptive_vs_fixed": 1.6684,
+        "fixed_vs_baseline": 1.5532
+      },
+      "stable_ratios": {
+        "graph_adaptive": {
+          "max": 0.9375,
+          "mean": 0.9375,
+          "min": 0.9375,
+          "n": 112
+        },
+        "graph_fixed": {
+          "max": 0.9375,
+          "mean": 0.9375,
+          "min": 0.9375,
+          "n": 112
+        }
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 1349.4618499923188,
+          "n": 30,
+          "p50": 1349.4456000626087,
+          "std": 5.381225114048033
+        },
+        "graph_adaptive": {
+          "mean": 520.6345966357427,
+          "n": 30,
+          "p50": 520.735349971801,
+          "std": 1.9142152751218446
+        },
+        "graph_fixed": {
+          "mean": 868.4940533324456,
+          "n": 30,
+          "p50": 868.7887999694794,
+          "std": 4.388906948233335
+        }
+      }
+    }
+  ],
+  "hypotheses_declared": {
+    "H1": "graph_adaptive significantly faster than baseline_eager on the real checkpoint (decisive P1-7 end-to-end answer)",
+    "H2": "all paths agree with the baseline: exact argmax agreement AND allclose(rtol=1e-2, atol=1e-1)",
+    "H3": "the gate splits along block lines: stable mean within 0.02 of K_PROMPT/T and per-(layer,branch) min at or above K_PROMPT/T - 0.02",
+    "H4": "adaptive capacity tracks the demand: capture at [N, T], trajectory converged, zero steady-state violations, final capacity >= max divergence and < fixed capacity (right-sized)"
+  },
+  "hypotheses_verdicts": {
+    "H1": "inconclusive",
+    "H2": "supported",
+    "H3": "supported",
+    "H4": "supported"
+  },
+  "meta": {
+    "adaptive_config": {
+      "grow_factor": 1.25,
+      "max_recaptures": 8,
+      "min_recapture_interval": 2,
+      "shrink_patience": 3,
+      "shrink_threshold": 0.5
+    },
+    "capacity_ratio": 0.5,
+    "command": "python -m scripts.ar019_real_e2e_bench --model-path C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "gpu_driver_version": "556.18",
+    "gpu_driver_version_note": "queried via nvidia-smi (AR016 Minor-2 closure)",
+    "interleaving": "round-robin per repetition: baseline_eager -> graph_fixed -> graph_adaptive",
+    "kernel_count": null,
+    "kernel_count_note": "this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel counts omitted rather than fabricated - rerun on a CUPTI-capable host to record them",
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + reps + p50 + per-rep round-robin",
+    "reps": 30,
+    "run_date_utc": "2026-10-14T06:26:03.147646+00:00",
+    "seed": 2026,
+    "tau": 0.95,
+    "timing_method": "time.perf_counter around torch.cuda.synchronize() boundaries (host-side prefill/readback/publish included; CUDA-event timing would exclude them)",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "triton_failed_keys": [
+      "('gate', 'torch.bfloat16', 2048)",
+      "('merge', 'torch.bfloat16', 2048)"
+    ],
+    "venv": true,
+    "warmup": 8,
+    "warmup_note": "warmup covers both captures plus the adaptation schedule (shrink patience 3 + throttle interval 2); the timed steady state reflects the adapted capacity",
+    "workload": {
+      "block": 32,
+      "mask_formula": "(q // 32) >= (kv // 32) [bool T x T, equals the remote eval_block_diff_mask element-wise]",
+      "mask_id": 151665,
+      "prompt_note": "fixed text, tokenized once, truncated or cycle-filled to K_PROMPT per config",
+      "workload": "parent = K_PROMPT prompt tokens + one all-mask block; children = top-10 model-sampled block fillings"
+    }
+  },
+  "p1_7_real_checkpoint_verdict": {
+    "note": "recorded either way; per-config verdicts and speedups in configs[].h1_adaptive_vs_baseline / speedups_p50",
+    "overall": "inconclusive",
+    "question": "is the folded framework faster than the raw baseline on a real checkpoint end to end (P1-7 rung 5)?"
+  }
+}

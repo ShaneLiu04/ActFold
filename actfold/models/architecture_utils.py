@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
 
+import torch
 import torch.nn as nn
 
 _T = TypeVar("_T", bound=nn.Module)
@@ -454,6 +455,7 @@ class ManualFoldedForward(nn.Module):
         # the eager path.
         self.graph_runner: Any = None
         self._graph_mask: Any = None
+        self._graph_pe: Any = None
         self._graph_degraded_warned = False
         self._graph_shape_warned = False
         self._graph_budget_warned = False
@@ -466,6 +468,7 @@ class ManualFoldedForward(nn.Module):
         # the shape/budget/capture-failed flags below are per-side.
         self.graph_runner_batched: Any = None
         self._graph_batched_mask: Any = None
+        self._graph_batched_pe: Any = None
         self._graph_batched_shape_warned = False
         self._graph_batched_budget_warned = False
         self._graph_batched_capture_failed = False
@@ -504,6 +507,7 @@ class ManualFoldedForward(nn.Module):
         attention_mask: Any | None = None,
         step_idx: int = 0,
         branch_ids: Sequence[str] | None = None,
+        position_embeddings: Any | None = None,
     ) -> Any:
         """Run a folded forward pass and return logits or hidden states.
 
@@ -521,11 +525,55 @@ class ManualFoldedForward(nn.Module):
                 graph path when ``use_cuda_graph`` is set and every batched
                 precondition holds (AR016); any miss falls back to the
                 batched eager body below.
+            position_embeddings: Optional rotary ``(cos, sin)`` tuple
+                (AR019) produced by the model's own ``rotary_emb`` under
+                the constant-position scheme (``arange(T)``, no KV cache).
+                Threaded through every construction face — serial/batched
+                eager (forwarded as a layer kwarg), the CUDA-graph capture
+                (baked by reference into the static body), and the adaptive
+                re-capture. The graph path additionally requires the SAME
+                tuple object on every replay after capture (``is`` identity,
+                mirroring the ``attention_mask`` contract); a different
+                object silently falls back to eager. ``None`` (the default)
+                attaches no kwarg at all, so existing callers are
+                byte-for-byte unchanged.
 
         Returns:
             Output of the language modeling head, typically logits
             (``[N, seq_len, vocab]`` for batched calls).
+
+        Raises:
+            ValueError: If ``position_embeddings`` is not ``None`` and is
+                not a 2-tuple of tensors whose seq dimension
+                (``shape[-2]``) matches ``tokens``' sequence length and
+                whose ``cos``/``sin`` head dimensions (``shape[-1]``)
+                agree (host-side metadata only, no device sync).
         """
+        if position_embeddings is not None:
+            if (
+                not isinstance(position_embeddings, tuple)
+                or len(position_embeddings) != 2
+                or not isinstance(position_embeddings[0], torch.Tensor)
+                or not isinstance(position_embeddings[1], torch.Tensor)
+            ):
+                raise ValueError(
+                    "position_embeddings must be None or a (cos, sin) tuple "
+                    f"of two torch.Tensors; got {position_embeddings!r}."
+                )
+            cos, sin = position_embeddings
+            if (
+                cos.dim() < 2
+                or sin.dim() < 2
+                or cos.shape[-2] != sin.shape[-2]
+                or cos.shape[-2] != tokens.shape[-1]
+                or cos.shape[-1] != sin.shape[-1]
+            ):
+                raise ValueError(
+                    "position_embeddings seq dimension must match tokens "
+                    f"({tuple(tokens.shape)}) and cos/sin head dimensions "
+                    f"must agree; got cos {tuple(cos.shape)}, "
+                    f"sin {tuple(sin.shape)}."
+                )
         if branch_ids is not None:
             if branch_id is not None:
                 raise ValueError(
@@ -539,7 +587,12 @@ class ManualFoldedForward(nn.Module):
             # swallows or alters the eager contract).
             if self.use_cuda_graph:
                 graph_out = self._graph_forward_batched_or_none(
-                    tokens, branch_ids, parent_branch_id, attention_mask, step_idx
+                    tokens,
+                    branch_ids,
+                    parent_branch_id,
+                    attention_mask,
+                    step_idx,
+                    position_embeddings,
                 )
                 if graph_out is not None:
                     return graph_out
@@ -548,13 +601,29 @@ class ManualFoldedForward(nn.Module):
         # back to the eager body below.
         elif self.use_cuda_graph and branch_id is not None:
             graph_out = self._graph_forward_or_none(
-                tokens, branch_id, parent_branch_id, attention_mask, step_idx
+                tokens,
+                branch_id,
+                parent_branch_id,
+                attention_mask,
+                step_idx,
+                position_embeddings,
             )
             if graph_out is not None:
                 return graph_out
         emb_fn: Callable[..., Any] = self.profile.embed_module
         x = emb_fn(tokens)
 
+        # AR019: attach the rotary embeddings as a layer kwarg ONLY when
+        # supplied — ``None`` adds no kwarg so the eager path stays
+        # byte-for-byte identical for existing callers. The wrapped layers'
+        # ``**kwargs`` channel carries it to ``_recompute_all``, which
+        # filters it against each original layer's signature (real rotary
+        # layers receive it; synthetic layers without the parameter drop it).
+        pe_kwargs: dict[str, Any] = (
+            {"position_embeddings": position_embeddings}
+            if position_embeddings is not None
+            else {}
+        )
         for wrapped in self._wrapped_layers:
             x = wrapped(
                 x,
@@ -563,6 +632,7 @@ class ManualFoldedForward(nn.Module):
                 attention_mask=attention_mask,
                 step_idx=step_idx,
                 branch_ids=branch_ids,
+                **pe_kwargs,
             )
 
         # Apply the final normalization (e.g. LLaMA ``model.norm``) before the
@@ -629,6 +699,7 @@ class ManualFoldedForward(nn.Module):
         parent_branch_id: str | None,
         attention_mask: Any,
         step_idx: int,
+        position_embeddings: Any | None = None,
     ) -> Any:
         """Try the CUDA graph fast path; return logits or ``None`` for eager.
 
@@ -646,7 +717,10 @@ class ManualFoldedForward(nn.Module):
         evaluation before the eager fallback, and a successful publish
         runs the shrink evaluation after the row-sliced publishes (the
         capacity swap never precedes the publish, which consumes the old
-        runner's static buffers).
+        runner's static buffers). AR019: ``position_embeddings`` mirrors
+        the mask contract — baked by reference at capture (a non-CUDA
+        tuple silently refuses the capture) and required to be the SAME
+        object on every replay; any mismatch silently uses eager.
         """
         from actfold.core.similarity_gate import SimilarityGate
 
@@ -692,6 +766,8 @@ class ManualFoldedForward(nn.Module):
                 return None
             if attention_mask is not None and not attention_mask.is_cuda:
                 return None
+            if position_embeddings is not None and not position_embeddings[0].is_cuda:
+                return None
             from actfold.core.cuda_graph import FoldedGraphRunner
 
             new_runner = FoldedGraphRunner(
@@ -704,6 +780,7 @@ class ManualFoldedForward(nn.Module):
                 gate_eps=self.gate.eps,
                 capacity_ratio=self.graph_capacity_ratio,
                 attention_mask_static=attention_mask,
+                position_embeddings_static=position_embeddings,
             )
             try:
                 new_runner.capture(tokens, branch_id, parent_branch_id)
@@ -713,10 +790,15 @@ class ManualFoldedForward(nn.Module):
                 return None
             self.graph_runner = new_runner
             self._graph_mask = attention_mask
+            self._graph_pe = position_embeddings
             runner = new_runner
-        elif attention_mask is not self._graph_mask:
-            # The captured graph bakes the attention mask in; a different
-            # mask object must not silently reuse it.
+        elif (
+            attention_mask is not self._graph_mask
+            or position_embeddings is not self._graph_pe
+        ):
+            # The captured graph bakes the attention mask and the rotary
+            # embeddings in; a different object must not silently reuse
+            # either (AR019 mirrors the mask identity contract for pe).
             return None
 
         logits = runner.replay(tokens, parent_branch_id, branch_id)
@@ -784,6 +866,7 @@ class ManualFoldedForward(nn.Module):
         parent_branch_id: str | None,
         attention_mask: Any,
         step_idx: int,
+        position_embeddings: Any | None = None,
     ) -> Any:
         """Try the batched CUDA graph fast path; return logits or ``None``.
 
@@ -849,6 +932,8 @@ class ManualFoldedForward(nn.Module):
                 return None
             if attention_mask is not None and not attention_mask.is_cuda:
                 return None
+            if position_embeddings is not None and not position_embeddings[0].is_cuda:
+                return None
             from actfold.core.cuda_graph import FoldedGraphRunner
 
             new_runner = FoldedGraphRunner(
@@ -861,6 +946,7 @@ class ManualFoldedForward(nn.Module):
                 gate_eps=self.gate.eps,
                 capacity_ratio=self.graph_capacity_ratio,
                 attention_mask_static=attention_mask,
+                position_embeddings_static=position_embeddings,
             )
             try:
                 new_runner.capture(tokens, branch_ids[0], parent_branch_id)
@@ -870,10 +956,15 @@ class ManualFoldedForward(nn.Module):
                 return None
             self.graph_runner_batched = new_runner
             self._graph_batched_mask = attention_mask
+            self._graph_batched_pe = position_embeddings
             runner = new_runner
-        elif attention_mask is not self._graph_batched_mask:
-            # The captured graph bakes the attention mask in; a different
-            # mask object must not silently reuse it.
+        elif (
+            attention_mask is not self._graph_batched_mask
+            or position_embeddings is not self._graph_batched_pe
+        ):
+            # The captured graph bakes the attention mask and the rotary
+            # embeddings in; a different object must not silently reuse
+            # either (AR019 mirrors the mask identity contract for pe).
             return None
 
         # Replay-time parent re-validation (AR016 Major-1): re-check before
@@ -909,6 +1000,7 @@ class ManualFoldedForward(nn.Module):
                 parent_branch_id,
                 attention_mask,
                 exceeded=True,
+                position_embeddings=position_embeddings,
             )
             return None
         self._publish_graph_children(
@@ -924,6 +1016,7 @@ class ManualFoldedForward(nn.Module):
             parent_branch_id,
             attention_mask,
             exceeded=False,
+            position_embeddings=position_embeddings,
         )
         return logits.clone()
 
@@ -1041,6 +1134,7 @@ class ManualFoldedForward(nn.Module):
         parent_branch_id: str,
         attention_mask: Any,
         exceeded: bool,
+        position_embeddings: Any | None = None,
     ) -> None:
         """Run the adaptive-capacity policy hook (AR017; no-op when off).
 
@@ -1052,7 +1146,11 @@ class ManualFoldedForward(nn.Module):
         parent cache) never reach this hook, so the staged divergences are
         always fresh here. A ``"recapture"`` verdict re-captures through
         :meth:`_recapture_batched_runner`; a ``"retired"`` verdict warns
-        exactly once (the capacity stays fixed from here on).
+        exactly once (the capacity stays fixed from here on). AR019: the
+        caller's ``position_embeddings`` is threaded into the re-capture;
+        both hooks fire only on replay paths where the pe identity check
+        has already passed, so the re-capture always receives the pinned
+        object.
         """
         policy = self._graph_adaptive_policy
         if policy is None:
@@ -1075,6 +1173,7 @@ class ManualFoldedForward(nn.Module):
                 branch_ids,
                 parent_branch_id,
                 attention_mask,
+                position_embeddings=position_embeddings,
             )
         elif action.kind == "retired":
             if not self._graph_adaptive_retire_warned:
@@ -1094,6 +1193,7 @@ class ManualFoldedForward(nn.Module):
         branch_ids: Sequence[str],
         parent_branch_id: str,
         attention_mask: Any,
+        position_embeddings: Any | None = None,
     ) -> None:
         """Re-capture the batched runner at a new capacity (AR017).
 
@@ -1110,7 +1210,9 @@ class ManualFoldedForward(nn.Module):
         ``{target, target + 1}``), so a shrink at ``target == C - 1`` may
         collapse back to the current capacity -- skip instead of paying for
         a pointless capture. Exact for power-of-two token totals (design
-        SS4.4; all in-scope graph geometries).
+        SS4.4; all in-scope graph geometries). AR019: the re-captured
+        runner bakes the caller's pinned ``position_embeddings`` by
+        reference and re-pins it on success (face 4 of the pe threading).
         """
         num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
         new_ratio = min(1.0, target_capacity / num_tokens)
@@ -1131,6 +1233,7 @@ class ManualFoldedForward(nn.Module):
             gate_eps=self.gate.eps,
             capacity_ratio=new_ratio,
             attention_mask_static=attention_mask,
+            position_embeddings_static=position_embeddings,
         )
         try:
             new_runner.capture(tokens, branch_ids[0], parent_branch_id)
@@ -1149,6 +1252,7 @@ class ManualFoldedForward(nn.Module):
             return
         self.graph_runner_batched = new_runner
         self._graph_batched_mask = attention_mask
+        self._graph_batched_pe = position_embeddings
         policy = self._graph_adaptive_policy
         if policy is not None:
             policy.note_recaptured()

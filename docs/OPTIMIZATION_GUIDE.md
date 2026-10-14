@@ -629,6 +629,37 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 
 ---
 
+## 第二十六部分 AR019 真实 checkpoint 端到端墙钟：position_embeddings 线程化 + Fast-dLLM-v2-1.5B 三路径基准（P1-7 第五档收官）（2026-10-14）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | P1-7 最终档（AR016/17/18 三代遗留项）：综合框架此前只在合成 LLaMA-layout 模型上验证——真实 remote-code 模型（Fast-dLLM-v2-1.5B）的 Qwen 层**必须收 `position_embeddings`**（rotary），`ManualFoldedForward` 不透传则 parent prefill 即 `TypeError`（探针 P1 决定性证据）。本 AR：①生产代码 `position_embeddings` 线程化**四个构建面**（串行 eager / 批量 eager / graph 捕获静态体 / AR017 自适应重捕获），镜像 `attention_mask` 全套契约（入口 ValueError 校验 + by-reference 烘焙 + 重放期 `is` 对象恒一 + 钩子/重捕获透传）；②Fast-dLLM-v2-1.5B 真实块验证工作负载三路径墙钟基准，给 P1-7 在真实 checkpoint 上的最终论点 | ✅ 完成 |
+| 选题证据链（探针 P1-P7，本机实测） | P1 缺口确证（remote attention `cos, sin = position_embeddings` 解包即炸）；P2 注入 pe+块掩码后 parent prefill 逐位一致（maxdiff=0）；P3 **真实块验证工作负载**（parent=224 prompt+32×MASK(151665)，children=top-10 采样填充）批量折叠 vs baseline **逐位一致**（maxdiff=0, argmax=1.0），门控完美二分（0.6667=理论值）；P4 块因果语义（`block_q >= block_kv`，32-token 块内双向、跨块因果）⇒ prompt 块位级稳定；P5 负面证据（少量 token 翻转负载 parity 仅 92.9%——块内双向传播，排除）；P6 环境（HF requests 栈与代理不兼容→`curl.exe -x` 逐文件下载 3.09GB 权重；venv `--system-site-packages` + `transformers==4.53.1` 实测可行）；P7 Triton bf16 merge/gate kernel 本机无 C 编译器→AR014 键记录+PyTorch 回退（capture warmup 侧流先回退再捕获，不进捕获体） | ✅ 完成 |
+| 生产改动 | ①`architecture_utils.py`：`forward` 末位新参 `position_embeddings=None`（向后兼容）+ 入口校验（二元组/张量/seq 维=`tokens.shape[-1]`/cos-sin head_dim 一致，纯宿主元数据 `ValueError`；head_dim 与层内期望失配归 capture-failed 可见档——MFF 无从得知期望值，宽捕获转静默违反"不吞其他错误"）+ eager 循环**仅非 None 时附加 kwarg**（None 路径逐字节不变）+ `_graph_pe`/`_graph_batched_pe` 钉对象 + 重放恒一检查（`is` 失配静默回退 eager）+ `_observe_adaptive_capacity`/`_recapture_batched_runner` 透传（两钩子都只在恒一已过的重放路径触发⇒重捕获必收钉定对象）；②`cuda_graph.py`：`FoldedGraphRunner.__init__` 新参 `position_embeddings_static`（by-reference 烘焙，镜像 mask 不 clone）+ `_static_forward` 仅非 None 时附加 kwarg（捕获体零新增 host sync）；③`folded_transformer.py`：**零代码改动**（层 `**kwargs` 通道 → `_recompute_all` accepted/varkw 过滤天然承载，docstring 补一句） | ✅ 完成 |
+| 新测试 | UT-1901~1908（`tests/test_position_embeddings.py`，955 行，9 测试函数）：1901/1902 串行/批量 eager 透传（层收到供给 pe `is` 同对象 + 输出=手工焊 pe 对照）；1903 graph 捕获烘焙（重放 3 次稳定 + 静态体以 `is` 同对象消费）；1904 自适应重捕获烘焙（触发 shrink 后新 runner 收正确 pe）；1905 重放恒一（pe_a 捕获/pe_b 重放→静默回退 eager 无告警 + CPU eager 伴随面）；1906 None 默认三子断言（a 不传=现状绿钉 / b 显式 None / c 非 None+`_PlainLayer` 过滤——Red 价值归属分开标注）；1907 结构校验 ValueError（五类畸形）；1908 捕获期 CUDA 拒绝（CPU pe 静默拒绝捕获） | ✅ 完成 |
+| mutation 自证 | ①-④ 全翻红后 SHA256 逐字节还原（architecture_utils F46B776B…A74F / cuda_graph 3239A050…4810，两次还原比对一致）：①删 eager 循环附加→1901/1902 红；②删重放恒一检查→1905 红（pe_b 走图输出烘焙值语义错）；③重捕获不透传→1904 红；④`_static_forward` 不附加→1903 红；1907/1908 无独立 mutation（守卫缺失=Red 态重现，等价验证） | ✅ 完成 |
+| 墙钟基准 | `scripts/ar019_real_e2e_bench.py`（816 行，`python -m scripts.ar019_real_e2e_bench --model-path …`，`--quick` 冒烟）：三路径（baseline_eager=raw 模型 N 次前向 / graph_fixed C=0.5 / graph_adaptive）× 真实块验证工作负载 × 配置 (256,4)/(256,8)/(512,4)，round-robin 交错，warmup=8（覆盖捕获+shrink 耐心 3+节流 2），**reps=30 预承诺单次运行**；侧车（计时窗外）：parity（argmax+maxdiff+allclose(1e-2,1e-1)，逐行 float cast 控显存瞬态）、stable ratio、容量轨迹、预算违例、**pe 恒一回退计数**（脚本层私有探针 `mff._graph_batched_pe is pe`，预期 0）、峰值显存、Triton `_TRITON_FAILED_KEYS` 快照；H1=adaptive vs baseline 2σ、H2=parity、H3=块二分（±0.02）、H4=容量右移（`final ≥ maxD 且 < fixed`）；meta 含权重 sha256/venv 标记/transformers 版本/CUPTI null+注记；`--model-path` 缺失→`FileNotFoundError`（#10 无合成回退）；工件 `results/optimization/ar019_real_e2e_bench.json` | ✅ 完成 |
+| 门控 | req 两轮（**Major-1** graph 重放期 pe 对象恒一契约缺失→对象恒一 `is` 检查+静默回退档+`arange(T)` 常量位置方案前提；**Major-2** FR1 遗漏自适应重捕获面→补第四构建面+UT）+ 2 Minor + 2 Nit 全修；design 两轮（**Major-1** srs"维度不匹配→ValueError"子句无落点→入口 seq 维校验+head_dim 归属论证+UT-1907 补用例；**Major-3** UT-1906 Red 预期错误（现状 forward 无参传即 TypeError 不可能绿）→拆 a/b/c 三子断言）+ 复核 N1-N3（流程图同步/head_dim 内部一致检查/srs 对齐句）当场修入 | ✅ 完成 |
+| 质量门 | 全量 **864 passed（855+9）**/3 skipped 零回归、demo 三指标精确一致（85.5%/2.35e-03/93.75%）、mypy clean（66 文件）/pyflakes 零/100 列 | ✅ 完成 |
+
+**实测墙钟表（Fast-dLLM-v2-1.5B bf16，H=1536/L=28/V=151936，真实块验证工作负载，每步 = N 候选完整验证，p50 ms，Quadro RTX 5000，AR019 venv transformers 4.53.1，seed 2026，n=30 round-robin 交错）**：
+
+| 配置 | baseline eager | graph 固定 C=0.5 | graph 自适应 | adaptive vs baseline | fixed vs baseline | 容量轨迹（固定→右移） | 峰值 VRAM | H1（2σ） |
+|------|---------------|-----------------|--------------|---------------------|-------------------|----------------------|-----------|----------|
+| T=256, N=4 | 796.148 | 450.645 | 326.890 | **2.44×** | 1.77× | 512→160（需求 128） | 5624 MB | inconclusive |
+| T=256, N=8 | 1393.528 | 815.931 | 532.513 | **2.62×** | 1.71× | 1024→320（需求 256） | 7640 MB | supported |
+| T=512, N=4 | 1349.446 | 868.789 | 520.735 | **2.59×** | 1.55× | 1024→160（需求 128） | 8949 MB | supported |
+
+**假设判定（基于实测，不预设结论）**：
+- **H1 自适应显著快于 baseline（P1-7 真实 checkpoint 最终论点）：整体 inconclusive（2/3 supported）**——三配置 p50 加速比全部 2.44/2.62/2.59×，方向压倒性；(256,4) 为**首个配置**，WDDM 热身窗方差（baseline std 497ms ≈ p50 的 62%）淹没 2σ 判定，后两配置 std 5-40ms 干净且 supported——与 AR017/18 同类"首配置欠功效"先例一致，按预承诺单次运行纪律如实记录；
+- **H2 三路径一致：supported（3/3）**——三配置两 graph 路径 vs baseline **maxdiff=0.0、argmax 一致率 1.0**（逐位一致，强于 allclose(1e-2,1e-1) 档）；
+- **H3 门控块二分：supported（3/3）**——每 (layer, branch) stable ratio **精确等于** K_PROMPT/T（0.875/0.875/0.9375，n=112/224/112 全部相等，零偏差——块因果语义完美二分）；
+- **H4 容量右移：supported（3/3）**——捕获形状 [N,T] ✓、轨迹第 3 步收敛后零新事件、稳态违例 0、末容量 160/320/160 ≥ 需求 128/256/128 且 < 固定 512/1024/1024、各 1 次重捕获。
+
+**语义要点**：(1) **恒一契约是 pe 线程化的安全骨架**——mask 先例全镜像：by-reference 烘焙（不 clone，内存归调用方持活）+ 重放期 `is` 恒一（换对象静默回退 eager，eager 侧用本次 pe 语义安全）+ 重捕获必收钉定对象（两钩子都在恒一已过的路径上）。(2) **入口校验档位三路分明**——seq 维失配=入口 `ValueError`（首捕获 seq 失配不可能到达 capture）；换对象=恒一静默档；head_dim 与层内期望失配=capture-failed 可见档（一次性告警+禁用；MFF 无从得知期望值，宽捕获转静默会吞其他错误）。(3) **None 零语义变化是强保证**——仅非 None 时附加 kwarg，既有调用方逐字节不变（UT-1906a 现状绿钉）。(4) **真实 checkpoint 图捕获首证**——bf16 1.5B 权重 + remote 28 层 + 块因果掩码 + rotary 全链路 CUDA graph 捕获/重放成功；Triton bf16 gate/merge 双 kernel 因本机无 C 编译器走 PyTorch 回退（AR014 键记录，warmup 侧流先回退再捕获），即便如此三配置仍 2.44-2.62×。(5) **pe 恒一回退计数 0**——脚本层 canary 全程 `is` 匹配，图路径无一次静默回退。**遗留**：LLaDA-8B/Dream-7B（16GB 显存不可行）；`FastDLLMAdapter` 接线（生成回路集成）；变长/多 parent 批量（AR016 遗留）；小几何 (256,4) 首配置 WDDM 方差（锁时钟需管理员权限）；cache 批量 put API（AR018 §1.3 延续）。
+
+---
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

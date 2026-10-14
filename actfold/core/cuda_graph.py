@@ -65,6 +65,12 @@ class FoldedGraphRunner:
             the fixed capacity is ``C = ceil(ratio * batch * seq)``.
         attention_mask_static: Optional fixed-shape attention mask baked into
             every capture/replay; pass ``None`` for unmasked forwards.
+        position_embeddings_static: Optional rotary ``(cos, sin)`` tuple
+            baked BY REFERENCE into every capture/replay (AR019 — never
+            cloned, mirroring ``attention_mask_static``); the constant-
+            position scheme (``arange(T)``, no KV cache) makes the values
+            shape-fixed so a single reference serves every replay. Pass
+            ``None`` when the wrapped layers need no rotary embeddings.
     """
 
     def __init__(
@@ -78,6 +84,7 @@ class FoldedGraphRunner:
         gate_eps: float,
         capacity_ratio: float,
         attention_mask_static: torch.Tensor | None,
+        position_embeddings_static: tuple[torch.Tensor, torch.Tensor] | None = None,
     ) -> None:
         if not 0.0 < capacity_ratio <= 1.0:
             raise ValueError(
@@ -94,6 +101,7 @@ class FoldedGraphRunner:
         self._gate_eps = float(gate_eps)
         self._capacity_ratio = float(capacity_ratio)
         self._attention_mask_static = attention_mask_static
+        self._position_embeddings_static = position_embeddings_static
 
         # Populated by capture().
         self._num_layers = len(wrapped_layers)
@@ -413,7 +421,18 @@ class FoldedGraphRunner:
                     "num_divergent": 0,
                 }
             try:
-                child_out = layer._recompute_all(x, self._attention_mask_static)
+                if self._position_embeddings_static is not None:
+                    # AR019: attach the baked rotary tuple as a kwarg ONLY
+                    # when supplied (a ``None`` value must not shadow a
+                    # layer's own rotary computation); ``_recompute_all``
+                    # filters it against each original layer's signature.
+                    child_out = layer._recompute_all(
+                        x,
+                        self._attention_mask_static,
+                        position_embeddings=self._position_embeddings_static,
+                    )
+                else:
+                    child_out = layer._recompute_all(x, self._attention_mask_static)
             finally:
                 if use_split:
                     layer._split_state = None  # type: ignore[union-attr]

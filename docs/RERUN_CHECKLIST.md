@@ -30,6 +30,7 @@
 | 消融（`run_ablation.sh --synthetic`） | 合成小模型 | CPU 即可 |
 | 评测（`run_benchmarks.sh`，`max_new_tokens=256`） | lm-eval gsm8k/math/ifeval 等 | 与模型权重同量级；7B/8B ≥24 GiB |
 | `demo.py` 基线对拍 | 合成小模型 | CPU 即可 |
+| `ar019_real_e2e_bench`（真实块验证三路径） | Fast-dLLM-v2-1.5B bf16（28 层, H=1536，本地权重目录） | 实测峰值 5624/7640/8949 MB（三配置），16 GB 卡可跑 |
 
 ## 3. 重跑步骤
 
@@ -71,6 +72,21 @@ python -m scripts.generate_figures --results-dir results/
 
 # 8) 基线对拍（合成基线，正确性守恒）
 python demo.py
+
+# 9) AR019 真实 checkpoint 端到端墙钟（Fast-dLLM-v2-1.5B，P1-7 第五档）
+#    a) 权重获取：HF API 枚举 siblings 后逐文件下载（requests 栈在企业代理下
+#       407/500 时用 curl 走代理；11 个小文件 + model.safetensors 3,087,467,144 字节）：
+#       curl.exe -x "<代理>" -sL -o <本地目录>\<文件> \
+#           https://huggingface.co/Efficient-Large-Model/Fast_dLLM_v2_1.5B/resolve/main/<文件>
+#    b) AR019 venv（主环境 transformers 5.x 不可降级时；--system-site-packages 继承 torch）：
+#       python -m venv --system-site-packages <venv目录>
+#       <venv目录>\Scripts\pip install "transformers==4.53.1" "huggingface_hub<1.0" einops
+#    c) 基准（--model-path 必填或设 FASTDLLM_MODEL_PATH；无合成回退）：
+<venv目录>\Scripts\python -m scripts.ar019_real_e2e_bench \
+    --model-path <本地权重目录> --hf-home <HF缓存目录> --reps 30 --warmup 8
+#    工件：results/optimization/ar019_real_e2e_bench.json（单次预承诺运行，
+#    对照数字：三配置 adaptive vs baseline 2.44/2.62/2.59×，maxdiff=0.0，
+#    stable ratio 精确 0.875/0.875/0.9375，容量 512→160/1024→320/1024→160）
 ```
 
 ## 4. 方法学要求（重跑必须满足）
