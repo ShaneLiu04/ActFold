@@ -1,0 +1,1470 @@
+{
+  "batch_canary": {
+    "folded-batched": {
+      "cumulative_degradation_fallbacks": 0,
+      "cumulative_structural_eager": 160,
+      "pass": true,
+      "timed_degradation_fallbacks": 0,
+      "timed_structural_eager": 150
+    },
+    "folded-serial": {
+      "cumulative_degradation_fallbacks": 0,
+      "cumulative_structural_eager": 64,
+      "pass": true,
+      "timed_degradation_fallbacks": 0,
+      "timed_structural_eager": 60
+    },
+    "note": "canary = degradation class only, timed segment == 0; structural eager (by-design window populate/switch) is counted separately and never fails the canary (AR020-style)",
+    "pass": true
+  },
+  "hypotheses_declared": {
+    "H1": "folded-serial generation is equivalent to baseline (synthetic UT face bit-exact, pinned by UT-2105; real face: token-level argmax agreement position-by-position (hard gate) + per-forward decision-slice logits allclose(rtol=1e-2, atol=1e-1) arbitration; bit-parity reported, not gating): supported iff the real face passes; else refuted (no inconclusive)",
+    "H2": "folded-serial whole-generation wall clock < baseline; sigma = max(sigma_base, sigma_serial); supported iff p50(base) - p50(serial) > 2*sigma; refuted iff the reverse exceeds 2*sigma; else inconclusive",
+    "H3": "folded-batched whole-generation wall clock < folded-serial (speed face, three-state as H2); quality face (per-block exact-match rate vs baseline + post-hoc confidence distribution) is report-only, no gate, no presupposition",
+    "H4": "full-stack production exercise: every in-scope shape window (>= 2 forwards within the window) has serial graph captures > 0 and timed replays > 0 (folded-serial); every window with a batched call has batched captures > 0 (folded-batched); publish ledger <= c*(L+N) with c=4 frozen (serial event L+1 ops, batched event O(L+N) ops); no-fallback canary (degradation class, timed segment == 0) all-true; AR017 events verified only when triggered (untriggered = neutral)"
+  },
+  "hypotheses_verdicts": {
+    "H1": {
+      "hypothesis": "folded-serial generation is equivalent to baseline (synthetic UT face bit-exact, pinned by UT-2105; real face: token-level argmax agreement position-by-position (hard gate) + per-forward decision-slice logits allclose(rtol=1e-2, atol=1e-1) arbitration; bit-parity reported, not gating): supported iff the real face passes; else refuted (no inconclusive)",
+      "numbers": {
+        "per_prompt": [
+          {
+            "forward_counts_match": true,
+            "logits": {
+              "allclose_all": true,
+              "bit_equal_fraction_mean": 1.0,
+              "compared_forwards": 31,
+              "live_forwards": 31,
+              "max_abs_diff_overall": 0.0,
+              "per_forward": [
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                }
+              ],
+              "ref_forwards": 31
+            },
+            "prompt_index": 0,
+            "token_match": true,
+            "token_match_rate": 1.0
+          },
+          {
+            "forward_counts_match": true,
+            "logits": {
+              "allclose_all": true,
+              "bit_equal_fraction_mean": 1.0,
+              "compared_forwards": 27,
+              "live_forwards": 27,
+              "max_abs_diff_overall": 0.0,
+              "per_forward": [
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                },
+                {
+                  "allclose_rtol1e-2_atol1e-1": true,
+                  "bit_equal_fraction": 1.0,
+                  "max_abs_diff": 0.0
+                }
+              ],
+              "ref_forwards": 27
+            },
+            "prompt_index": 1,
+            "token_match": true,
+            "token_match_rate": 1.0
+          }
+        ],
+        "synthetic_face": "pinned bit-exact by UT-2105 (not re-measured here)"
+      },
+      "verdict": "supported"
+    },
+    "H2": {
+      "hypothesis": "folded-serial whole-generation wall clock < baseline; sigma = max(sigma_base, sigma_serial); supported iff p50(base) - p50(serial) > 2*sigma; refuted iff the reverse exceeds 2*sigma; else inconclusive",
+      "numbers": {
+        "delta_ms": -107.5181,
+        "p50_baseline_ms": 2840.7375,
+        "p50_folded_serial_ms": 2948.2557,
+        "sigma_ms": 132.6615
+      },
+      "verdict": "inconclusive"
+    },
+    "H3": {
+      "hypothesis": "folded-batched whole-generation wall clock < folded-serial (speed face, three-state as H2); quality face (per-block exact-match rate vs baseline + post-hoc confidence distribution) is report-only, no gate, no presupposition",
+      "numbers": {
+        "delta_ms": 1754.3966,
+        "p50_folded_batched_ms": 1193.859,
+        "p50_folded_serial_ms": 2948.2557,
+        "quality": [
+          {
+            "block_exact_match": {
+              "len_baseline": 34,
+              "len_other": 160,
+              "overall_exact_match": 0.0,
+              "per_block_exact_match": {
+                "block0": 0.0,
+                "block1": null,
+                "block2": null,
+                "block3": null
+              }
+            },
+            "posthoc_confidence": {
+              "baseline": {
+                "overall_mean": 0.369661,
+                "overall_min": 0.150954,
+                "per_block": {
+                  "block0": {
+                    "mean": 0.369661,
+                    "min": 0.150954
+                  },
+                  "block1": null,
+                  "block2": null,
+                  "block3": null
+                }
+              },
+              "folded-batched": {
+                "overall_mean": 0.289692,
+                "overall_min": 5e-06,
+                "per_block": {
+                  "block0": {
+                    "mean": 0.36794,
+                    "min": 3.6e-05
+                  },
+                  "block1": {
+                    "mean": 0.244895,
+                    "min": 5e-06
+                  },
+                  "block2": {
+                    "mean": 0.24694,
+                    "min": 0.019819
+                  },
+                  "block3": {
+                    "mean": 0.298991,
+                    "min": 0.048839
+                  }
+                }
+              }
+            },
+            "prompt_index": 0
+          },
+          {
+            "block_exact_match": {
+              "len_baseline": 66,
+              "len_other": 77,
+              "overall_exact_match": 0.0,
+              "per_block_exact_match": {
+                "block0": 0.0,
+                "block1": null,
+                "block2": null,
+                "block3": null
+              }
+            },
+            "posthoc_confidence": {
+              "baseline": {
+                "overall_mean": 0.570341,
+                "overall_min": 0.275356,
+                "per_block": {
+                  "block0": {
+                    "mean": 0.570341,
+                    "min": 0.275356
+                  },
+                  "block1": null,
+                  "block2": null,
+                  "block3": null
+                }
+              },
+              "folded-batched": {
+                "overall_mean": 0.106418,
+                "overall_min": 0.0,
+                "per_block": {
+                  "block0": {
+                    "mean": 0.106418,
+                    "min": 0.0
+                  },
+                  "block1": null,
+                  "block2": null,
+                  "block3": null
+                }
+              }
+            },
+            "prompt_index": 1
+          }
+        ],
+        "sigma_ms": 741.9241
+      },
+      "verdict": "supported",
+      "verdict_quality_face": "report-only (no gate)"
+    },
+    "H4": {
+      "hypothesis": "full-stack production exercise: every in-scope shape window (>= 2 forwards within the window) has serial graph captures > 0 and timed replays > 0 (folded-serial); every window with a batched call has batched captures > 0 (folded-batched); publish ledger <= c*(L+N) with c=4 frozen (serial event L+1 ops, batched event O(L+N) ops); no-fallback canary (degradation class, timed segment == 0) all-true; AR017 events verified only when triggered (untriggered = neutral)",
+      "numbers": {
+        "ar017_events": {
+          "cumulative": 2,
+          "note": "untriggered = neutral for H4 (never refutes); the policy records only successful re-captures after persistent misprovisioning, so a positive count means the trigger condition actually fired",
+          "status": "neutral (untriggered)",
+          "timed": 0
+        },
+        "batched_capture_positive": true,
+        "batched_scope_windows": [
+          "p32_block0_T64",
+          "p32_block1_T96",
+          "p32_block2_T128",
+          "p32_block3_T160",
+          "p64_block0_T96"
+        ],
+        "canary_degradation_timed_zero": {
+          "folded-batched": true,
+          "folded-serial": true
+        },
+        "ledger_within_bound": {
+          "folded-batched": true,
+          "folded-serial": true
+        },
+        "serial_capture_positive": true,
+        "serial_scope_windows": [
+          "p32_block0_T64",
+          "p64_block0_T96"
+        ],
+        "serial_timed_replay_positive": true
+      },
+      "verdict": "supported"
+    }
+  },
+  "ledger": {
+    "c": 4,
+    "normalization": "ops <= c*((L+1)*serial_events + (L+N)*batched_events) per sidecar generation; L = num_hidden_layers, N = 4",
+    "num_layers": 28,
+    "per_prompt": {
+      "prompt0": {
+        "folded-batched": {
+          "batched_events": 4,
+          "bound": 1324,
+          "ops_delta": 207,
+          "serial_events": 7,
+          "within_bound": true
+        },
+        "folded-serial": {
+          "batched_events": 0,
+          "bound": 3596,
+          "ops_delta": 899,
+          "serial_events": 31,
+          "within_bound": true
+        }
+      },
+      "prompt1": {
+        "folded-batched": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 59,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "folded-serial": {
+          "batched_events": 0,
+          "bound": 3132,
+          "ops_delta": 783,
+          "serial_events": 27,
+          "within_bound": true
+        }
+      }
+    },
+    "timed_segment_ops_total": {
+      "folded-batched": 7980,
+      "folded-serial": 50460
+    },
+    "within_bound": {
+      "folded-batched": true,
+      "folded-serial": true
+    }
+  },
+  "meta": {
+    "a5_scheme_a_note": "warmup pre-capture amortization holds under the bench protocol (every timed rep replays each window's runners); in single-shot production generation the capture amortizes NEGATIVE (one capture ~= 2-3 forwards serving a single replay) -- recommend use_cuda_graph=False for single-shot generate scenarios",
+    "block_constants": {
+      "block_size": 32,
+      "small_block_size": 32,
+      "temperature": 0.0,
+      "threshold": 0.95
+    },
+    "cache_budget_tokens_per_layer": 8192,
+    "canary_note": "the no-fallback canary checks the DEGRADATION class only (timed segment == 0): every non-structural graph-path eager fallback; structural eager (window-populate, window-switch, last-window no-AR) is counted separately and excluded by design (else the canary is constructively false)",
+    "command": "python -m scripts.ar021_generation_loop_bench --reps 30 --model-path C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "forced_divergent_declaration": "the sampler pins a per-(T, prompt_len) forced base tensor whose True positions cover exactly the active block; every folded forward (denoise iterations, the block-advance AR step, and the [N,T] batched verification) threads it through ManualFoldedForward(forced_divergent=...); the freshly committed / actively denoised region is always recomputed, never gate-certified stable against a stale parent",
+    "gpu_driver_version": "556.18",
+    "gpu_driver_version_note": "queried via nvidia-smi; null means the query failed on this host and the value was omitted rather than fabricated",
+    "h4_scope_note": "the serial capture/replay sub-criterion is verified only on windows with >= 2 forwards in the sidecar generation (the window-first forward is structural eager by design: parent-None populate or parent-at-old-shape window switch); the last window (remaining=0, no AR step) and single-iteration windows are reported but out of scope",
+    "interleaving": "per-rep round-robin over the three modes; rep r starts at position r%3 (anti-drift, WDDM fairness)",
+    "kernel_count": null,
+    "kernel_count_note": "runtime CUPTI probe: this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel-launch counts recorded null + note, never fabricated (#39) - the write_op_count ledger and graph_pool_stats counters are the structural evidence",
+    "ledger_c": 4,
+    "ledger_normalization": "per publish event: a serial forward publishes 1 event counting L+1 ops (<= 4*(L+1), trivially in bound); a batched publish counts O(L+N) ops (put_batch foreach groups + immediate executions, <= 4*(L+N)); the aggregate over a generation preserves the bounds (AR020-style, c frozen at design); verified on the untimed sidecar generation (same deterministic trajectory as the timed reps)",
+    "mode_configs": {
+      "baseline": {
+        "description": "raw FastDLLMSampler (unchanged recipe)",
+        "folded_model": null,
+        "num_block_candidates": 0
+      },
+      "folded-batched": {
+        "description": "FR3 batched speculative block verification (N=4 from the AR019 artifact matrix, candidate_top_k=10, A5 scheme a); AR017 adaptive capacity engaged on the batched path only (#37); split_layers=False on both MFF instances (Split-layer resident hooks would stack on the shared model)",
+        "mff_kwargs": {
+          "cache": "ActivationCache(8192 tokens/layer)",
+          "gate": "SimilarityGate(tau=0.95, cosine, eps=1e-08)",
+          "graph_adaptive_capacity": true,
+          "graph_adaptive_config": "AdaptiveCapacityConfig()",
+          "graph_capacity_ratio": 0.5,
+          "graph_runner_pool_size": 8,
+          "scheduler": null,
+          "split_layers": false,
+          "use_cuda_graph": true
+        },
+        "sampler": {
+          "candidate_top_k": 10,
+          "num_block_candidates": 4
+        }
+      },
+      "folded-serial": {
+        "description": "FR2 serial chain folding (#26) with the pinned fold-context trio and the shape-keyed serial pool",
+        "mff_kwargs": {
+          "cache": "ActivationCache(8192 tokens/layer)",
+          "gate": "SimilarityGate(tau=0.95, cosine, eps=1e-08)",
+          "graph_adaptive_capacity": false,
+          "graph_capacity_ratio": 0.5,
+          "graph_runner_pool_size": 8,
+          "scheduler": null,
+          "split_layers": false,
+          "use_cuda_graph": true
+        },
+        "sampler": {
+          "num_block_candidates": 0
+        }
+      }
+    },
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + reps + p50 + per-rep round-robin",
+    "pool_cap": 8,
+    "prompts": {
+      "count": 2,
+      "num_tokens": 128,
+      "padded_token_lens": [
+        32,
+        64
+      ],
+      "prepad_note": "prompts pre-padded to exact 32-token multiples (pad=eos) so the sampler's own first-block padding is zero and the pinned fold-context mask is the pure block-causal mask, element-equal to the remote model's internal eval_mask (the raw path's [B,T] mask is overwritten internally by the remote forward); non-zero padding would break cross-mode parity by construction",
+      "raw_token_lens": [
+        21,
+        37
+      ],
+      "shape_windows_W": 4,
+      "texts": [
+        "Explain the key ideas of the theory of relativity in a few short sentences for a general audience.",
+        "The ocean appears blue because water absorbs red light more strongly than blue light. Describe how photosynthesis works in plants, why chlorophyll matters, and list the first five prime numbers."
+      ]
+    },
+    "quick": false,
+    "reps": 30,
+    "run_date_utc": "2026-10-14T20:00:11.800591+00:00",
+    "seed": 2026,
+    "shape_keyed_pool_declaration": "graph_runner_pool_size=8: one runner per (tokens shape, pinned mask identity) window == (T, prompt_len) serial / (N, T, prompt_len) batched; expected entries <= 8 per pool (W*P upper bound; folded-batched serial (W-1)*P, batched W*P; folded-serial <= W*P data-dependent), zero evictions at cap=8 (LRU is a defensive bound only)",
+    "sigma_convention": "sigma = max(sigma_a, sigma_b) bound to the mode pair; three-state mapping per srs FR4; samples pooled over prompts x reps per mode",
+    "single_run_discipline": "pre-committed single-shot verdict, no rerun fishing",
+    "timing_method": "host perf_counter + torch.cuda.synchronize (#39); whole-generation wall clock plus per-block anchors (the forward wrappers observe the step_idx change as the block boundary; syncs only at those boundaries)",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "use_cuda_graph": true,
+    "venv": true,
+    "vram_peak_mb_per_mode": {
+      "baseline": {
+        "max_over_reps_mb": 4947.1,
+        "per_rep_mb": [
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1
+        ]
+      },
+      "folded-batched": {
+        "max_over_reps_mb": 5374.5,
+        "per_rep_mb": [
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5,
+          5374.5
+        ]
+      },
+      "folded-serial": {
+        "max_over_reps_mb": 4947.1,
+        "per_rep_mb": [
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1,
+          4947.1
+        ]
+      }
+    },
+    "warmup_strategy": "one full discarded sample per (mode, prompt) before any timing: per-shape-window pool pre-capture (A5 scheme a: the warmup round naturally captures every window's serial and batched runners) + Triton/JIT warmup + the AR017 adaptive transition; capture costs are excluded from p50 (srs FR4); timed-segment re-captures, if any, are counted and timed honestly (never hidden)"
+  },
+  "mode_comparison": {
+    "baseline": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 2849.1956716675,
+          "n": 60,
+          "p50": 2839.0370500274003,
+          "std": 132.6438543759229
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 2719.761496662007,
+          "n": 30,
+          "p50": 2717.2328499727882,
+          "std": 15.953572107478706
+        },
+        "prompt1": {
+          "mean": 2982.0736900049574,
+          "n": 30,
+          "p50": 2975.0295000267215,
+          "std": 23.233683011464546
+        }
+      },
+      "stable_ratio_timed": null,
+      "whole_gen_ms": {
+        "mean": 2850.9175933334823,
+        "n": 60,
+        "p50": 2840.737549995538,
+        "std": 132.66153149549493
+      }
+    },
+    "folded-batched": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 406.66208500624634,
+          "n": 60,
+          "p50": 404.1379999835044,
+          "std": 58.532209842883525
+        },
+        "block1": {
+          "mean": 485.38739666109905,
+          "n": 30,
+          "p50": 485.49215006642044,
+          "std": 4.5914185224911295
+        },
+        "block2": {
+          "mean": 558.2683466685315,
+          "n": 30,
+          "p50": 559.3779499758966,
+          "std": 5.147563358203742
+        },
+        "block3": {
+          "mean": 552.9866366453158,
+          "n": 30,
+          "p50": 553.6774999927729,
+          "std": 5.055898924083342
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 1951.826683334851,
+          "n": 30,
+          "p50": 1956.4459000248462,
+          "std": 16.1595246349286
+        },
+        "prompt1": {
+          "mean": 468.1660499928209,
+          "n": 30,
+          "p50": 468.44999998575076,
+          "std": 4.156992649823979
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.8,
+        "mean": 0.679,
+        "min": 0.5,
+        "n": 22680,
+        "std": 0.0991
+      },
+      "whole_gen_ms": {
+        "mean": 1209.996366663836,
+        "n": 60,
+        "p50": 1193.8590499921702,
+        "std": 741.9241363807874
+      }
+    },
+    "folded-serial": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 2950.945770003212,
+          "n": 60,
+          "p50": 2939.5569500047714,
+          "std": 125.14669669480432
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 2836.6665566689335,
+          "n": 30,
+          "p50": 2838.9917500317097,
+          "std": 17.35617933581249
+        },
+        "prompt1": {
+          "mean": 3083.179626664302,
+          "n": 30,
+          "p50": 3082.2828499949537,
+          "std": 20.84861419574847
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.6667,
+        "mean": 0.5774,
+        "min": 0.5,
+        "n": 47040,
+        "std": 0.0831
+      },
+      "whole_gen_ms": {
+        "mean": 2959.923091666618,
+        "n": 60,
+        "p50": 2948.2556500006467,
+        "std": 124.7402271007448
+      }
+    }
+  },
+  "per_shape_window": {
+    "folded-batched": {
+      "ar017_recapture_events": {
+        "cumulative": 2,
+        "timed": 0
+      },
+      "batched": {
+        "pool_size": 5,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block1_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block2_T128": {
+            "captures_cumulative": 2,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block3_T160": {
+            "captures_cumulative": 2,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "degradation_fallback_count": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "semantics": "captures_cumulative: instance lifetime (warmup + sidecar + timed, H4 capture criterion); replays_timed / *_timed: diff from the post-warmup snapshot (sidecar included in the snapshot base); evictions: cumulative",
+      "serial": {
+        "pool_size": 4,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block1_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block2_T128": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "sidecar_forwards_per_window": {
+        "p32_block0_T64": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block1_T96": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block2_T128": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block3_T160": {
+          "batched": 1,
+          "serial": 1
+        },
+        "p64_block0_T96": {
+          "batched": 1,
+          "serial": 2
+        }
+      },
+      "structural_eager_count": {
+        "cumulative": 160,
+        "timed": 150
+      }
+    },
+    "folded-serial": {
+      "ar017_recapture_events": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "batched": {
+        "pool_size": 0,
+        "windows": {}
+      },
+      "degradation_fallback_count": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "semantics": "captures_cumulative: instance lifetime (warmup + sidecar + timed, H4 capture criterion); replays_timed / *_timed: diff from the post-warmup snapshot (sidecar included in the snapshot base); evictions: cumulative",
+      "serial": {
+        "pool_size": 2,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 959,
+            "replays_timed": 900
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 831,
+            "replays_timed": 780
+          }
+        }
+      },
+      "sidecar_forwards_per_window": {
+        "p32_block0_T64": {
+          "batched": 0,
+          "serial": 31
+        },
+        "p64_block0_T96": {
+          "batched": 0,
+          "serial": 27
+        }
+      },
+      "structural_eager_count": {
+        "cumulative": 64,
+        "timed": 60
+      }
+    }
+  },
+  "quality": {
+    "h1_serial_vs_baseline": [
+      {
+        "forward_counts_match": true,
+        "logits": {
+          "allclose_all": true,
+          "bit_equal_fraction_mean": 1.0,
+          "compared_forwards": 31,
+          "live_forwards": 31,
+          "max_abs_diff_overall": 0.0,
+          "per_forward": [
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            }
+          ],
+          "ref_forwards": 31
+        },
+        "prompt_index": 0,
+        "token_match": true,
+        "token_match_rate": 1.0
+      },
+      {
+        "forward_counts_match": true,
+        "logits": {
+          "allclose_all": true,
+          "bit_equal_fraction_mean": 1.0,
+          "compared_forwards": 27,
+          "live_forwards": 27,
+          "max_abs_diff_overall": 0.0,
+          "per_forward": [
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            }
+          ],
+          "ref_forwards": 27
+        },
+        "prompt_index": 1,
+        "token_match": true,
+        "token_match_rate": 1.0
+      }
+    ],
+    "h3_batched_vs_baseline": [
+      {
+        "block_exact_match": {
+          "len_baseline": 34,
+          "len_other": 160,
+          "overall_exact_match": 0.0,
+          "per_block_exact_match": {
+            "block0": 0.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched": {
+            "overall_mean": 0.289692,
+            "overall_min": 5e-06,
+            "per_block": {
+              "block0": {
+                "mean": 0.36794,
+                "min": 3.6e-05
+              },
+              "block1": {
+                "mean": 0.244895,
+                "min": 5e-06
+              },
+              "block2": {
+                "mean": 0.24694,
+                "min": 0.019819
+              },
+              "block3": {
+                "mean": 0.298991,
+                "min": 0.048839
+              }
+            }
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_exact_match": {
+          "len_baseline": 66,
+          "len_other": 77,
+          "overall_exact_match": 0.0,
+          "per_block_exact_match": {
+            "block0": 0.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched": {
+            "overall_mean": 0.106418,
+            "overall_min": 0.0,
+            "per_block": {
+              "block0": {
+                "mean": 0.106418,
+                "min": 0.0
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 1
+      }
+    ]
+  },
+  "speedups_p50": {
+    "batched_vs_baseline": 2.3795,
+    "batched_vs_serial": 2.4695,
+    "serial_vs_baseline": 0.9635
+  }
+}
