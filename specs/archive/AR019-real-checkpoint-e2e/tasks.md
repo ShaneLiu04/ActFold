@@ -19,7 +19,7 @@
 | T006 | 文档收口：OPTIMIZATION_GUIDE 第二十六部分、CHANGELOG、AGENTS.md（#37 延伸 position_embeddings 契约）、RERUN_CHECKLIST（venv + 权重获取）+ **README 全方位中文更新**（AGENTS.md 新规：创新总览表第 9 行 + 机理详解 + 最新结果置顶 + 质量基线 + 限制路线图） | T004, T005 | passing | 五文件全收口：GUIDE 第二十六部分（含实测墙钟表+H 判定+语义要点）；CHANGELOG AR019 英文条目（沿 AR018 谱系）；AGENTS #37 增 AR019 pe 契约句；RERUN_CHECKLIST 显存表行+第 9 步（权重获取/venv/基准命令+对照数字）；README 全量中文重写 637→762 行（9 行创新表/AR019 头条表置顶/864 基线/P1-7 五档收官叙事）——子代理执行，数字抽查与工件一致；portability 14 passed |
 | T007 | review 门控（只读子代理：spec/design 合规 + 代码审查），全部问题（含 Minor）修复 | T006 | passing | **PASS**（审查代理 ses_ec6d6f802ffejRJ789QE2sSahC，六维度全过，本机复核 864/mypy/pyflakes/demo 锚点）：1 Minor（M-1 文档行数失准 786→实际 812）+ 4 Nit 全修——M-1/N-1 行数回写（bench 816 终值/README 762/UT 955）；N-2 生产修复：入口校验补 `dim()<2` 前置（1-D cos/sin 原会漏 IndexError，现落 ValueError 档）+ UT-1907 补第 6 用例；N-3 `fixed_capacity` 改读 `fixed_runner.capacity`（无 runner 时回退算术值）；N-4 AGENTS README 规则去 "8-row" 数字化措辞 |
 | T008 | ST 验收：st-cases.md 生成 + 执行（正常/边界/异常/回归四类），一次成 Go | T007 | passing | **Go**——st-cases.md 11 用例（正常 4/边界 2/异常 2/回归 3）一次全 PASS：UT 文件 9 passed（8.40s）；工件校验 PASS（H2/H3/H4 supported、三配置 parity 逐位一致 maxdiff=0.0/argmax=1.0、pe 恒一失配 0、违例 0、容量三断言全过、H1=inconclusive 如实）；全量 864 passed/3 skipped；demo 三指标 85.5%/2.35e-03[HIGH]/93.75% 锚点精确；mypy 66 文件 clean/pyflakes 零/100 列零违规。H1 inconclusive 为预承诺单次纪律下如实记录，非缺陷非阻塞 |
-| T009 | 归档 `specs/archive/AR019-real-checkpoint-e2e/`，本地 commit + gitee commit-tree 推送 + 双端树验证 | T008 | in_progress | |
+| T009 | 归档 `specs/archive/AR019-real-checkpoint-e2e/`，本地 commit + gitee commit-tree 推送 + 双端树验证 | T008 | passing | 完成——本地 commit `a1e000e`（15 文件 +3446/-40）；gitee commit `456c084`（commit-tree 本地树+gitee 父 `49d53b3`）；双端树 `31cf27cb927a36e77508f53291de290ef46f8ffb` 一致；工作树 clean。AR019 全流程闭环 |
 
 ## 状态说明
 
