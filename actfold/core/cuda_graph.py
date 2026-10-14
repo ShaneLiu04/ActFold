@@ -85,11 +85,10 @@ class FoldedGraphRunner:
         capacity_ratio: float,
         attention_mask_static: torch.Tensor | None,
         position_embeddings_static: tuple[torch.Tensor, torch.Tensor] | None = None,
+        forced_divergent_static: torch.Tensor | None = None,
     ) -> None:
         if not 0.0 < capacity_ratio <= 1.0:
-            raise ValueError(
-                f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}"
-            )
+            raise ValueError(f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}")
         if len(wrapped_layers) == 0:
             raise ValueError("wrapped_layers must contain at least one layer")
         self._layers = wrapped_layers
@@ -102,6 +101,11 @@ class FoldedGraphRunner:
         self._capacity_ratio = float(capacity_ratio)
         self._attention_mask_static = attention_mask_static
         self._position_embeddings_static = position_embeddings_static
+        self._forced_divergent_static = (
+            forced_divergent_static.detach().clone()
+            if forced_divergent_static is not None
+            else None
+        )
 
         # Populated by capture().
         self._num_layers = len(wrapped_layers)
@@ -144,6 +148,19 @@ class FoldedGraphRunner:
         inside :meth:`validate_budgets` -- no extra host sync (AR017 FR1).
         """
         return self._last_layer_divergences
+
+    @property
+    def forced_divergent_static(self) -> torch.Tensor | None:
+        """Static forced-divergence buffer, or ``None`` (AR021 FR2).
+
+        ``None`` when the runner was captured without a ``forced_divergent``
+        argument; otherwise a fixed-shape boolean buffer whose content is
+        refreshed by :meth:`replay`` before every graph launch (outside the
+        captured body, zero host sync). The None/not-None identity plus the
+        shape form the runner's forced capture identity: the caller routes
+        mismatching calls to the eager path instead of replaying.
+        """
+        return self._forced_divergent_static
 
     # ------------------------------------------------------------------
     # Static-buffer accessors (host-side; caller clones before next replay)
@@ -190,6 +207,7 @@ class FoldedGraphRunner:
         tokens: torch.Tensor,
         branch_id: str,
         parent_branch_id: str,
+        forced_divergent: torch.Tensor | None = None,
     ) -> None:
         """Warm up and capture the static folded forward as a CUDA graph.
 
@@ -200,6 +218,13 @@ class FoldedGraphRunner:
                 graph is branch-agnostic).
             parent_branch_id: Parent branch whose cache entries feed the
                 static parent buffers.
+            forced_divergent: Optional boolean forced-divergence tensor
+                (AR021 FR2) fixing the forced capture identity; when given,
+                a static buffer of the same shape is allocated (outside the
+                graph pool — the host copies into it between replays) and
+                the captured body ANDs it into every layer's stability mask
+                before re-deriving the stable count device-side. ``None``
+                captures the legacy forced-free body byte-for-byte.
 
         Raises:
             RuntimeError: If CUDA is unavailable, the inputs/layers are not
@@ -210,8 +235,7 @@ class FoldedGraphRunner:
         del branch_id
         if not tokens.is_cuda:
             raise RuntimeError(
-                "FoldedGraphRunner requires CUDA tensors; got "
-                f"tokens on {tokens.device}"
+                "FoldedGraphRunner requires CUDA tensors; got " f"tokens on {tokens.device}"
             )
         for layer in self._layers:
             if getattr(layer, "scheduler", None) is not None:
@@ -249,6 +273,12 @@ class FoldedGraphRunner:
         self._child_buf = torch.empty(
             self._num_layers, batch, seq_len, hidden_dim, dtype=dtype, device=device
         )
+        if forced_divergent is not None and self._forced_divergent_static is None:
+            # AR021 FR2: allocate the static forced buffer OUTSIDE the graph
+            # pool (the host copy_fills it between replays); the shape is
+            # pinned for the runner's lifetime and forms its forced capture
+            # identity together with the not-None bit.
+            self._forced_divergent_static = forced_divergent.detach().clone()
 
         if not self._prefill_parent(parent_branch_id):
             raise RuntimeError(
@@ -284,6 +314,7 @@ class FoldedGraphRunner:
         tokens: torch.Tensor,
         parent_branch_id: str,
         branch_id: str,
+        forced_divergent: torch.Tensor | None = None,
     ) -> torch.Tensor | None:
         """Replay the captured graph for one verification step.
 
@@ -292,6 +323,12 @@ class FoldedGraphRunner:
             parent_branch_id: Parent branch whose cache entries are copied
                 into the static parent buffers.
             branch_id: Child branch identifier (informational).
+            forced_divergent: Optional forced-divergence tensor with the
+                captured forced shape (AR021 FR2). Its content is copied
+                into the static buffer here — OUTSIDE the captured body, a
+                pure device-to-device copy with zero host sync — so the
+                replayed graph consumes fresh forced bits every step.
+                Ignored when the runner was captured without one.
 
         Returns:
             The static logits buffer (the caller must ``.clone()`` before the
@@ -311,6 +348,8 @@ class FoldedGraphRunner:
             )
         if not self._prefill_parent(parent_branch_id):
             return None
+        if self._forced_divergent_static is not None and forced_divergent is not None:
+            self._forced_divergent_static.copy_(forced_divergent)
         self._tokens_static.copy_(tokens)  # type: ignore[union-attr]
         self._count_buf.zero_()  # type: ignore[union-attr]
         self._graph.replay()
@@ -334,13 +373,8 @@ class FoldedGraphRunner:
         """
         self._require_captured()
         counts = self._count_buf.tolist()  # type: ignore[union-attr]
-        self._last_layer_divergences = [
-            self._num_tokens - count for count in counts
-        ]
-        ok = all(
-            divergence <= self._capacity
-            for divergence in self._last_layer_divergences
-        )
+        self._last_layer_divergences = [self._num_tokens - count for count in counts]
+        ok = all(divergence <= self._capacity for divergence in self._last_layer_divergences)
         self._budget_exceeded = not ok
         return ok
 
@@ -349,9 +383,7 @@ class FoldedGraphRunner:
     # ------------------------------------------------------------------
     def _require_captured(self) -> None:
         if self._graph is None:
-            raise RuntimeError(
-                "FoldedGraphRunner.capture() must succeed before this operation."
-            )
+            raise RuntimeError("FoldedGraphRunner.capture() must succeed before this operation.")
 
     def _prefill_parent(self, parent_branch_id: str) -> bool:
         """Copy the parent branch activations into the static buffers.
@@ -362,16 +394,14 @@ class FoldedGraphRunner:
         parent_static = self._parent_static
         assert parent_static is not None, "static buffers allocated in capture()"
         try:
-            embedding = self._cache.fetch(
-                branch_id=parent_branch_id, layer_idx=0
-            ).get("embedding")
+            embedding = self._cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
             if embedding is None:
                 return False
             parent_static[0].copy_(embedding)
             for layer_idx in range(self._num_layers):
-                ffn_out = self._cache.fetch(
-                    branch_id=parent_branch_id, layer_idx=layer_idx
-                ).get("ffn_out")
+                ffn_out = self._cache.fetch(branch_id=parent_branch_id, layer_idx=layer_idx).get(
+                    "ffn_out"
+                )
                 if ffn_out is None:
                     return False
                 parent_static[layer_idx + 1].copy_(ffn_out)
@@ -413,6 +443,14 @@ class FoldedGraphRunner:
                 mask,
                 count,
             )
+            if self._forced_divergent_static is not None:
+                # AR021 FR2: AND the forced region into the gate mask and
+                # re-derive the stable count from the AND-ed mask with a
+                # fixed-shape device reduction (capturable, no host sync) —
+                # the kernel count was computed pre-AND and would let forced
+                # bits through the divergent budget validation.
+                mask &= ~self._forced_divergent_static
+                count.copy_(mask.sum())
             use_split = isinstance(layer, SplitFoldedTransformerLayer) and layer.split_enabled
             if use_split:
                 layer._split_state = {  # type: ignore[union-attr]

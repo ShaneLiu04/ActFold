@@ -111,6 +111,7 @@ class FoldedTransformerLayer(nn.Module):
         step_idx: int = 0,
         *,
         branch_ids: Sequence[str] | None = None,
+        forced_divergent: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded Transformer layer.
@@ -128,6 +129,14 @@ class FoldedTransformerLayer(nn.Module):
                 ``i`` of ``hidden_states`` belongs to ``branch_ids[i]`` and
                 every branch shares ``parent_branch_id`` (which must be
                 cached at batch 1). Mutually exclusive with ``branch_id``.
+            forced_divergent: Optional boolean tensor (AR021 FR2) whose True
+                positions are forced divergent in the stability partition
+                regardless of the gate: the materialized ``stable_mask`` is
+                AND-ed with its complement before the profiler record and
+                the stable-count consumption, so forced bits never take the
+                all-stable reuse fast path. ``[seq_len]`` / ``[1, seq_len]``
+                on serial calls (broadcast), ``[N, seq_len]`` on batched
+                calls. ``None`` (the default) attaches no operation at all.
             **kwargs: Extra arguments forwarded to ``original_layer``
                 (filtered to its signature). This channel carries
                 ``position_embeddings`` (AR019): a rotary ``(cos, sin)``
@@ -150,6 +159,7 @@ class FoldedTransformerLayer(nn.Module):
                 list(branch_ids),
                 parent_branch_id,
                 step_idx,
+                forced_divergent=forced_divergent,
                 **kwargs,
             )
         # Resolve branch identifiers from explicit kwargs or the thread-local
@@ -296,6 +306,15 @@ class FoldedTransformerLayer(nn.Module):
                 dim=1,
             )
 
+        if forced_divergent is not None:
+            # AR021 FR2 single ordering: AND the forced region into the
+            # materialized mask BEFORE the profiler record and the count
+            # consumption, and discard the fused kernel's stale count (it
+            # was derived from the pre-AND mask) so the fallback
+            # ``stable_mask.sum()`` reduction re-derives it.
+            stable_mask &= ~forced_divergent
+            stable_count_buf = None
+
         # Record real layer-wise stability statistics for downstream consumers.
         GLOBAL_STABILITY_PROFILER.record(
             branch_id=branch_id,
@@ -321,12 +340,13 @@ class FoldedTransformerLayer(nn.Module):
         # directly (F7: raw ``fetch``; no mask application, no zero-fill).
         if stable_count == num_tokens:
             try:
-                ffn_out = self.cache.fetch(
+                parent_activations = self.cache.fetch(
                     branch_id=parent_branch_id,
                     layer_idx=self.layer_idx,
-                ).get("ffn_out")
+                )
             except (KeyError, RuntimeError):
-                ffn_out = None
+                parent_activations = None
+            ffn_out = parent_activations.get("ffn_out") if parent_activations is not None else None
             if (
                 ffn_out is not None
                 and ffn_out.dim() == 3
@@ -344,6 +364,17 @@ class FoldedTransformerLayer(nn.Module):
                 and self._returns_tuple is not None
             ):
                 self._store_activations(branch_id, ffn_out, hidden_states)
+                contains_fn = getattr(self.cache, "contains", None)
+                if (
+                    parent_activations is not None
+                    and contains_fn is not None
+                    and not contains_fn(parent_branch_id, self.layer_idx)
+                ):
+                    self.cache.put(
+                        branch_id=parent_branch_id,
+                        layer_idx=self.layer_idx,
+                        activations=parent_activations,
+                    )
                 return self._pack_output(ffn_out)
             # Parent FFN output is missing or shape-mismatched despite all
             # tokens being stable, or the original layer's output structure is
@@ -399,6 +430,7 @@ class FoldedTransformerLayer(nn.Module):
         branch_ids: list[str],
         parent_branch_id: str | None,
         step_idx: int,
+        forced_divergent: torch.Tensor | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded layer for N same-parent branches in a single batch.
@@ -420,6 +452,9 @@ class FoldedTransformerLayer(nn.Module):
             branch_ids: One branch identifier per row (``len == N``).
             parent_branch_id: Shared parent branch identifier.
             step_idx: Current diffusion step index.
+            forced_divergent: Optional ``[N, seq_len]`` boolean tensor
+                (AR021 FR2): True positions are forced divergent before the
+                profiler records and the stable-count consumption.
             **kwargs: Extra arguments forwarded to ``original_layer``.
 
         Returns:
@@ -437,9 +472,7 @@ class FoldedTransformerLayer(nn.Module):
             output = self._recompute_all(hidden_states, attention_mask, **kwargs)
             self._store_batched(branch_ids, output, hidden_states)
             return self._pack_output(output)
-        if self.scheduler is not None and not self.scheduler.should_fold(
-            self.layer_idx, step_idx
-        ):
+        if self.scheduler is not None and not self.scheduler.should_fold(self.layer_idx, step_idx):
             output = self._recompute_all(hidden_states, attention_mask, **kwargs)
             self._store_batched(branch_ids, output, hidden_states)
             return self._pack_output(output)
@@ -524,6 +557,12 @@ class FoldedTransformerLayer(nn.Module):
                 ],
                 dim=1,
             )
+
+        if forced_divergent is not None:
+            # AR021 FR2 single ordering (batched face): AND the forced
+            # region in before the per-row profiler records and the batch
+            # stable-count readback.
+            stable_mask &= ~forced_divergent
 
         for row_idx, bid in enumerate(branch_ids):
             GLOBAL_STABILITY_PROFILER.record(
@@ -656,11 +695,7 @@ class FoldedTransformerLayer(nn.Module):
         else:
             expected = torch.Size([1, seq_len])
             if ffn_out.shape[:2] != expected:
-                if (
-                    ffn_out.dim() == 3
-                    and ffn_out.shape[0] == 1
-                    and ffn_out.shape[1] > seq_len
-                ):
+                if ffn_out.dim() == 3 and ffn_out.shape[0] == 1 and ffn_out.shape[1] > seq_len:
                     # AR007: a longer parent FFN donates its prefix.
                     ffn_out = ffn_out[:, :seq_len]
                 else:
@@ -676,9 +711,7 @@ class FoldedTransformerLayer(nn.Module):
         # path and degenerates to stable_mask.shape on the equal-length
         # path.
         expected_grid = (
-            torch.Size([num_branches, prefix_len])
-            if prefix_len is not None
-            else stable_mask.shape
+            torch.Size([num_branches, prefix_len]) if prefix_len is not None else stable_mask.shape
         )
         if parent_ffn.shape[:2] != expected_grid:
             raise RuntimeError(

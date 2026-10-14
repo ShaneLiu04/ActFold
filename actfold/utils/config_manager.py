@@ -93,6 +93,10 @@ class ActFoldConfig:
     graph_adaptive_shrink_patience: int = 3
     graph_adaptive_min_recapture_interval: int = 2
     graph_adaptive_max_recaptures: int = 8
+    # Shape-keyed graph runner pool cap (AR021). 0 = legacy single-runner
+    # behavior (byte-identical); >0 = LRU pool of CUDA-graph runners keyed
+    # by the (tokens shape, attention-mask identity) fold window.
+    graph_runner_pool_size: int = 0
     cache_chunk_size: int = 64
     use_cost_model: bool = True
     use_folded_generation: bool = True
@@ -115,9 +119,7 @@ class ActFoldConfig:
                 f"max_entries_per_layer must be positive, got {self.max_entries_per_layer}"
             )
         if self.max_branch_steps <= 0:
-            raise ValueError(
-                f"max_branch_steps must be positive, got {self.max_branch_steps}"
-            )
+            raise ValueError(f"max_branch_steps must be positive, got {self.max_branch_steps}")
         draft_modes = {
             "suffix_append",
             "logits_draft",
@@ -174,6 +176,10 @@ class ActFoldConfig:
             raise ValueError(
                 "graph_adaptive_max_recaptures must be >= 1, got "
                 f"{self.graph_adaptive_max_recaptures}"
+            )
+        if self.graph_runner_pool_size < 0:
+            raise ValueError(
+                "graph_runner_pool_size must be >= 0, got " f"{self.graph_runner_pool_size}"
             )
         if self.torch_dtype is not None and self.torch_dtype not in {
             "float32",

@@ -206,9 +206,7 @@ class BenchmarkRunner:
                 grow_factor=self.config.graph_adaptive_grow_factor,
                 shrink_threshold=self.config.graph_adaptive_shrink_threshold,
                 shrink_patience=self.config.graph_adaptive_shrink_patience,
-                min_recapture_interval=(
-                    self.config.graph_adaptive_min_recapture_interval
-                ),
+                min_recapture_interval=(self.config.graph_adaptive_min_recapture_interval),
                 max_recaptures=self.config.graph_adaptive_max_recaptures,
             )
         try:
@@ -223,6 +221,7 @@ class BenchmarkRunner:
                 graph_capacity_ratio=self.config.graph_capacity_ratio,
                 graph_adaptive_capacity=self.config.graph_adaptive_capacity,
                 graph_adaptive_config=adaptive_config,
+                graph_runner_pool_size=self.config.graph_runner_pool_size,
             )
         except RuntimeError:
             # detect_architecture found no layer stack / embedding module

@@ -145,20 +145,59 @@ class DiffusionSampler(ABC):
         step_idx: int,
         attention_mask: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
+        position_embeddings: Any | None = None,
+        branch_ids: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Helper to run ``model.forward`` with optional folding context.
 
         For token inputs the model is called with ``input_ids``; for continuous
         embeddings it is called with ``inputs_embeds``.  The branch identifiers
         are forwarded through the folded model or as explicit kwargs.
+
+        AR019/AR021 tail parameters: ``position_embeddings`` (the rotary
+        ``(cos, sin)`` tuple), ``branch_ids`` (batched-branch identifiers),
+        and ``forced_divergent`` (the forced-divergence mask) are folded-path
+        extensions — they are attached to the folded-model call ONLY when
+        non-``None`` (a ``None`` adds no kwarg, so legacy ``FoldedModel``
+        instances and existing callers stay byte-for-byte unchanged), and the
+        raw-model branch below never sees them (the raw path keeps its
+        ``attention_mask``-only contract).
+
+        Raises:
+            ValueError: If ``forced_divergent`` is supplied and is not a
+                boolean tensor whose last dimension matches ``x``'s sequence
+                length (host-side metadata only, no device sync).
         """
+        if forced_divergent is not None:
+            if (
+                not isinstance(forced_divergent, torch.Tensor)
+                or forced_divergent.dtype != torch.bool
+            ):
+                raise ValueError(
+                    "forced_divergent must be None or a boolean torch.Tensor; "
+                    f"got dtype {getattr(forced_divergent, 'dtype', None)!r}."
+                )
+            if forced_divergent.shape[-1] != x.shape[-1]:
+                raise ValueError(
+                    "forced_divergent's last dimension must match the sequence "
+                    f"length ({x.shape[-1]}); got {forced_divergent.shape[-1]}."
+                )
         if folded_model is not None:
+            fold_kwargs: dict[str, Any] = {}
+            if position_embeddings is not None:
+                fold_kwargs["position_embeddings"] = position_embeddings
+            if branch_ids is not None:
+                fold_kwargs["branch_ids"] = branch_ids
+            if forced_divergent is not None:
+                fold_kwargs["forced_divergent"] = forced_divergent
             out: torch.Tensor = folded_model(
                 x,
                 branch_id=branch_id,
                 parent_branch_id=parent_branch_id,
                 step_idx=step_idx,
                 attention_mask=attention_mask,
+                **fold_kwargs,
             )
             return out
 

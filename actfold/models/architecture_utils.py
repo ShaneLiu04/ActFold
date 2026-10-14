@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import math
 import warnings
+from collections import OrderedDict
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, TypeVar
@@ -18,6 +19,22 @@ import torch
 import torch.nn as nn
 
 _T = TypeVar("_T", bound=nn.Module)
+
+
+def _clear_cublas_workspaces() -> None:
+    """Release torch's per-stream cuBLAS workspace cache (device memory).
+
+    CUDA graph capture runs its warmup on a fresh side stream; the first
+    matmul on that stream allocates a cuBLAS workspace that torch caches
+    per stream forever. Evicting a runner releases the graph and its static
+    buffers, but this process-wide cache is the only way to also return the
+    workspace blocks the capture leaked (the resident-VRAM reclamation is
+    pinned by UT-2106). Workspaces baked into a live graph's captured body
+    live in that graph's private pool and are unaffected.
+    """
+    clear = getattr(torch._C, "_cuda_clearCublasWorkspaces", None)
+    if clear is not None:
+        clear()
 
 
 @dataclass
@@ -408,12 +425,16 @@ class ManualFoldedForward(nn.Module):
         graph_capacity_ratio: float = 0.5,
         graph_adaptive_capacity: bool = False,
         graph_adaptive_config: Any | None = None,
+        graph_runner_pool_size: int = 0,
     ) -> None:
         super().__init__()
         if not 0.0 < graph_capacity_ratio <= 1.0:
             raise ValueError(
-                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got "
-                f"{graph_capacity_ratio}"
+                "graph_capacity_ratio must satisfy 0 < ratio <= 1, got " f"{graph_capacity_ratio}"
+            )
+        if graph_runner_pool_size < 0:
+            raise ValueError(
+                "graph_runner_pool_size must be >= 0, got " f"{graph_runner_pool_size}"
             )
         self.profile = detect_architecture(model)
         self.cache = cache
@@ -472,6 +493,31 @@ class ManualFoldedForward(nn.Module):
         self._graph_batched_shape_warned = False
         self._graph_batched_budget_warned = False
         self._graph_batched_capture_failed = False
+        # Shape-keyed graph runner pool (AR021 FR2). 0 = legacy: the
+        # single-runner attributes above keep their exact warn-once /
+        # never-recapture behavior. > 0 = LRU pool cap: one runner per
+        # (tokens shape, attention-mask identity) fold window — the pinned
+        # ctx mask makes the key semantically equal to the design's
+        # (T, prompt_len) / (N, T, prompt_len) (same window -> same mask
+        # object -> same key; same T with a different prompt_len -> a
+        # different mask object -> a different key). The pools hold the
+        # mask references so object ids stay valid; the legacy attributes
+        # stay live aliases of the currently active runner (refreshed on
+        # every pool capture/replay, so an LRU eviction drops the last
+        # reference and reclaims the static-buffer VRAM).
+        self.graph_runner_pool_size = int(graph_runner_pool_size)
+        self._graph_runner_pool: "OrderedDict[Any, Any]" = OrderedDict()
+        self._graph_runner_pool_stats: dict[Any, dict[str, int]] = {}
+        self._graph_runner_batched_pool: "OrderedDict[Any, Any]" = OrderedDict()
+        self._graph_runner_batched_pool_stats: dict[Any, dict[str, int]] = {}
+        # Two-class eager counters (AR021 FR2 observation face):
+        # degradation = every non-structural graph-path fallback (mask/pe
+        # identity mismatch, forced identity mismatch, budget discard,
+        # capture failure, scheduler/gate family, anomalously missing
+        # parent entries); structural = the by-design eager forwards
+        # (parent-None window populate, parent-at-old-shape window switch).
+        self._degradation_fallback_count = 0
+        self._structural_eager_count = 0
         self._wrapped_layers = nn.ModuleList(
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
@@ -492,7 +538,9 @@ class ManualFoldedForward(nn.Module):
         writes, parent-cache validation, and the runners' replay-time parent
         fetches. Without the propagation a swapped-in cache would never see
         the re-serialized parent and the batched graph path would silently
-        fall back to eager.
+        fall back to eager. AR021 extends the reach to every runner held by
+        the shape-keyed pools (including non-active members — an evicted
+        runner is dead by definition and never replayed again).
         """
         self._cache = value
         layers = getattr(self, "_wrapped_layers", None)
@@ -503,6 +551,11 @@ class ManualFoldedForward(nn.Module):
             runner = getattr(self, runner_attr, None)
             if runner is not None:
                 runner._cache = value
+        for pool_attr in ("_graph_runner_pool", "_graph_runner_batched_pool"):
+            pool = getattr(self, pool_attr, None)
+            if pool:
+                for runner in pool.values():
+                    runner._cache = value
 
     def _wrap_layer(self, layer: nn.Module, idx: int) -> nn.Module:
         """Wrap a single Transformer layer with a folded layer wrapper."""
@@ -536,6 +589,7 @@ class ManualFoldedForward(nn.Module):
         step_idx: int = 0,
         branch_ids: Sequence[str] | None = None,
         position_embeddings: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> Any:
         """Run a folded forward pass and return logits or hidden states.
 
@@ -565,6 +619,17 @@ class ManualFoldedForward(nn.Module):
                 object silently falls back to eager. ``None`` (the default)
                 attaches no kwarg at all, so existing callers are
                 byte-for-byte unchanged.
+            forced_divergent: Optional boolean tensor (AR021 FR2) whose
+                True positions are forced divergent in every layer's
+                stability partition regardless of the gate (the layer ANDs
+                the complement into the materialized stable mask before the
+                profiler record and the count consumption). Serial calls
+                accept ``[seq_len]`` or ``[1, seq_len]``; batched calls
+                accept ``[N, seq_len]``. The graph paths bake the
+                None/not-None identity plus the shape at capture and
+                refresh the content through the runner's static buffer on
+                every replay. ``None`` (the default) attaches no kwarg at
+                all, so existing callers are byte-for-byte unchanged.
 
         Returns:
             Output of the language modeling head, typically logits
@@ -575,7 +640,11 @@ class ManualFoldedForward(nn.Module):
                 not a 2-tuple of tensors whose seq dimension
                 (``shape[-2]``) matches ``tokens``' sequence length and
                 whose ``cos``/``sin`` head dimensions (``shape[-1]``)
-                agree (host-side metadata only, no device sync).
+                agree (host-side metadata only, no device sync); or if
+                ``forced_divergent`` is not ``None`` and is not a boolean
+                tensor whose last dimension matches ``tokens``' sequence
+                length with the serial/batched form above (host-side
+                metadata only).
         """
         if position_embeddings is not None:
             if (
@@ -602,6 +671,35 @@ class ManualFoldedForward(nn.Module):
                     f"must agree; got cos {tuple(cos.shape)}, "
                     f"sin {tuple(sin.shape)}."
                 )
+        if forced_divergent is not None:
+            if (
+                not isinstance(forced_divergent, torch.Tensor)
+                or forced_divergent.dtype != torch.bool
+            ):
+                raise ValueError(
+                    "forced_divergent must be None or a boolean torch.Tensor; "
+                    f"got dtype {getattr(forced_divergent, 'dtype', None)!r}."
+                )
+            seq_len = int(tokens.shape[-1])
+            if branch_ids is not None:
+                expected_forms = f"[{int(tokens.shape[0])}, {seq_len}] for batched calls"
+                form_ok = (
+                    forced_divergent.dim() == 2
+                    and forced_divergent.shape[0] == tokens.shape[0]
+                    and forced_divergent.shape[1] == seq_len
+                )
+            else:
+                expected_forms = f"[{seq_len}] or [1, {seq_len}] for serial calls"
+                form_ok = tuple(forced_divergent.shape) in (
+                    (seq_len,),
+                    (1, seq_len),
+                )
+            if not form_ok or forced_divergent.shape[-1] != seq_len:
+                raise ValueError(
+                    "forced_divergent must be None or a boolean tensor of "
+                    f"shape {expected_forms}; got {tuple(forced_divergent.shape)} "
+                    f"for tokens {tuple(tokens.shape)}."
+                )
         if branch_ids is not None:
             if branch_id is not None:
                 raise ValueError(
@@ -621,6 +719,7 @@ class ManualFoldedForward(nn.Module):
                     attention_mask,
                     step_idx,
                     position_embeddings,
+                    forced_divergent,
                 )
                 if graph_out is not None:
                     return graph_out
@@ -635,6 +734,7 @@ class ManualFoldedForward(nn.Module):
                 attention_mask,
                 step_idx,
                 position_embeddings,
+                forced_divergent,
             )
             if graph_out is not None:
                 return graph_out
@@ -648,9 +748,12 @@ class ManualFoldedForward(nn.Module):
         # filters it against each original layer's signature (real rotary
         # layers receive it; synthetic layers without the parameter drop it).
         pe_kwargs: dict[str, Any] = (
-            {"position_embeddings": position_embeddings}
-            if position_embeddings is not None
-            else {}
+            {"position_embeddings": position_embeddings} if position_embeddings is not None else {}
+        )
+        # AR021 FR2: same attach-only-when-supplied rule for the forced
+        # region; ``None`` adds no kwarg AND no layer op (zero disturbance).
+        forced_kwargs: dict[str, Any] = (
+            {"forced_divergent": forced_divergent} if forced_divergent is not None else {}
         )
         for wrapped in self._wrapped_layers:
             x = wrapped(
@@ -661,6 +764,7 @@ class ManualFoldedForward(nn.Module):
                 step_idx=step_idx,
                 branch_ids=branch_ids,
                 **pe_kwargs,
+                **forced_kwargs,
             )
 
         # Apply the final normalization (e.g. LLaMA ``model.norm``) before the
@@ -701,17 +805,15 @@ class ManualFoldedForward(nn.Module):
         so it counts as incomplete and the step stays eager.
         """
         try:
-            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get(
-                "embedding"
-            )
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
             if embedding is None:
                 return False
             if tuple(embedding.shape[:2]) != tuple(tokens.shape):
                 return False
             for layer_idx in range(len(self._wrapped_layers)):
-                ffn_out = self.cache.fetch(
-                    branch_id=parent_branch_id, layer_idx=layer_idx
-                ).get("ffn_out")
+                ffn_out = self.cache.fetch(branch_id=parent_branch_id, layer_idx=layer_idx).get(
+                    "ffn_out"
+                )
                 if ffn_out is None:
                     return False
                 if tuple(ffn_out.shape[:2]) != tuple(tokens.shape):
@@ -719,6 +821,64 @@ class ManualFoldedForward(nn.Module):
         except (KeyError, RuntimeError):
             return False
         return True
+
+    def _parent_incomplete_is_structural(self, parent_branch_id: str, tokens: Any) -> bool:
+        """Classify an incomplete-parent graph fallback (AR021 FR2).
+
+        Structural (by design, not degradation): the parent exists but was
+        cached at a different batch/seq shape — the canonical canvas-growth
+        window switch, where the child must run eager prefix folding against
+        the shorter parent. Everything else (a missing parent entry, an
+        evicted branch) is a degradation fallback.
+        """
+        try:
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
+        except (KeyError, RuntimeError):
+            return False
+        if embedding is None:
+            return False
+        return tuple(embedding.shape[:2]) != tuple(tokens.shape)
+
+    def _count_parent_incomplete_fallback(self, parent_branch_id: str, tokens: Any) -> None:
+        """Bump the two-class eager counter for an incomplete-parent miss."""
+        if self._parent_incomplete_is_structural(parent_branch_id, tokens):
+            self._structural_eager_count += 1
+        else:
+            self._degradation_fallback_count += 1
+
+    def _install_serial_runner(
+        self,
+        key: Any,
+        runner: Any,
+        attention_mask: Any,
+        position_embeddings: Any | None,
+    ) -> None:
+        """Insert a captured serial runner into the pool (LRU + stats).
+
+        Eviction pops the least-recently-used entry (``OrderedDict`` order;
+        hits ``move_to_end`` in the lookup path) and records the eviction on
+        the entry's persistent stats. The legacy ``graph_runner`` /
+        ``_graph_mask`` / ``_graph_pe`` attributes are re-pointed at the new
+        runner on EVERY install and replay, so an evicted runner loses its
+        last reference here and its static-buffer VRAM is reclaimed — the
+        alias must never pin a dead pool member.
+        """
+        pool = self._graph_runner_pool
+        pool[key] = runner
+        pool.move_to_end(key)
+        stats = self._graph_runner_pool_stats.setdefault(
+            key, {"captures": 0, "replays": 0, "evictions": 0}
+        )
+        stats["captures"] += 1
+        while len(pool) > self.graph_runner_pool_size:
+            evicted_key, _evicted = pool.popitem(last=False)
+            evicted_stats = self._graph_runner_pool_stats.get(evicted_key)
+            if evicted_stats is not None:
+                evicted_stats["evictions"] = evicted_stats.get("evictions", 0) + 1
+            _clear_cublas_workspaces()
+        self.graph_runner = runner
+        self._graph_mask = attention_mask
+        self._graph_pe = position_embeddings
 
     def _graph_forward_or_none(
         self,
@@ -728,6 +888,7 @@ class ManualFoldedForward(nn.Module):
         attention_mask: Any,
         step_idx: int,
         position_embeddings: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> Any:
         """Try the CUDA graph fast path; return logits or ``None`` for eager.
 
@@ -748,53 +909,94 @@ class ManualFoldedForward(nn.Module):
         runner's static buffers). AR019: ``position_embeddings`` mirrors
         the mask contract — baked by reference at capture (a non-CUDA
         tuple silently refuses the capture) and required to be the SAME
-        object on every replay; any mismatch silently uses eager.
+        object on every replay; any mismatch silently uses eager. AR021
+        FR2: ``forced_divergent`` bakes the None/not-None identity plus
+        the shape at capture and refreshes the CONTENT through the
+        runner's static buffer on every replay (a pure device-to-device
+        copy outside the captured body); a None/not-None mismatch on
+        either side silently uses eager with no re-capture. AR021 FR2
+        pool: with ``graph_runner_pool_size > 0`` the warn-once
+        shape/mask pins are replaced by a shape+mask-identity keyed LRU
+        pool — the pinned fold-context mask makes the key semantically
+        ``(T, prompt_len)``: a new window captures a fresh pool runner
+        (zero UserWarning), a same-window call replays, and the capacity
+        evicts the least-recently-used runner with its VRAM reclaimed.
+        Every graph-path eager fallback bumps exactly one of the two
+        instance-cumulative counters: ``_structural_eager_count`` for the
+        by-design misses (parent-None populate, parent-at-old-shape
+        window switch), ``_degradation_fallback_count`` for everything
+        else.
         """
         from actfold.core.similarity_gate import SimilarityGate
 
-        runner = self.graph_runner
         if self._graph_capture_failed:
             # EX-002: a failed capture permanently disables the graph path
             # (the failure already warned once); never retry — capture is
             # expensive and its failure mode is not transient.
+            self._degradation_fallback_count += 1
             return None
-        if runner is not None and tuple(tokens.shape) != tuple(
-            runner.tokens_static.shape
-        ):
-            if not self._graph_shape_warned:
-                self._graph_shape_warned = True
-                warnings.warn(
-                    "ManualFoldedForward graph path captured shape "
-                    f"{tuple(runner.tokens_static.shape)}; tokens of shape "
-                    f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            return None
+        pool_on = self.graph_runner_pool_size > 0
+        key: Any = None
+        runner: Any = None
+        if pool_on:
+            # The pool key is (tokens shape, attention-mask identity): the
+            # fold context pins one mask object per (T, prompt_len) window,
+            # so the key IS the design's shape window (same window -> same
+            # mask object -> same key; same T with different padding -> a
+            # different mask object -> a different key). The pool holds the
+            # mask reference, so the id inside the key stays valid.
+            key = (tuple(tokens.shape), attention_mask)
+            runner = self._graph_runner_pool.get(key)
+            if runner is not None:
+                self._graph_runner_pool.move_to_end(key)
+        else:
+            runner = self.graph_runner
+            if runner is not None and tuple(tokens.shape) != tuple(runner.tokens_static.shape):
+                if not self._graph_shape_warned:
+                    self._graph_shape_warned = True
+                    warnings.warn(
+                        "ManualFoldedForward graph path captured shape "
+                        f"{tuple(runner.tokens_static.shape)}; tokens of shape "
+                        f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                self._degradation_fallback_count += 1
+                return None
         if parent_branch_id is None:
             # Parent passes always run eager: they populate the cache.
+            self._structural_eager_count += 1
             return None
         if self.scheduler is not None:
+            self._degradation_fallback_count += 1
             self._warn_graph_degraded_once("a folding scheduler is attached")
             return None
         if type(self.gate) is not SimilarityGate or self.gate.metric != "cosine":
-            self._warn_graph_degraded_once(
-                "the gate is not an exact-type cosine SimilarityGate"
-            )
+            self._degradation_fallback_count += 1
+            self._warn_graph_degraded_once("the gate is not an exact-type cosine SimilarityGate")
             return None
         if not tokens.is_cuda:
+            self._degradation_fallback_count += 1
             self._warn_graph_degraded_once("CUDA is unavailable")
             return None
 
+        fresh_capture = False
         if runner is None:
-            # First graph-eligible call: capture once. An incomplete parent
-            # cache is a normal transient (e.g. after eviction), so it falls
-            # back silently without disabling future captures.
+            # First graph-eligible call for this key: capture once. An
+            # incomplete parent cache is a normal transient (e.g. after
+            # eviction), so it falls back silently without disabling future
+            # captures.
             if not self._parent_cache_complete(parent_branch_id, tokens):
+                self._count_parent_incomplete_fallback(parent_branch_id, tokens)
                 return None
             if attention_mask is not None and not attention_mask.is_cuda:
+                self._degradation_fallback_count += 1
                 return None
             if position_embeddings is not None and not position_embeddings[0].is_cuda:
+                self._degradation_fallback_count += 1
+                return None
+            if forced_divergent is not None and not forced_divergent.is_cuda:
+                self._degradation_fallback_count += 1
                 return None
             from actfold.core.cuda_graph import FoldedGraphRunner
 
@@ -809,31 +1011,73 @@ class ManualFoldedForward(nn.Module):
                 capacity_ratio=self.graph_capacity_ratio,
                 attention_mask_static=attention_mask,
                 position_embeddings_static=position_embeddings,
+                forced_divergent_static=forced_divergent,
             )
             try:
-                new_runner.capture(tokens, branch_id, parent_branch_id)
+                new_runner.capture(
+                    tokens,
+                    branch_id,
+                    parent_branch_id,
+                    forced_divergent=forced_divergent,
+                )
             except RuntimeError as exc:
+                self._degradation_fallback_count += 1
                 self._warn_graph_degraded_once(f"CUDA graph capture failed ({exc})")
                 self._graph_capture_failed = True
                 return None
-            self.graph_runner = new_runner
-            self._graph_mask = attention_mask
-            self._graph_pe = position_embeddings
             runner = new_runner
-        elif (
-            attention_mask is not self._graph_mask
-            or position_embeddings is not self._graph_pe
-        ):
-            # The captured graph bakes the attention mask and the rotary
-            # embeddings in; a different object must not silently reuse
-            # either (AR019 mirrors the mask identity contract for pe).
-            return None
+            fresh_capture = True
+            if pool_on:
+                self._install_serial_runner(key, runner, attention_mask, position_embeddings)
+            else:
+                self.graph_runner = new_runner
+                self._graph_mask = attention_mask
+                self._graph_pe = position_embeddings
+        else:
+            if pool_on:
+                # Mask identity is guaranteed by the pool key; the rotary
+                # tuple is checked per-runner against the captured object
+                # (a same-key call with a different pe object is a
+                # degradation, never a re-capture).
+                if position_embeddings is not getattr(runner, "_position_embeddings_static", None):
+                    self._degradation_fallback_count += 1
+                    return None
+            elif (
+                attention_mask is not self._graph_mask or position_embeddings is not self._graph_pe
+            ):
+                # The captured graph bakes the attention mask and the rotary
+                # embeddings in; a different object must not silently reuse
+                # either (AR019 mirrors the mask identity contract for pe).
+                self._degradation_fallback_count += 1
+                return None
+            if (runner.forced_divergent_static is None) != (forced_divergent is None):
+                # Forced-identity mismatch: the captured body either has a
+                # forced AND that this call cannot feed or lacks one that
+                # this call requests. Silent eager both directions — never a
+                # re-capture (the runner stays valid for its own identity).
+                self._degradation_fallback_count += 1
+                return None
 
-        logits = runner.replay(tokens, parent_branch_id, branch_id)
+        logits = runner.replay(
+            tokens, parent_branch_id, branch_id, forced_divergent=forced_divergent
+        )
         if logits is None:
             # Parent cache incomplete for this step: plain eager fallback.
+            self._count_parent_incomplete_fallback(parent_branch_id, tokens)
             return None
+        if pool_on:
+            stats = self._graph_runner_pool_stats.setdefault(
+                key, {"captures": 0, "replays": 0, "evictions": 0}
+            )
+            if not fresh_capture:
+                stats["replays"] += 1
+            # Keep the legacy aliases on the ACTIVE pool member so an
+            # evicted runner is never pinned past its eviction.
+            self.graph_runner = runner
+            self._graph_mask = attention_mask
+            self._graph_pe = position_embeddings
         if runner.budget_exceeded:
+            self._degradation_fallback_count += 1
             if not self._graph_budget_warned:
                 self._graph_budget_warned = True
                 warnings.warn(
@@ -867,9 +1111,7 @@ class ManualFoldedForward(nn.Module):
         embedding = self.profile.embed_module(tokens)
         num_layers = len(self._wrapped_layers)
         for layer_idx in range(num_layers):
-            activations: dict[str, Any] = {
-                "ffn_out": runner.child_buf[layer_idx].clone()
-            }
+            activations: dict[str, Any] = {"ffn_out": runner.child_buf[layer_idx].clone()}
             if layer_idx == 0:
                 activations["embedding"] = embedding
             self.cache.put(
@@ -887,6 +1129,36 @@ class ManualFoldedForward(nn.Module):
                 metric="cosine",
             )
 
+    def _install_batched_runner(
+        self,
+        key: Any,
+        runner: Any,
+        attention_mask: Any,
+        position_embeddings: Any | None,
+    ) -> None:
+        """Insert a captured batched runner into the pool (LRU + stats).
+
+        Batched mirror of :meth:`_install_serial_runner`: LRU eviction with
+        persistent per-key stats and legacy-alias refresh so evicted runners
+        lose their last reference (VRAM conservation).
+        """
+        pool = self._graph_runner_batched_pool
+        pool[key] = runner
+        pool.move_to_end(key)
+        stats = self._graph_runner_batched_pool_stats.setdefault(
+            key, {"captures": 0, "replays": 0, "evictions": 0}
+        )
+        stats["captures"] += 1
+        while len(pool) > self.graph_runner_pool_size:
+            evicted_key, _evicted = pool.popitem(last=False)
+            evicted_stats = self._graph_runner_batched_pool_stats.get(evicted_key)
+            if evicted_stats is not None:
+                evicted_stats["evictions"] = evicted_stats.get("evictions", 0) + 1
+            _clear_cublas_workspaces()
+        self.graph_runner_batched = runner
+        self._graph_batched_mask = attention_mask
+        self._graph_batched_pe = position_embeddings
+
     def _graph_forward_batched_or_none(
         self,
         tokens: Any,
@@ -895,6 +1167,7 @@ class ManualFoldedForward(nn.Module):
         attention_mask: Any,
         step_idx: int,
         position_embeddings: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> Any:
         """Try the batched CUDA graph fast path; return logits or ``None``.
 
@@ -912,6 +1185,14 @@ class ManualFoldedForward(nn.Module):
         budget discards the replay output (one-time warning) and recomputes
         eagerly; a failed capture permanently disables the batched graph path
         (EX-002, one-time warning, no retry) without touching the serial one.
+        AR021 FR2: ``forced_divergent`` (``[N, seq]``) bakes the
+        None/not-None identity at capture and refreshes the content on every
+        replay; an identity mismatch silently uses eager. AR021 FR2 pool:
+        with ``graph_runner_pool_size > 0`` the shape/mask pins are replaced
+        by the (shape, mask-identity) keyed LRU pool — semantically
+        ``(N, T, prompt_len)`` — with per-key stats and VRAM-conserving
+        eviction; every eager fallback bumps the two-class counters exactly
+        as on the serial side.
         """
         from actfold.core.similarity_gate import SimilarityGate
 
@@ -919,48 +1200,67 @@ class ManualFoldedForward(nn.Module):
             # EX-002: a failed capture permanently disables the batched graph
             # path; never retry — capture is expensive and its failure mode
             # is not transient.
+            self._degradation_fallback_count += 1
             return None
-        runner = self.graph_runner_batched
-        if runner is not None and tuple(tokens.shape) != tuple(
-            runner.tokens_static.shape
-        ):
-            if not self._graph_batched_shape_warned:
-                self._graph_batched_shape_warned = True
-                warnings.warn(
-                    "ManualFoldedForward batched graph path captured shape "
-                    f"{tuple(runner.tokens_static.shape)}; tokens of shape "
-                    f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
-                    UserWarning,
-                    stacklevel=2,
-                )
-            return None
+        pool_on = self.graph_runner_pool_size > 0
+        key: Any = None
+        runner: Any = None
+        if pool_on:
+            key = (tuple(tokens.shape), attention_mask)
+            runner = self._graph_runner_batched_pool.get(key)
+            if runner is not None:
+                self._graph_runner_batched_pool.move_to_end(key)
+        else:
+            runner = self.graph_runner_batched
+            if runner is not None and tuple(tokens.shape) != tuple(runner.tokens_static.shape):
+                if not self._graph_batched_shape_warned:
+                    self._graph_batched_shape_warned = True
+                    warnings.warn(
+                        "ManualFoldedForward batched graph path captured shape "
+                        f"{tuple(runner.tokens_static.shape)}; tokens of shape "
+                        f"{tuple(tokens.shape)} fall back to eager (no re-capture).",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+                self._degradation_fallback_count += 1
+                return None
         if parent_branch_id is None:
             # Parent passes always run eager: they populate the cache.
+            self._structural_eager_count += 1
             return None
         if self.scheduler is not None:
+            self._degradation_fallback_count += 1
             self._warn_graph_degraded_once("a folding scheduler is attached")
             return None
         if type(self.gate) is not SimilarityGate or self.gate.metric != "cosine":
-            self._warn_graph_degraded_once(
-                "the gate is not an exact-type cosine SimilarityGate"
-            )
+            self._degradation_fallback_count += 1
+            self._warn_graph_degraded_once("the gate is not an exact-type cosine SimilarityGate")
             return None
         if not tokens.is_cuda:
+            self._degradation_fallback_count += 1
             self._warn_graph_degraded_once("CUDA is unavailable")
             return None
         if len(branch_ids) != tokens.shape[0]:
+            self._degradation_fallback_count += 1
             return None
 
+        fresh_capture = False
         if runner is None:
-            # First batched graph-eligible call: capture once. A parent
-            # cached at batch != 1 or a sequence-length mismatch is refused
-            # silently here (the eager body decides the outcome — the #41
-            # contract for batch != 1).
+            # First batched graph-eligible call for this key: capture once. A
+            # parent cached at batch != 1 or a sequence-length mismatch is
+            # refused silently here (the eager body decides the outcome — the
+            # #41 contract for batch != 1).
             if not self._parent_cache_complete_batched(parent_branch_id, tokens):
+                self._count_parent_incomplete_fallback(parent_branch_id, tokens)
                 return None
             if attention_mask is not None and not attention_mask.is_cuda:
+                self._degradation_fallback_count += 1
                 return None
             if position_embeddings is not None and not position_embeddings[0].is_cuda:
+                self._degradation_fallback_count += 1
+                return None
+            if forced_divergent is not None and not forced_divergent.is_cuda:
+                self._degradation_fallback_count += 1
                 return None
             from actfold.core.cuda_graph import FoldedGraphRunner
 
@@ -975,25 +1275,47 @@ class ManualFoldedForward(nn.Module):
                 capacity_ratio=self.graph_capacity_ratio,
                 attention_mask_static=attention_mask,
                 position_embeddings_static=position_embeddings,
+                forced_divergent_static=forced_divergent,
             )
             try:
-                new_runner.capture(tokens, branch_ids[0], parent_branch_id)
+                new_runner.capture(
+                    tokens,
+                    branch_ids[0],
+                    parent_branch_id,
+                    forced_divergent=forced_divergent,
+                )
             except RuntimeError as exc:
+                self._degradation_fallback_count += 1
                 self._warn_graph_degraded_once(f"CUDA graph capture failed ({exc})")
                 self._graph_batched_capture_failed = True
                 return None
-            self.graph_runner_batched = new_runner
-            self._graph_batched_mask = attention_mask
-            self._graph_batched_pe = position_embeddings
             runner = new_runner
-        elif (
-            attention_mask is not self._graph_batched_mask
-            or position_embeddings is not self._graph_batched_pe
-        ):
-            # The captured graph bakes the attention mask and the rotary
-            # embeddings in; a different object must not silently reuse
-            # either (AR019 mirrors the mask identity contract for pe).
-            return None
+            fresh_capture = True
+            if pool_on:
+                self._install_batched_runner(key, runner, attention_mask, position_embeddings)
+            else:
+                self.graph_runner_batched = new_runner
+                self._graph_batched_mask = attention_mask
+                self._graph_batched_pe = position_embeddings
+        else:
+            if pool_on:
+                if position_embeddings is not getattr(runner, "_position_embeddings_static", None):
+                    self._degradation_fallback_count += 1
+                    return None
+            elif (
+                attention_mask is not self._graph_batched_mask
+                or position_embeddings is not self._graph_batched_pe
+            ):
+                # The captured graph bakes the attention mask and the rotary
+                # embeddings in; a different object must not silently reuse
+                # either (AR019 mirrors the mask identity contract for pe).
+                self._degradation_fallback_count += 1
+                return None
+            if (runner.forced_divergent_static is None) != (forced_divergent is None):
+                # Forced-identity mismatch: silent eager both directions,
+                # never a re-capture (AR021 FR2).
+                self._degradation_fallback_count += 1
+                return None
 
         # Replay-time parent re-validation (AR016 Major-1): re-check before
         # EVERY replay. A parent re-cached at [N, T, H] after capture would
@@ -1003,12 +1325,26 @@ class ManualFoldedForward(nn.Module):
         # RuntimeError before any store. Shape checks are host-side metadata
         # (no device-to-host sync).
         if not self._parent_cache_complete_batched(parent_branch_id, tokens):
+            self._count_parent_incomplete_fallback(parent_branch_id, tokens)
             return None
-        logits = runner.replay(tokens, parent_branch_id, branch_ids[0])
+        logits = runner.replay(
+            tokens, parent_branch_id, branch_ids[0], forced_divergent=forced_divergent
+        )
         if logits is None:
             # Parent cache incomplete for this step: plain eager fallback.
+            self._count_parent_incomplete_fallback(parent_branch_id, tokens)
             return None
+        if pool_on:
+            stats = self._graph_runner_batched_pool_stats.setdefault(
+                key, {"captures": 0, "replays": 0, "evictions": 0}
+            )
+            if not fresh_capture:
+                stats["replays"] += 1
+            self.graph_runner_batched = runner
+            self._graph_batched_mask = attention_mask
+            self._graph_batched_pe = position_embeddings
         if runner.budget_exceeded:
+            self._degradation_fallback_count += 1
             if not self._graph_batched_budget_warned:
                 self._graph_batched_budget_warned = True
                 warnings.warn(
@@ -1029,11 +1365,10 @@ class ManualFoldedForward(nn.Module):
                 attention_mask,
                 exceeded=True,
                 position_embeddings=position_embeddings,
+                forced_divergent=forced_divergent,
             )
             return None
-        self._publish_graph_children(
-            runner, tokens, branch_ids, parent_branch_id, step_idx
-        )
+        self._publish_graph_children(runner, tokens, branch_ids, parent_branch_id, step_idx)
         # Shrink hook (AR017): placed after the publish -- the swap must
         # never precede it (the publish reads the old runner's static
         # buffers).
@@ -1045,6 +1380,7 @@ class ManualFoldedForward(nn.Module):
             attention_mask,
             exceeded=False,
             position_embeddings=position_embeddings,
+            forced_divergent=forced_divergent,
         )
         return logits.clone()
 
@@ -1060,17 +1396,15 @@ class ManualFoldedForward(nn.Module):
         """
         expected = (1, tokens.shape[1])
         try:
-            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get(
-                "embedding"
-            )
+            embedding = self.cache.fetch(branch_id=parent_branch_id, layer_idx=0).get("embedding")
             if embedding is None:
                 return False
             if tuple(embedding.shape[:2]) != expected:
                 return False
             for layer_idx in range(len(self._wrapped_layers)):
-                ffn_out = self.cache.fetch(
-                    branch_id=parent_branch_id, layer_idx=layer_idx
-                ).get("ffn_out")
+                ffn_out = self.cache.fetch(branch_id=parent_branch_id, layer_idx=layer_idx).get(
+                    "ffn_out"
+                )
                 if ffn_out is None:
                     return False
                 if tuple(ffn_out.shape[:2]) != expected:
@@ -1133,9 +1467,7 @@ class ManualFoldedForward(nn.Module):
             entries: list[CachePutEntry] = []
             for layer_idx in range(num_layers):
                 for row, branch_id in enumerate(branch_ids):
-                    activations: dict[str, Any] = {
-                        "ffn_out": snapshot[layer_idx][row : row + 1]
-                    }
+                    activations: dict[str, Any] = {"ffn_out": snapshot[layer_idx][row : row + 1]}
                     if layer_idx == 0:
                         activations["embedding"] = embedding[row : row + 1]
                     entries.append(
@@ -1150,9 +1482,7 @@ class ManualFoldedForward(nn.Module):
         for layer_idx in range(num_layers):
             for row, branch_id in enumerate(branch_ids):
                 if not batched:
-                    activations = {
-                        "ffn_out": snapshot[layer_idx][row : row + 1]
-                    }
+                    activations = {"ffn_out": snapshot[layer_idx][row : row + 1]}
                     if layer_idx == 0:
                         activations["embedding"] = embedding[row : row + 1]
                     self.cache.put(
@@ -1193,6 +1523,7 @@ class ManualFoldedForward(nn.Module):
         attention_mask: Any,
         exceeded: bool,
         position_embeddings: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> None:
         """Run the adaptive-capacity policy hook (AR017; no-op when off).
 
@@ -1206,9 +1537,10 @@ class ManualFoldedForward(nn.Module):
         :meth:`_recapture_batched_runner`; a ``"retired"`` verdict warns
         exactly once (the capacity stays fixed from here on). AR019: the
         caller's ``position_embeddings`` is threaded into the re-capture;
-        both hooks fire only on replay paths where the pe identity check
-        has already passed, so the re-capture always receives the pinned
-        object.
+        AR021 FR2: so is the caller's ``forced_divergent``; both hooks fire
+        only on replay paths where the pe/forced identity checks have
+        already passed, so the re-capture always receives the pinned
+        objects.
         """
         policy = self._graph_adaptive_policy
         if policy is None:
@@ -1220,9 +1552,7 @@ class ManualFoldedForward(nn.Module):
             # staging.
             return
         num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
-        action = policy.observe(
-            max(divergences), exceeded, int(runner.capacity), num_tokens
-        )
+        action = policy.observe(max(divergences), exceeded, int(runner.capacity), num_tokens)
         if action.kind == "recapture" and action.target_capacity is not None:
             self._recapture_batched_runner(
                 action.target_capacity,
@@ -1232,6 +1562,7 @@ class ManualFoldedForward(nn.Module):
                 parent_branch_id,
                 attention_mask,
                 position_embeddings=position_embeddings,
+                forced_divergent=forced_divergent,
             )
         elif action.kind == "retired":
             if not self._graph_adaptive_retire_warned:
@@ -1252,6 +1583,7 @@ class ManualFoldedForward(nn.Module):
         parent_branch_id: str,
         attention_mask: Any,
         position_embeddings: Any | None = None,
+        forced_divergent: torch.Tensor | None = None,
     ) -> None:
         """Re-capture the batched runner at a new capacity (AR017).
 
@@ -1271,12 +1603,14 @@ class ManualFoldedForward(nn.Module):
         SS4.4; all in-scope graph geometries). AR019: the re-captured
         runner bakes the caller's pinned ``position_embeddings`` by
         reference and re-pins it on success (face 4 of the pe threading).
+        AR021 FR2: the caller's ``forced_divergent`` is baked with the same
+        contract, and a pool-mode re-capture replaces the pool entry for
+        the active key (the evicted old runner loses its pool reference —
+        the legacy alias never pins a dead member).
         """
         num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
         new_ratio = min(1.0, target_capacity / num_tokens)
-        prospective = max(
-            1, min(math.ceil(new_ratio * num_tokens), num_tokens)
-        )
+        prospective = max(1, min(math.ceil(new_ratio * num_tokens), num_tokens))
         if prospective == current_capacity:
             return
         from actfold.core.cuda_graph import FoldedGraphRunner
@@ -1292,9 +1626,15 @@ class ManualFoldedForward(nn.Module):
             capacity_ratio=new_ratio,
             attention_mask_static=attention_mask,
             position_embeddings_static=position_embeddings,
+            forced_divergent_static=forced_divergent,
         )
         try:
-            new_runner.capture(tokens, branch_ids[0], parent_branch_id)
+            new_runner.capture(
+                tokens,
+                branch_ids[0],
+                parent_branch_id,
+                forced_divergent=forced_divergent,
+            )
         except RuntimeError as exc:
             if not self._graph_adaptive_fail_warned:
                 self._graph_adaptive_fail_warned = True
@@ -1308,9 +1648,13 @@ class ManualFoldedForward(nn.Module):
             if policy is not None:
                 policy.retire()
             return
-        self.graph_runner_batched = new_runner
-        self._graph_batched_mask = attention_mask
-        self._graph_batched_pe = position_embeddings
+        if self.graph_runner_pool_size > 0:
+            key = (tuple(tokens.shape), attention_mask)
+            self._install_batched_runner(key, new_runner, attention_mask, position_embeddings)
+        else:
+            self.graph_runner_batched = new_runner
+            self._graph_batched_mask = attention_mask
+            self._graph_batched_pe = position_embeddings
         policy = self._graph_adaptive_policy
         if policy is not None:
             policy.note_recaptured()
@@ -1319,6 +1663,32 @@ class ManualFoldedForward(nn.Module):
     def folding_applied(self) -> bool:
         """Return ``True`` because layers are explicitly wrapped."""
         return True
+
+    @property
+    def graph_pool_stats(self) -> dict[str, Any]:
+        """Shape-keyed graph runner pool statistics (AR021 FR2 probe).
+
+        Schema: ``{"serial": {"pool_size": int, <pool key>: {"captures",
+        "replays", "evictions"}}, "batched": {same layout},
+        "degradation_fallback_count": int, "structural_eager_count": int}``.
+        The per-key stats are instance-cumulative and persist after an LRU
+        eviction (the evicted entry's ``evictions`` count stays readable);
+        the two eager counters count every graph-path eager fallback in the
+        two-class split (degradation vs structural). Pool sections carry
+        only ``pool_size`` while the pool is off (no runner is ever pooled).
+        """
+        serial: dict[str, Any] = {"pool_size": len(self._graph_runner_pool)}
+        for pool_key, entry in self._graph_runner_pool_stats.items():
+            serial[pool_key] = dict(entry)
+        batched: dict[str, Any] = {"pool_size": len(self._graph_runner_batched_pool)}
+        for pool_key, entry in self._graph_runner_batched_pool_stats.items():
+            batched[pool_key] = dict(entry)
+        return {
+            "serial": serial,
+            "batched": batched,
+            "degradation_fallback_count": self._degradation_fallback_count,
+            "structural_eager_count": self._structural_eager_count,
+        }
 
     @property
     def graph_adaptive_policy(self) -> Any:
