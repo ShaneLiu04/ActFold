@@ -1,0 +1,486 @@
+{
+  "configs": [
+    {
+      "correctness_gate": {
+        "bit_equal": true,
+        "branches": 4,
+        "checked_tensors": 116,
+        "layers": 28
+      },
+      "end_to_end": {
+        "adaptive_state": {
+          "adaptive_batch": {
+            "final_capacity": 160,
+            "recaptures": 1
+          },
+          "adaptive_loop": {
+            "final_capacity": 160,
+            "recaptures": 1
+          }
+        },
+        "batch_canary": {
+          "batch_no_fallback": true,
+          "batch_publishes": 38,
+          "batch_put_calls": 28,
+          "expected_steps": 38,
+          "loop_put_calls": 4284,
+          "steady_state_budget_violations": 0
+        },
+        "budget_violations": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "h3_components": {
+          "regressed_beyond_2sigma": false,
+          "sigma_ms": 1.8561231129487337,
+          "strictly_improved_beyond_2sigma": true
+        },
+        "note": "round-robin per rep: baseline -> fixed -> adaptive(loop) -> adaptive(batch); the two adaptive paths differ only in the cache wrapper",
+        "pe_identity_mismatches": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "speedups_p50": {
+          "adaptive_batch_vs_loop": 1.0139,
+          "adaptive_loop_vs_baseline": 2.3667,
+          "fixed_vs_baseline": 1.666
+        },
+        "timings_ms": {
+          "adaptive_batch": {
+            "mean": 280.86532332624,
+            "n": 30,
+            "p50": 280.1459500333294,
+            "std": 1.8540726111131416
+          },
+          "adaptive_loop": {
+            "mean": 284.5208733420198,
+            "n": 30,
+            "p50": 284.0456499834545,
+            "std": 1.8561231129487337
+          },
+          "baseline_eager": {
+            "mean": 674.1579300025478,
+            "n": 30,
+            "p50": 672.2417000564747,
+            "std": 5.492285963791358
+          },
+          "graph_fixed": {
+            "mean": 402.91793665771064,
+            "n": 30,
+            "p50": 403.5161500214599,
+            "std": 2.534857341712913
+          }
+        }
+      },
+      "hidden_size": 1536,
+      "num_candidates": 4,
+      "num_layers": 28,
+      "num_tokens": 1024,
+      "peak_vram_mb": 5713.5,
+      "publish_window": {
+        "batch_put_batch_calls": 40,
+        "budget_exceeded_replays": 0,
+        "correctness_gate": {
+          "bit_equal": true,
+          "branches": 4,
+          "checked_tensors": 116,
+          "layers": 28
+        },
+        "h2_verdict": "supported",
+        "h4_verdict": "supported",
+        "loop_put_calls": 4508,
+        "note": "one untimed replay repopulates the static child buffer before each timed publish; A/B via mff.cache swap (capability re-probed on every publish); steady-state in-place overwrite destinations",
+        "sigma_ms": 1.1899715126645731,
+        "timings_ms": {
+          "batch": {
+            "mean": 4.650343337561935,
+            "n": 30,
+            "p50": 4.393150040414184,
+            "std": 0.705731162503465
+          },
+          "loop": {
+            "mean": 8.384653339938572,
+            "n": 30,
+            "p50": 7.893599977251142,
+            "std": 1.1899715126645731
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 116
+        }
+      },
+      "put_microbenchmark": {
+        "entries": 112,
+        "note": "entry construction outside the timed region; steady-state in-place overwrite (same destinations every rep); write_ops = write_op_count delta per timed call",
+        "timings_ms": {
+          "batch": {
+            "mean": 1.9725133276854951,
+            "n": 30,
+            "p50": 1.9357000128366053,
+            "std": 0.11218998504223898
+          },
+          "loop": {
+            "mean": 4.018669982906431,
+            "n": 30,
+            "p50": 3.87000001501292,
+            "std": 0.5770978173687985
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 116
+        }
+      },
+      "seq_len": 256
+    },
+    {
+      "correctness_gate": {
+        "bit_equal": true,
+        "branches": 8,
+        "checked_tensors": 232,
+        "layers": 28
+      },
+      "end_to_end": {
+        "adaptive_state": {
+          "adaptive_batch": {
+            "final_capacity": 320,
+            "recaptures": 1
+          },
+          "adaptive_loop": {
+            "final_capacity": 320,
+            "recaptures": 1
+          }
+        },
+        "batch_canary": {
+          "batch_no_fallback": true,
+          "batch_publishes": 38,
+          "batch_put_calls": 28,
+          "expected_steps": 38,
+          "loop_put_calls": 8540,
+          "steady_state_budget_violations": 0
+        },
+        "budget_violations": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "h3_components": {
+          "regressed_beyond_2sigma": false,
+          "sigma_ms": 2.8653541405189213,
+          "strictly_improved_beyond_2sigma": true
+        },
+        "note": "round-robin per rep: baseline -> fixed -> adaptive(loop) -> adaptive(batch); the two adaptive paths differ only in the cache wrapper",
+        "pe_identity_mismatches": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "speedups_p50": {
+          "adaptive_batch_vs_loop": 1.0155,
+          "adaptive_loop_vs_baseline": 2.633,
+          "fixed_vs_baseline": 1.7297
+        },
+        "timings_ms": {
+          "adaptive_batch": {
+            "mean": 512.2345366670439,
+            "n": 30,
+            "p50": 511.6291000158526,
+            "std": 2.397859476002804
+          },
+          "adaptive_loop": {
+            "mean": 520.3440433445697,
+            "n": 30,
+            "p50": 519.5800500223413,
+            "std": 2.8653541405189213
+          },
+          "baseline_eager": {
+            "mean": 1367.9948333340387,
+            "n": 30,
+            "p50": 1368.0438000010327,
+            "std": 5.143981725982125
+          },
+          "graph_fixed": {
+            "mean": 791.5980666681813,
+            "n": 30,
+            "p50": 790.8984500099905,
+            "std": 3.1247820181911075
+          }
+        }
+      },
+      "hidden_size": 1536,
+      "num_candidates": 8,
+      "num_layers": 28,
+      "num_tokens": 2048,
+      "peak_vram_mb": 8900.7,
+      "publish_window": {
+        "batch_put_batch_calls": 40,
+        "budget_exceeded_replays": 0,
+        "correctness_gate": {
+          "bit_equal": true,
+          "branches": 8,
+          "checked_tensors": 232,
+          "layers": 28
+        },
+        "h2_verdict": "supported",
+        "h4_verdict": "supported",
+        "loop_put_calls": 8988,
+        "note": "one untimed replay repopulates the static child buffer before each timed publish; A/B via mff.cache swap (capability re-probed on every publish); steady-state in-place overwrite destinations",
+        "sigma_ms": 1.7324144859291657,
+        "timings_ms": {
+          "batch": {
+            "mean": 9.90938333561644,
+            "n": 30,
+            "p50": 9.50975000159815,
+            "std": 0.9658416421048378
+          },
+          "loop": {
+            "mean": 17.43475334175552,
+            "n": 30,
+            "p50": 16.808950051199645,
+            "std": 1.7324144859291657
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 232
+        }
+      },
+      "put_microbenchmark": {
+        "entries": 224,
+        "note": "entry construction outside the timed region; steady-state in-place overwrite (same destinations every rep); write_ops = write_op_count delta per timed call",
+        "timings_ms": {
+          "batch": {
+            "mean": 4.704883329880734,
+            "n": 30,
+            "p50": 4.514499974902719,
+            "std": 0.46277220267978914
+          },
+          "loop": {
+            "mean": 9.869416678945223,
+            "n": 30,
+            "p50": 9.569249988999218,
+            "std": 1.3963201175157858
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 232
+        }
+      },
+      "seq_len": 256
+    },
+    {
+      "correctness_gate": {
+        "bit_equal": true,
+        "branches": 4,
+        "checked_tensors": 116,
+        "layers": 28
+      },
+      "end_to_end": {
+        "adaptive_state": {
+          "adaptive_batch": {
+            "final_capacity": 160,
+            "recaptures": 1
+          },
+          "adaptive_loop": {
+            "final_capacity": 160,
+            "recaptures": 1
+          }
+        },
+        "batch_canary": {
+          "batch_no_fallback": true,
+          "batch_publishes": 38,
+          "batch_put_calls": 28,
+          "expected_steps": 38,
+          "loop_put_calls": 4284,
+          "steady_state_budget_violations": 0
+        },
+        "budget_violations": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "h3_components": {
+          "regressed_beyond_2sigma": false,
+          "sigma_ms": 2.1353917598811907,
+          "strictly_improved_beyond_2sigma": true
+        },
+        "note": "round-robin per rep: baseline -> fixed -> adaptive(loop) -> adaptive(batch); the two adaptive paths differ only in the cache wrapper",
+        "pe_identity_mismatches": {
+          "adaptive_batch": 0,
+          "adaptive_loop": 0,
+          "graph_fixed": 0
+        },
+        "speedups_p50": {
+          "adaptive_batch_vs_loop": 1.0092,
+          "adaptive_loop_vs_baseline": 2.5838,
+          "fixed_vs_baseline": 1.5558
+        },
+        "timings_ms": {
+          "adaptive_batch": {
+            "mean": 486.82696666413295,
+            "n": 30,
+            "p50": 485.96744996029884,
+            "std": 2.1353917598811907
+          },
+          "adaptive_loop": {
+            "mean": 490.36508665109676,
+            "n": 30,
+            "p50": 490.4258999740705,
+            "std": 1.844653478948228
+          },
+          "baseline_eager": {
+            "mean": 1269.6660099861522,
+            "n": 30,
+            "p50": 1267.1659499173984,
+            "std": 4.75704488335401
+          },
+          "graph_fixed": {
+            "mean": 815.5599066638388,
+            "n": 30,
+            "p50": 814.4863499910571,
+            "std": 2.9976157578069498
+          }
+        }
+      },
+      "hidden_size": 1536,
+      "num_candidates": 4,
+      "num_layers": 28,
+      "num_tokens": 2048,
+      "peak_vram_mb": 10027.2,
+      "publish_window": {
+        "batch_put_batch_calls": 40,
+        "budget_exceeded_replays": 0,
+        "correctness_gate": {
+          "bit_equal": true,
+          "branches": 4,
+          "checked_tensors": 116,
+          "layers": 28
+        },
+        "h2_verdict": "supported",
+        "h4_verdict": "supported",
+        "loop_put_calls": 4508,
+        "note": "one untimed replay repopulates the static child buffer before each timed publish; A/B via mff.cache swap (capability re-probed on every publish); steady-state in-place overwrite destinations",
+        "sigma_ms": 1.1577196892291388,
+        "timings_ms": {
+          "batch": {
+            "mean": 4.665943332171689,
+            "n": 30,
+            "p50": 4.425299994181842,
+            "std": 0.6135307974379044
+          },
+          "loop": {
+            "mean": 9.066009998787194,
+            "n": 30,
+            "p50": 8.707549946848303,
+            "std": 1.1577196892291388
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 116
+        }
+      },
+      "put_microbenchmark": {
+        "entries": 112,
+        "note": "entry construction outside the timed region; steady-state in-place overwrite (same destinations every rep); write_ops = write_op_count delta per timed call",
+        "timings_ms": {
+          "batch": {
+            "mean": 2.6643166590171554,
+            "n": 30,
+            "p50": 2.4768500006757677,
+            "std": 0.383011200306926
+          },
+          "loop": {
+            "mean": 4.224749999896933,
+            "n": 30,
+            "p50": 3.757249971386045,
+            "std": 0.9010825930073311
+          }
+        },
+        "write_ops_p50": {
+          "batch": 1,
+          "loop": 116
+        }
+      },
+      "seq_len": 512
+    }
+  ],
+  "failed_configs": [],
+  "hypotheses_declared": {
+    "H1": "put_batch is bit-equivalent to sequential put on the UT face and the real-model publish face",
+    "H2": "publish-window p50: batch beats loop beyond 2*sigma (sigma = max of the two stds)",
+    "H3": "end-to-end adaptive: batch never falls back and the minimal config (256, 4) strictly improves beyond 2*sigma",
+    "H4": "host-call ledger: batch write_op_count <= 2*(L+N) (vs the loop's L*N+N)"
+  },
+  "hypotheses_verdicts": {
+    "H1": "supported",
+    "H2": "supported",
+    "H3": "supported",
+    "H4": "supported"
+  },
+  "meta": {
+    "ab_design": "symmetric one-hop wrapper caches: loop delegates every method but never exposes put_batch; batch adds a pass-through put_batch; A/B via mff.cache swap, capability re-probed on every publish",
+    "c_constant": 2,
+    "c_constant_note": "H4 threshold constant c=2 frozen at design time (srs 3.3 / design 4.2.2(5)); written into this artifact before the pre-registered single run, not adjustable after",
+    "command": "python -m scripts.ar020_publish_put_bench --model-path C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "foreach_available": true,
+    "foreach_note": "torch._foreach_copy_ present (probe P1-P6); when absent copy_pairs degrades to per-pair copy_ (same write order, ledger counts pairs)",
+    "gpu_driver_version": "556.18",
+    "gpu_driver_version_note": "queried via nvidia-smi (AR016 Minor-2 closure)",
+    "kernel_count": null,
+    "kernel_count_note": "this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel-launch counts omitted rather than fabricated -- the write_op_count ledger is the H4 structural evidence (rerun on a CUPTI-capable host for launch counts)",
+    "min_config": [
+      256,
+      4
+    ],
+    "min_config_note": "minimal N*T config for H3's strict-improvement clause, frozen from the AR019 artifact matrix at design time",
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + reps + p50 + interleaved A/B",
+    "pre_registered_single_run": "reps as given, one run, no rerun fishing (#39 lineage); WDDM noise swamping verdicts recorded as inconclusive",
+    "reps": 30,
+    "run_date_utc": "2026-10-14T11:33:46.592940+00:00",
+    "seed": 2026,
+    "timing_method": "time.perf_counter around torch.cuda.synchronize() boundaries (host-side publish cost included -- the AR020 measurement target; AR019's CUDA-event face excluded it by construction)",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "ut_face": {
+      "cases": 56,
+      "file": "tests/test_batched_put.py",
+      "note": "UT face of H1 (three caches x CPU/CUDA, randomized property tests, publish dispatch, ledger, foreach-downgrade); recorded as provenance from the committed suite, not re-measured in this run",
+      "result": "56 passed (T002 green; full regression 920 passed / 3 skipped)"
+    },
+    "venv": true,
+    "verdict_formulas": {
+      "H1": "put_batch bit-equivalent to sequential put (UT face + real-model publish gate); supported <=> all bit-equal; otherwise refuted (no inconclusive)",
+      "H2": "publish-window p50: batch beats loop; supported <=> p50(loop) - p50(batch) > 2*sigma; refuted <=> p50(batch) - p50(loop) > 2*sigma; inconclusive <=> |dp50| <= 2*sigma; sigma = max(sigma_loop, sigma_batch)",
+      "H3": "end-to-end adaptive: batch never falls back and the minimal config strictly improves; supported <=> no fallback everywhere AND p50(batch) <= p50(loop) + 2*sigma on every config AND p50(loop) - p50(batch) > 2*sigma on the minimal config; refuted <=> any config regresses beyond 2*sigma; inconclusive otherwise",
+      "H4": "host-call ledger (write_op_count, structural evidence under CUPTI null, #39): batch ledger <= c*(L+N) with c = 2 frozen at design time; otherwise refuted; measurement object = ActivationCache",
+      "aggregation": "H2/H3 overall = most conservative aggregation over per-config verdicts (any refuted -> refuted; all supported -> supported; otherwise inconclusive)"
+    },
+    "warmup": 8,
+    "workload": {
+      "block": 32,
+      "cache_budget": 8192,
+      "capacity_ratio": 0.5,
+      "mask_id": 151665,
+      "tau": 0.95,
+      "topk": 10,
+      "workload": "parent = K_PROMPT prompt tokens + one all-mask block; children = top-10 model-sampled block fillings (AR019 probe P3 recipe, reused verbatim)"
+    }
+  }
+}

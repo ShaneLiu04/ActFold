@@ -16,9 +16,12 @@ gather behavior of the legacy cache.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Sequence
 
 import torch
+
+from actfold.core.batched_write import copy_pairs, validate_entries
+from actfold.core.cache_protocol import CachePutEntry
 
 
 class VectorizedActivationCache:
@@ -46,6 +49,8 @@ class VectorizedActivationCache:
         self._buffers: dict[tuple[Any, int], dict[int, dict[str, torch.Tensor]]] = {}
         # (branch_id, step_idx, layer_idx) -> number of tokens stored.
         self._counts: dict[tuple[Any, int, int], int] = {}
+        # AR020 host-call ledger (see ActivationCache.write_op_count).
+        self.write_op_count: int = 0
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -148,6 +153,87 @@ class VectorizedActivationCache:
                 buffer.index_copy_(0, rows, transposed[start:])
 
         self._counts[(branch_id, step_idx, layer_idx)] = seq_len
+        self.write_op_count += len(activations)
+
+    def put_batch(self, entries: Sequence[CachePutEntry]) -> None:
+        """Store all entries; state-equivalent to sequential ``put`` calls.
+
+        Mirrors :meth:`ActivationCache.put_batch`'s flush semantics (first
+        occurrence delayed into the ``(dst, src)`` pair list executed at the
+        end through ``batched_write.copy_pairs``; repeats flush then execute
+        immediately; ring entries execute immediately), with this cache's
+        ``_ensure_layer`` triggering ``_evict_old_branch_steps`` at exactly
+        the same new-key insertion points as the sequential path. There is
+        no per-layer token-budget eviction on this cache.
+
+        Atomicity: every entry is validated before any mutation; an invalid
+        entry raises ``ValueError`` (message carries the entry index) with
+        the cache untouched.
+
+        Raises:
+            ValueError: If any entry is invalid (empty activations, tensors
+                below 2 leading dimensions, or inconsistent leading shapes).
+        """
+        validated = validate_entries(entries)
+        if not validated:
+            return
+        pending: dict[
+            tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]
+        ] = {}
+        seen: set[tuple[Any, int, int, str]] = set()
+        for entry in validated:
+            branch_id = entry.branch_id
+            layer_idx = entry.layer_idx
+            activations = entry.activations
+            step_idx = entry.step_idx
+            sample = next(iter(activations.values()))
+            batch_size = int(sample.shape[0])
+            seq_len = int(sample.shape[1])
+
+            store = self._ensure_layer(branch_id, step_idx, layer_idx)
+            for name, tensor in activations.items():
+                if name not in store:
+                    capacity = min(self.max_entries, max(seq_len, 1))
+                    shape = (capacity, batch_size) + tuple(tensor.shape[2:])
+                    store[name] = torch.empty(
+                        shape, dtype=tensor.dtype, device=tensor.device
+                    )
+                buffer = store[name]
+                if seq_len > buffer.shape[0] and buffer.shape[0] < self.max_entries:
+                    new_capacity = min(
+                        self.max_entries, max(seq_len, buffer.shape[0] * 2)
+                    )
+                    grown = torch.empty(
+                        (new_capacity,) + tuple(buffer.shape[1:]),
+                        dtype=buffer.dtype,
+                        device=buffer.device,
+                    )
+                    grown[: buffer.shape[0]].copy_(buffer)
+                    store[name] = buffer = grown
+                    self.write_op_count += 1
+
+                capacity = buffer.shape[0]
+                transposed = tensor.transpose(0, 1)
+                dst_key = (branch_id, step_idx, layer_idx, name)
+                if dst_key in pending:
+                    flush_dst, flush_src = pending.pop(dst_key)
+                    flush_dst.copy_(flush_src)
+                    self.write_op_count += 1
+                if seq_len <= capacity:
+                    if dst_key in seen:
+                        buffer[:seq_len].copy_(transposed)
+                        self.write_op_count += 1
+                    else:
+                        pending[dst_key] = (buffer[:seq_len], transposed)
+                else:
+                    start = seq_len - capacity
+                    rows = torch.arange(start, seq_len, device=buffer.device) % capacity
+                    buffer.index_copy_(0, rows, transposed[start:])
+                    self.write_op_count += 1
+                seen.add(dst_key)
+
+            self._counts[(branch_id, step_idx, layer_idx)] = seq_len
+        self.write_op_count += copy_pairs(list(pending.values()))
 
     def get(
         self,

@@ -476,6 +476,34 @@ class ManualFoldedForward(nn.Module):
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
 
+    @property
+    def cache(self) -> Any:
+        """Activation cache shared by the folded layers and graph runners."""
+        return self._cache
+
+    @cache.setter
+    def cache(self, value: Any) -> None:
+        """Set the cache and propagate the swap to every pinned reference.
+
+        The wrapped layers and the (lazily captured) graph runners each hold
+        their own cache reference, so a mid-life ``mff.cache = other`` (the
+        AR020 A/B benchmark and the capability-probe tests) must reach all
+        of them: eager layer stores, the publish-path capability probe and
+        writes, parent-cache validation, and the runners' replay-time parent
+        fetches. Without the propagation a swapped-in cache would never see
+        the re-serialized parent and the batched graph path would silently
+        fall back to eager.
+        """
+        self._cache = value
+        layers = getattr(self, "_wrapped_layers", None)
+        if layers is not None:
+            for wrapped in layers:
+                wrapped.cache = value
+        for runner_attr in ("graph_runner", "graph_runner_batched"):
+            runner = getattr(self, runner_attr, None)
+            if runner is not None:
+                runner._cache = value
+
     def _wrap_layer(self, layer: nn.Module, idx: int) -> nn.Module:
         """Wrap a single Transformer layer with a folded layer wrapper."""
         if self.split_layers:
@@ -1074,7 +1102,13 @@ class ManualFoldedForward(nn.Module):
         launches, zero host readback). The debug path
         (``profiler.debug_enabled``) falls back to the per-row ``record``
         entry, which is the only one that can produce ``divergence_positions``.
+        AR020: a ``BatchedPutCapable`` cache receives all L*N entries through
+        one ``put_batch`` call whose payloads mirror the per-entry ``put``
+        payloads field-for-field (the entry's ``step_idx`` keeps the loop
+        variant's default — the folded stack stores every activation at step
+        0); incapable caches keep the original double loop byte-for-byte.
         """
+        from actfold.core.cache_protocol import BatchedPutCapable, CachePutEntry
         from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 
         embedding = self.profile.embed_module(tokens)
@@ -1090,18 +1124,42 @@ class ManualFoldedForward(nn.Module):
         if profiler.enabled and not debug_path:
             sums = runner.mask_buf.sum(dim=2)  # [L, N], int64
         seq_len = int(tokens.shape[1])
+        # AR020 batched dispatch: probe the capability on EVERY publish — the
+        # result is never cached on the instance (the cache attribute is
+        # swappable and the A/B benchmark relies on re-probing after a swap).
+        # The probe is an O(1) attribute-existence check, zero device sync.
+        batched = isinstance(self.cache, BatchedPutCapable)
+        if batched:
+            entries: list[CachePutEntry] = []
+            for layer_idx in range(num_layers):
+                for row, branch_id in enumerate(branch_ids):
+                    activations: dict[str, Any] = {
+                        "ffn_out": snapshot[layer_idx][row : row + 1]
+                    }
+                    if layer_idx == 0:
+                        activations["embedding"] = embedding[row : row + 1]
+                    entries.append(
+                        CachePutEntry(
+                            branch_id=branch_id,
+                            layer_idx=layer_idx,
+                            activations=activations,
+                        )
+                    )
+            # Exceptions propagate unchanged (no swallowing, no re-grading).
+            self.cache.put_batch(entries)
         for layer_idx in range(num_layers):
             for row, branch_id in enumerate(branch_ids):
-                activations: dict[str, Any] = {
-                    "ffn_out": snapshot[layer_idx][row : row + 1]
-                }
-                if layer_idx == 0:
-                    activations["embedding"] = embedding[row : row + 1]
-                self.cache.put(
-                    branch_id=branch_id,
-                    layer_idx=layer_idx,
-                    activations=activations,
-                )
+                if not batched:
+                    activations = {
+                        "ffn_out": snapshot[layer_idx][row : row + 1]
+                    }
+                    if layer_idx == 0:
+                        activations["embedding"] = embedding[row : row + 1]
+                    self.cache.put(
+                        branch_id=branch_id,
+                        layer_idx=layer_idx,
+                        activations=activations,
+                    )
                 if debug_path:
                     # Debug positions need the mask itself: per-row fallback to
                     # the original entry (correctness over launch count).

@@ -24,13 +24,48 @@ that can (vectorized/legacy) return **views** over internal buffers, so
 callers must treat the returned tensors as read-only.  The old
 ``get(token_mask)`` method remains available as a backward-compatible alias
 of ``fetch_masked``.
+
+AR020 adds the optional batched-write capability
+:class:`BatchedPutCapable` (structural, runtime-checkable): caches that
+provide ``put_batch`` accept a sequence of :class:`CachePutEntry` records in
+one call, state-equivalent to sequential ``put`` calls (batch-level
+pre-validation atomicity aside — an invalid batch raises ``ValueError``
+before any mutation, which is deliberately stronger than the partial-write
+behavior of a sequential loop hitting an invalid entry mid-way).
 """
 
 from __future__ import annotations
 
-from typing import Protocol, runtime_checkable
+from typing import NamedTuple, Protocol, Sequence, runtime_checkable
 
 import torch
+
+
+class CachePutEntry(NamedTuple):
+    """One cache write: mirrors ``cache.put``'s four arguments.
+
+    The field order matches :meth:`ActivationCacheProtocol.put`'s parameter
+    order so a ``(branch_id, layer_idx, activations, step_idx)`` tuple can be
+    unpacked positionally; ``step_idx`` defaults to ``0`` exactly like the
+    ``put`` signature.
+    """
+
+    branch_id: str
+    layer_idx: int
+    activations: dict[str, torch.Tensor]
+    step_idx: int = 0
+
+
+@runtime_checkable
+class BatchedPutCapable(Protocol):
+    """Optional batched-write capability (structural, no inheritance)."""
+
+    def put_batch(self, entries: Sequence[CachePutEntry]) -> None:
+        """Store all entries; state-equivalent to sequential ``put`` calls.
+
+        Raises ValueError before any mutation when any entry is invalid.
+        """
+        ...
 
 
 @runtime_checkable

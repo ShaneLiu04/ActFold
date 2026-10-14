@@ -660,6 +660,46 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 
 ---
 
+## 第二十七部分 AR020 发布路径 cache put 批量化：`put_batch` 能力协议 + `foreach_copy_` 单点融合 + 真实 checkpoint 发布窗口 A/B（2026-10-14）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | AR018 遗留项（§1.3"cache 批量 put API"延续）：发布压缩后小几何发布相位仍占自适应全步 45.3–50.9%（AR018 工件），剩余主体 = L·N+N 次逐条 `cache.put` 的宿主 launch 开销（WDDM 实测 ~30–40µs/launch）。本 AR：①生产 `put_batch` 批量写能力——`BatchedPutCapable` 结构化协议 + `batched_write.py` 单点 `torch._foreach_copy_` 封装（降级路径完备）+ 三 cache 等价实现 + 发布路径**每次发布能力探测分流**（无能力 cache 逐字节走原循环）；②真实 checkpoint 发布窗口 A/B + 三层基准（put 微基准 / 发布窗口 / 端到端四路径）+ 正确性门，预承诺单次定案 | ✅ 完成 |
+| 选题证据链（探针，本机实测） | foreach 探针 P1–P6：torch 2.5.1 `_foreach_copy_` 存在；非连续 transposed 源 + 混合形状 CPU/CUDA bf16 全部**逐位正确**；L·N=224 条 bf16 真实形状**同步墙钟 3.5×**、**宿主入队 27.8×**（发布窗口恰以后者为主体）；AR018 账本 put 项 L·N+N 未变 | ✅ 完成 |
+| 生产改动 | ①`cache_protocol.py`：`CachePutEntry`(NamedTuple，mirror put 四参，step_idx 默认 0) + `BatchedPutCapable`(@runtime_checkable Protocol)；②`batched_write.py`（新模块，**唯一 foreach 点**）：`validate_entries`（复刻三 cache put 校验，任何变更前全量跑完，非法 ValueError 带条目序号，零变更）+ `copy_pairs`（按 (device,dtype) 分组 `_foreach_copy_`，返回组数；`_FOREACH_AVAILABLE` 模块 flag 探测，不可用降级逐对 copy_ 返回对数——机制定案：降级点=组内逐对 copy_，与逐条 put 写入动作等价）；③三 cache `+put_batch`+`write_op_count` 账本（put `+= len(activations)`，grow 不计；put_batch `+= copy_pairs 组数+立即执行数`；chunked `+= 实际物化数`）；ActivationCache/Vectorized **冲刷语义**（同一逻辑目的地首现对进延迟列表，第二次出现先冲刷首现对再立即执行当前对，此后全立即——写入序恒=条目序，消除对 foreach 组内顺序这一未文档化不变量的依赖；跨目的地写入不相交，冲刷不破坏其余顺序；重复目的地中途 grow 的冲刷落被弃 buffer，当前对行域超集覆写，无害）；ActivationCache put_batch 驱逐**逐条触发**（与 put 相同修剪点，等价性由构造保证）；chunked 抽 `_store_chunks` 供 put/put_batch 共用（唯一既有代码整理点，既有 UT 钉死零语义变化）；④`architecture_utils.py` `_publish_graph_children` 分流：每次发布 `isinstance(cache, BatchedPutCapable)`（O(1) 零 sync，**零实例缓存**——cache 可替换，A/B 基准依赖换后重探）；批量分支构建 L·N 条 entries（快照行视图逐字段同 loop 变体，step_idx 省略=0 镜像全栈 step-0 存储）一次 `put_batch`；无能力 cache 原双循环**逐字节不变**；⑤`ManualFoldedForward.cache` 改 **property + setter 传播**（wrapped layers 与两 graph runner 各自钉 cache 引用，裸交换后 eager 再序列化进旧 cache→批量图静默 eager 回退；setter 传播至 layers 与 runner `_cache`） | ✅ 完成 |
+| Green 期修正（3 项，Red 冻结面内最小改动） | ①**测试缺陷**：UT-2006③ 断言 `entry.step_idx == 1` 与全栈 step-0 存储事实矛盾（eager 层 put 不传 step、两图发布同、所有 parent fetch step 0；跨步链接靠 #26 每 step 新 branch id）→ 修为 `== 0`（生产取 loop 镜像语义，design §4.2.2(4) 草图的 step 透传会使发布子代被 step-0 消费者孤立→静默回退+A/B 状态不等）；②**设计断言被否证**：design"每层一次终态修剪"被 UT-2001 随机化实证驳倒（驱逐+重建后名集分叉 `{'a'} vs {'a','b'}`）→ 改逐条 `_evict_over_budget`；③**新增生产面**：cache property 传播（UT-2006④ 实测根因：layers/runner 钉引用，spy 0 次 put_batch=静默 eager 回退） | ✅ 完成 |
+| 新测试 | UT-2001~2009（`tests/test_batched_put.py`，1896 行，21 函数，56 用例）：2001 ActivationCache 等价（固定用例+种子固定随机化性质测试，比较面=buffer[:最终 _counts] torch.equal + _counts + OrderedDict 键序 + num_entries，eviction 密集配置+重复 key×grow，CUDA 混 dtype/device=foreach 分组面，账本显式排除防循环论证）；2002 VectorizedActivationCache 等价（`max_branch_steps=3` 令 `_evict_old_branch_steps` 与逐条同触发点）；2003 ChunkedActivationCache 等价（`chunk_size=4` 跨块切分+`max_chunks=2` 逐插入驱逐，参照喂 clone 防自比较）；2004 **原子性**（任一非法条目→ValueError 带序号+缓存零变更，空 dict/ndim<2/形状不一致 × 位置三态）；2005 环形/grow/重叠等价+**冲刷写入序断言**（ring index_copy 恒立即+重复目的地冲刷序）；2006 协议+发布分流（isinstance 探测/CachePutEntry 字段/逐字段 payload 对拍/每次发布探测/换 cache 重探——④钉 property 传播）；2007 put/put_batch 主机调用账本（L·N+N vs O(L+N)，(device,dtype) 分组混批）；2008 零 host-sync（put_batch 无 .item/.tolist/.cpu）+新鲜度+debug 逐行 record；2009 **旧 torch 降级面**（patch `_FOREACH_AVAILABLE`→逐对 copy_，等价+账本按对数；事后 patch torch 属性不生效属预期） | ✅ 完成 |
+| mutation 自证 | **13 个变异全红后 SHA256 字节级还原**（6 文件比对一致，还原后 56/56 复绿）：M1 foreach 恒降级/M2 账本返回 0/M3 校验序号偏移/M4 删空校验/M5 删冲刷（写入序倒置）/6 put 账本 +=1/M7 删逐条驱逐/M8 vectorized 计数清零/M9 chunked 账本虚计/M10 发布探测禁用/M11 发布条目改静态缓冲别名/M12 cache 传播删除/M13 协议字段序错乱 | ✅ 完成 |
+| 基准 | `scripts/ar020_publish_put_bench.py`（998 行，复用 ar019 助手，导入顺序纪律）：**三层测量**（put 微基准——真实形状条目构建计时区外，宿主 perf_counter+sync 夹逼；发布窗口——单次 replay 不计时、`_publish_graph_children` 单独计时，A/B 经 `mff.cache` 交换**对称包装**实现（loop=不暴露 put_batch 的委托包装，batch=直 delegation，两侧同增一跳 Python 委托）；端到端四路径 baseline/fixed/adaptive(loop)/adaptive(batch) round-robin）；**正确性门**（同一 replay 后两变体各发布到独立 check 分支，逐 (branch,layer,name) fetch torch.equal）；工件假设-判定分离 + 判定式全文冻结（σ=max(σ_loop,σ_batch)、c=2、最小配置 (256,4)、H2/H3 最保守聚合、UT 面溯源、CUPTI null 注记、foreach 探针）；`--quick` 冒烟 | ✅ 完成 |
+| 门控 | req 两轮（Major：计时口径与 AR019 CUDA-event 语义调和→宿主 perf_counter 主报；等价性限定合法序列+原子性单列；H1-H4 判定式闭口+H4 常数 c 预承诺；dtype 混批分组；N=16 例证超出工件矩阵等 9 项）+ design 三轮（Major：探测实例缓存与基准换 cache 自相矛盾→每次发布探测；去重键与 foreach 顺序依赖→**冲刷语义**；等价比较面精确定义；"首现延迟+重复立即"写入序倒置→冲刷语义修正；UT-2009 patch 对象=模块 flag 等 16+4 项） | ✅ 完成 |
+| 质量门 | 全量 **920 passed（864+56）**/3 skipped 零回归、demo 三指标精确一致（85.5%/2.35e-03/93.75%）、mypy clean（67 文件）/pyflakes 零/新增行 ≤100 列 | ✅ 完成 |
+
+**实测发布窗口 A/B（Fast-dLLM-v2-1.5B bf16，H=1536/L=28/V=151936，真实块验证工作负载（AR019 同款），p50 ms，Quadro RTX 5000，AR019 venv transformers 4.53.1，seed 2026，n=30 交错，σ=max(σ_loop,σ_batch)）**：
+
+| 配置 | 发布窗口 loop | 发布窗口 batch | 加速比 | 2σ | H2 | put 微基准 loop→batch | 账本 loop→batch | H4（c=2） |
+|------|--------------|---------------|--------|----|----|----------------------|----------------|-----------|
+| T=256, N=4 | 7.894 | **4.393** | **1.80×** | 2.380 | supported | 3.870→1.936（2.00×） | 116→**1** | supported |
+| T=256, N=8 | 16.809 | **9.510** | **1.77×** | 3.465 | supported | 9.569→4.514（2.12×） | 232→**1** | supported |
+| T=512, N=4 | 8.708 | **4.425** | **1.97×** | 2.315 | supported | 3.757→2.477（1.52×） | 116→**1** | supported |
+
+**端到端四路径（p50 ms，同上口径；批量 put 为生产默认——fixed 即批量发布）**：
+
+| 配置 | baseline | graph 固定 C=0.5 | adaptive（loop 发布） | adaptive（batch 发布） | ab vs baseline | al→ab 改善 |
+|------|----------|-----------------|----------------------|------------------------|----------------|------------|
+| T=256, N=4 | 672.242 | 403.516 | 284.046 | **280.146** | **2.40×** | −3.900ms（>2σ=3.712，严格） |
+| T=256, N=8 | 1368.044 | 790.898 | 519.580 | **511.629** | **2.67×** | −7.951ms |
+| T=512, N=4 | 1267.166 | 814.486 | 490.426 | **485.967** | **2.61×** | −4.459ms |
+
+**假设判定（预承诺单次运行，H1–H4 全 supported）**：
+- **H1 等价性：supported**——UT 面 56/56（三 cache × CPU/CUDA 随机化性质等价）+ 真实模型发布面三配置 116/232/116 张量全 bit-equal；
+- **H2 发布窗口：supported（3/3）**——p50 差 3.500/7.299/4.282ms 全部 > 2σ（2.380/3.465/2.315），−43.4%~−49.2%；
+- **H3 端到端：supported**——零回退（batch 发布计数 38/38=期望步数、pe canary 零失配、稳态零预算违例）+ 三配置 ab ≤ al+2σ + 最小配置 (256,4) 严格改善 3.900ms > 2σ=3.712ms；
+- **H4 主机调用账本：supported（3/3）**——发布窗口 write_op_count **116/232/116 → 1**（单 (device,dtype) 组一个 foreach），远低于 c·(L+N)=64/72/64；CUPTI null（#39）下账本为结构证据，不做 kernel-launch 计数声明。
+
+**语义要点**：(1) **冲刷语义是正确性骨架**——写入序恒=条目序（精确复刻逐条路径含重叠覆盖序），不依赖 foreach 组内顺序；发布用例逻辑目的地恒唯一（每 (layer,row) 一条目），冲刷零触发、收益不受影响。(2) **逐条驱逐等价性**——`_layer_tokens` 只读 count/capacity 不依赖缓冲内容，put_batch 在与 put 完全相同的逐条修剪点触发驱逐（design"每层一次终态修剪"被 UT-2001 随机化否证后修正——驱逐+重建的名集分叉是反例）。(3) **能力探测零实例缓存**——cache 为可替换属性（AR020 基准与 A/B 依赖换后重探）；`mff.cache` setter 传播至 wrapped layers 与两 runner（钉引用不传播则批量图静默 eager 回退）。(4) **step-0 镜像**——发布条目省略 step_idx（NamedTuple 默认 0）= loop 变体与全栈存储语义（跨步链接用 #26 每 step 新 branch id）。(5) **H4 账本口径**——write_op_count 是免 monkeypatch 宿主态探针（AR017/18 先例），grow 内部拷贝有意不计（loop 账本镜像发布循环可见粒度）；等价比较面显式排除账本（防循环论证）。(6) **foreach 单点隔离**——`torch._foreach_copy_` 为私有 API，使用点仅 `copy_pairs` 一处，`_FOREACH_AVAILABLE` 探测 + 逐对降级（UT-2009 钉死）。**遗留**：`FastDLLMAdapter` 生成回路接线（AR019 共同遗留）；变长/多父批量（AR016 遗留）；ChunkedActivationCache 无 copy 融合面（`.contiguous()` 是分配而非既有缓冲写入，H4 的 O(L+N) 账本仅对 Activation/Vectorized 成立，设计如实记录）；LLaDA-8B/Dream-7B（16GB 显存不可行）。
+
+---
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

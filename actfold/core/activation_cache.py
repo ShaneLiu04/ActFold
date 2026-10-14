@@ -14,9 +14,12 @@ old per-token eviction could split groups, which no test relied on).
 from __future__ import annotations
 
 from collections import OrderedDict
-from typing import Any
+from typing import Any, Sequence
 
 import torch
+
+from actfold.core.batched_write import copy_pairs, validate_entries
+from actfold.core.cache_protocol import CachePutEntry
 
 
 class ActivationCache:
@@ -42,6 +45,11 @@ class ActivationCache:
         self._layers: dict[int, OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]] = {}
         # (branch_id, step_idx, layer_idx) -> number of tokens stored.
         self._counts: dict[tuple[Any, int, int], int] = {}
+        # AR020 host-call ledger: monotonic count of cache write operations
+        # visible to this side (put: one per activation name; put_batch:
+        # foreach groups plus immediately executed pairs). Excluded from the
+        # put_batch/put state-equivalence face by design.
+        self.write_op_count: int = 0
 
     def _ensure_layer(self, layer_idx: int) -> OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]:
         """Create the ordered group map for a layer if it does not exist."""
@@ -158,7 +166,120 @@ class ActivationCache:
                 buffer.index_copy_(0, rows, transposed[start:])
 
         self._counts[(branch_id, step_idx, layer_idx)] = seq_len
+        self.write_op_count += len(activations)
         self._evict_over_budget(layer_idx)
+
+    def put_batch(self, entries: Sequence[CachePutEntry]) -> None:
+        """Store all entries; state-equivalent to sequential ``put`` calls.
+
+        AR020 batched write with flush semantics (design §4.2.2(1)): buffer
+        ensure/grow and the group-level LRU touch run per entry in entry
+        order (identical allocation/growth points to the sequential path);
+        the main slice copy of a logical destination's FIRST occurrence is
+        delayed into a ``(dst, src)`` pair list, a repeated destination
+        flushes its collected first pair and executes immediately (as does
+        every later occurrence), and ring entries always execute
+        immediately — so the write order is always the entry order. The
+        delayed pairs are executed at the end through one
+        ``batched_write.copy_pairs`` call grouped by ``(device, dtype)``
+        (``torch._foreach_copy_``); cross-destination writes are disjoint
+        (distinct buffers), so the deferred execution cannot reorder
+        observable state. Eviction (``_evict_over_budget``) runs per entry
+        at exactly the sequential ``put``'s trimming points — a group
+        evicted and later re-created keeps only the re-creating entry's
+        activation names on both paths, so the survivor sets, name sets and
+        key orders coincide by construction (the deferred write of a
+        pending pair targets the slice captured at collection time: when
+        its group was evicted meanwhile, the flush lands on the abandoned
+        buffer, which is invisible in the final state — exactly like the
+        sequential path's already-overwritten rows).
+
+        Atomicity: every entry is validated before any mutation; an invalid
+        entry raises ``ValueError`` (message carries the entry index) with
+        the cache untouched.
+
+        Args:
+            entries: Sequence of :class:`CachePutEntry` records.
+
+        Raises:
+            ValueError: If any entry is invalid (empty activations, tensors
+                below 2 leading dimensions, or inconsistent leading shapes).
+        """
+        validated = validate_entries(entries)
+        if not validated:
+            return
+        pending: dict[
+            tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]
+        ] = {}
+        seen: set[tuple[Any, int, int, str]] = set()
+        for entry in validated:
+            branch_id = entry.branch_id
+            layer_idx = entry.layer_idx
+            activations = entry.activations
+            step_idx = entry.step_idx
+            sample = next(iter(activations.values()))
+            batch_size = int(sample.shape[0])
+            seq_len = int(sample.shape[1])
+
+            layer = self._ensure_layer(layer_idx)
+            key = (branch_id, step_idx)
+            store = layer.get(key)
+            if store is not None:
+                layer.move_to_end(key)
+            else:
+                store = {}
+                layer[key] = store
+
+            for name, tensor in activations.items():
+                if name not in store:
+                    capacity = min(self.max_entries, max(seq_len, 1))
+                    shape = (capacity, batch_size) + tuple(tensor.shape[2:])
+                    store[name] = torch.empty(
+                        shape, dtype=tensor.dtype, device=tensor.device
+                    )
+                buffer = store[name]
+                if seq_len > buffer.shape[0] and buffer.shape[0] < self.max_entries:
+                    new_capacity = min(
+                        self.max_entries, max(seq_len, buffer.shape[0] * 2)
+                    )
+                    grown = torch.empty(
+                        (new_capacity,) + tuple(buffer.shape[1:]),
+                        dtype=buffer.dtype,
+                        device=buffer.device,
+                    )
+                    grown[: buffer.shape[0]].copy_(buffer)
+                    store[name] = buffer = grown
+                    self.write_op_count += 1
+
+                capacity = buffer.shape[0]
+                transposed = tensor.transpose(0, 1)
+                dst_key = (branch_id, step_idx, layer_idx, name)
+                if dst_key in pending:
+                    # Second occurrence: flush the collected first pair
+                    # BEFORE the current write (in-order semantics; the flush
+                    # target is the slice captured at collection time — if a
+                    # grow replaced the buffer meanwhile, the flush lands on
+                    # the abandoned buffer, which the current write's row
+                    # superset fully covers on the live buffer).
+                    flush_dst, flush_src = pending.pop(dst_key)
+                    flush_dst.copy_(flush_src)
+                    self.write_op_count += 1
+                if seq_len <= capacity:
+                    if dst_key in seen:
+                        buffer[:seq_len].copy_(transposed)
+                        self.write_op_count += 1
+                    else:
+                        pending[dst_key] = (buffer[:seq_len], transposed)
+                else:
+                    start = seq_len - capacity
+                    rows = torch.arange(start, seq_len, device=buffer.device) % capacity
+                    buffer.index_copy_(0, rows, transposed[start:])
+                    self.write_op_count += 1
+                seen.add(dst_key)
+
+            self._counts[(branch_id, step_idx, layer_idx)] = seq_len
+            self._evict_over_budget(layer_idx)
+        self.write_op_count += copy_pairs(list(pending.values()))
 
     def get(
         self,

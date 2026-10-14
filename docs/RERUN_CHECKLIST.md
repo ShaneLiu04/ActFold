@@ -87,6 +87,18 @@ python demo.py
 #    工件：results/optimization/ar019_real_e2e_bench.json（单次预承诺运行，
 #    对照数字：三配置 adaptive vs baseline 2.44/2.62/2.59×，maxdiff=0.0，
 #    stable ratio 精确 0.875/0.875/0.9375，容量 512→160/1024→320/1024→160）
+#
+# 10) AR020 发布路径 cache put 批量化 A/B（Fast-dLLM-v2-1.5B，同 venv/权重）
+#    a) 前置：第 9 步的 venv 与本地权重（transformers==4.53.1，AR019 venv）
+#    b) 基准（复用 ar019 助手；--quick 冒烟 = (256,4) reps=3）：
+<venv目录>\Scripts\python -m scripts.ar020_publish_put_bench \
+    --model-path <本地权重目录> --hf-home <HF缓存目录> --reps 30 --warmup 8
+#    工件：results/optimization/ar020_publish_put_bench.json（单次预承诺运行；
+#    判定式/c=2/最小配置 (256,4) 冻结于工件 meta）
+#    对照数字：H1-H4 全 supported——发布窗口 p50 三配置 7.894→4.393 /
+#    16.809→9.510 / 8.708→4.425 ms（1.80/1.77/1.97×），账本 116/232/116→1，
+#    正确性门 116/232/116 张量全 bit-equal，e2e 最小配置严格改善
+#    3.900ms > 2σ=3.712ms，no_fallback 38/38，峰值 VRAM 10027 MB
 ```
 
 ## 4. 方法学要求（重跑必须满足）

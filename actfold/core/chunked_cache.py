@@ -11,8 +11,12 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+from typing import Sequence
 
 import torch
+
+from actfold.core.batched_write import validate_entries
+from actfold.core.cache_protocol import CachePutEntry
 
 
 @dataclass
@@ -55,6 +59,11 @@ class ChunkedActivationCache:
         self.device = device
         # OrderedDict key: (branch_id, layer_idx, chunk_idx, step_idx)
         self._caches: dict[int, OrderedDict[tuple[str, int, int, int], ActivationChunk]] = {}
+        # AR020 host-call ledger: counts only MATERIALIZED ``.contiguous()``
+        # results — batch-1 chunk slices that are already contiguous store
+        # by reference (zero ops), non-contiguous slices allocate one tensor
+        # per (chunk, name).
+        self.write_op_count: int = 0
 
     def _ensure_layer(self, layer_idx: int) -> None:
         """Create an empty OrderedDict for a layer if it does not exist."""
@@ -94,7 +103,6 @@ class ChunkedActivationCache:
             raise ValueError("activations must not be empty")
 
         self._ensure_layer(layer_idx)
-        cache = self._caches[layer_idx]
 
         expected_shape: tuple[int, ...] | None = None
         for name, tensor in activations.items():
@@ -113,15 +121,39 @@ class ChunkedActivationCache:
                 )
 
         assert expected_shape is not None
-        batch_size, seq_len = expected_shape
+        self._store_chunks(branch_id, layer_idx, activations, step_idx, expected_shape)
+
+    def _store_chunks(
+        self,
+        branch_id: str,
+        layer_idx: int,
+        activations: dict[str, torch.Tensor],
+        step_idx: int,
+        expected_shape: tuple[int, ...],
+    ) -> None:
+        """Build and insert the contiguous chunks for one VALIDATED entry.
+
+        Shared by :meth:`put` and :meth:`put_batch` (AR020); the caller has
+        already validated the activations and ensured the layer container.
+        Behavior is byte-identical to the pre-refactor inline loop, plus the
+        ``write_op_count`` increments for materialized ``.contiguous()``
+        results (already-contiguous slices — batch-1 chunk slices — return
+        the view itself and store by reference, counting zero).
+        """
+        seq_len = expected_shape[1]
+        cache = self._caches[layer_idx]
         num_chunks = (seq_len + self.chunk_size - 1) // self.chunk_size
 
         for chunk_idx in range(num_chunks):
             start = chunk_idx * self.chunk_size
             end = min(start + self.chunk_size, seq_len)
-            chunk_data = {
-                name: tensor[:, start:end, ...].contiguous() for name, tensor in activations.items()
-            }
+            chunk_data: dict[str, torch.Tensor] = {}
+            for name, tensor in activations.items():
+                piece = tensor[:, start:end, ...]
+                stored = piece.contiguous()
+                if stored is not piece:
+                    self.write_op_count += 1
+                chunk_data[name] = stored
             key = self._key(branch_id, layer_idx, chunk_idx, step_idx)
             chunk = ActivationChunk(
                 chunk_id=chunk_idx,
@@ -136,6 +168,34 @@ class ChunkedActivationCache:
 
             if len(cache) > self.max_chunks:
                 cache.popitem(last=False)
+
+    def put_batch(self, entries: Sequence[CachePutEntry]) -> None:
+        """Store all entries; state-equivalent to sequential ``put`` calls.
+
+        Chunked storage is by-reference ``.contiguous()`` — an allocation,
+        not a write into an existing buffer — so there is no
+        ``foreach``-copy face here; the benefit is purely amortized Python
+        validation/dict overhead. Every entry is validated before any
+        mutation; an invalid entry raises ``ValueError`` (message carries
+        the entry index) with the cache untouched.
+
+        Raises:
+            ValueError: If any entry is invalid (empty activations, tensors
+                below 2 leading dimensions, or inconsistent leading shapes).
+        """
+        validated = validate_entries(entries)
+        if not validated:
+            return
+        for entry in validated:
+            self._ensure_layer(entry.layer_idx)
+            sample = next(iter(entry.activations.values()))
+            self._store_chunks(
+                entry.branch_id,
+                entry.layer_idx,
+                entry.activations,
+                entry.step_idx,
+                tuple(sample.shape[:2]),
+            )
 
     def get(
         self,
