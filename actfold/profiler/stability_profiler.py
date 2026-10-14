@@ -183,6 +183,69 @@ class StabilityProfiler:
         if len(self._history[history_key]) > self._max_history_len:
             self._history[history_key].pop(0)
 
+    def record_precomputed(
+        self,
+        branch_id: Any,
+        parent_branch_id: Optional[Any],
+        layer_idx: int,
+        step_idx: int,
+        stable_sum: torch.Tensor,
+        num_tokens: int,
+        tau: float,
+        metric: str = "cosine",
+    ) -> None:
+        """Record one layer's stability decision from a precomputed sum.
+
+        Batched-publish counterpart of :meth:`record` (AR018): the caller
+        owns the reduction (one ``mask_buf.sum(dim=2)`` per step serves every
+        (layer, row) pair) and passes the 0-dim device tensor plus the token
+        count explicitly. The stored ``_RawLayerStat`` is field-for-field
+        identical to what ``record`` produces for the same data, so every
+        downstream consumer (``_ratios``/``get_profile``/history) behaves
+        identically. ``divergence_positions`` is never produced here (there
+        is no mask to scan); callers needing debug positions must fall back
+        to :meth:`record`.
+
+        Args:
+            branch_id: Identifier of the current branch.
+            parent_branch_id: Identifier of the parent branch (if any).
+            layer_idx: Layer index.
+            step_idx: Diffusion step index.
+            stable_sum: Precomputed 0-dim device tensor (a masked ``sum()``
+                result or a 0-dim view into one).
+            num_tokens: Token count the sum was taken over.
+            tau: Similarity threshold used for the decision.
+            metric: Similarity metric name.
+
+        Raises:
+            ValueError: If ``stable_sum`` is not a 0-dim ``torch.Tensor``.
+        """
+        if not self.enabled:
+            return
+        if not isinstance(stable_sum, torch.Tensor) or stable_sum.ndim != 0:
+            raise ValueError(
+                "stable_sum must be a 0-dim torch.Tensor (a masked sum "
+                f"result); got {type(stable_sum).__name__} with "
+                f"ndim={getattr(stable_sum, 'ndim', None)}"
+            )
+        raw = _RawLayerStat(
+            branch_id=branch_id,
+            parent_branch_id=parent_branch_id,
+            layer_idx=layer_idx,
+            step_idx=step_idx,
+            stable_sum=stable_sum,
+            num_tokens=num_tokens,
+            tau=tau,
+            metric=metric,
+            divergence_positions=None,
+        )
+        self._raw.setdefault(branch_id, []).append(raw)
+
+        history_key = (layer_idx, step_idx)
+        self._history[history_key].append(raw)
+        if len(self._history[history_key]) > self._max_history_len:
+            self._history[history_key].pop(0)
+
     @staticmethod
     def _ratios(entries: list[_RawLayerStat]) -> list[float]:
         """Materialize per-entry stable ratios in one batched host readback."""

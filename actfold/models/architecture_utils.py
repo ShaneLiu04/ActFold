@@ -969,19 +969,38 @@ class ManualFoldedForward(nn.Module):
         """Publish a validated batched replay into the cache and the profiler.
 
         Row-sliced mirror of :meth:`_publish_graph_child`: each branch ``i``
-        receives the ``[1, T, H]`` slice of the static child buffer
-        (**cloned** — the static buffers are reused across replays) plus the
-        layer-0 embedding row, and a per-layer stability record derived from
-        the static mask buffer row (device-side sums, no host readback).
+        receives the ``[1, T, H]`` slice of the static child buffer plus the
+        layer-0 embedding row, and a per-layer stability record. AR018 host-cost
+        compression: (1) the whole ``[L, N, T, H]`` child buffer is cloned ONCE
+        into a fresh snapshot -- ``cache.put`` copies into its own storage, so
+        the snapshot's row views are safe against static-buffer reuse and
+        against by-reference caches alike (the snapshot is private and never
+        written by this side after the publish); (2) all (layer, row) stability
+        sums come from ONE ``mask_buf.sum(dim=2)`` reduction recorded through
+        ``StabilityProfiler.record_precomputed`` (0-dim views, zero extra
+        launches, zero host readback). The debug path
+        (``profiler.debug_enabled``) falls back to the per-row ``record``
+        entry, which is the only one that can produce ``divergence_positions``.
         """
         from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 
         embedding = self.profile.embed_module(tokens)
         num_layers = len(self._wrapped_layers)
+        # FR2: one fresh snapshot clone of the whole child buffer replaces the
+        # per-row clones (cache.put copies, so the intermediate per-row clone
+        # was pure overhead).
+        snapshot = runner.child_buf.clone()
+        # FR1: one batched reduction serves every (layer, row) stability count.
+        profiler = GLOBAL_STABILITY_PROFILER
+        debug_path = profiler.enabled and profiler.debug_enabled
+        sums: Any = None
+        if profiler.enabled and not debug_path:
+            sums = runner.mask_buf.sum(dim=2)  # [L, N], int64
+        seq_len = int(tokens.shape[1])
         for layer_idx in range(num_layers):
             for row, branch_id in enumerate(branch_ids):
                 activations: dict[str, Any] = {
-                    "ffn_out": runner.child_buf[layer_idx][row : row + 1].clone()
+                    "ffn_out": snapshot[layer_idx][row : row + 1]
                 }
                 if layer_idx == 0:
                     activations["embedding"] = embedding[row : row + 1]
@@ -990,15 +1009,29 @@ class ManualFoldedForward(nn.Module):
                     layer_idx=layer_idx,
                     activations=activations,
                 )
-                GLOBAL_STABILITY_PROFILER.record(
-                    branch_id=branch_id,
-                    parent_branch_id=parent_branch_id,
-                    layer_idx=layer_idx,
-                    step_idx=step_idx,
-                    stable_mask=runner.mask_buf[layer_idx][row : row + 1],
-                    tau=self.gate.tau,
-                    metric="cosine",
-                )
+                if debug_path:
+                    # Debug positions need the mask itself: per-row fallback to
+                    # the original entry (correctness over launch count).
+                    profiler.record(
+                        branch_id=branch_id,
+                        parent_branch_id=parent_branch_id,
+                        layer_idx=layer_idx,
+                        step_idx=step_idx,
+                        stable_mask=runner.mask_buf[layer_idx][row : row + 1],
+                        tau=self.gate.tau,
+                        metric="cosine",
+                    )
+                elif sums is not None:
+                    profiler.record_precomputed(
+                        branch_id=branch_id,
+                        parent_branch_id=parent_branch_id,
+                        layer_idx=layer_idx,
+                        step_idx=step_idx,
+                        stable_sum=sums[layer_idx][row],
+                        num_tokens=seq_len,
+                        tau=self.gate.tau,
+                        metric="cosine",
+                    )
 
     def _observe_adaptive_capacity(
         self,

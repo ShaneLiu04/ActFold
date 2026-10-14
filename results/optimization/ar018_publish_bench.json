@@ -1,0 +1,448 @@
+{
+  "configs": [
+    {
+      "adaptive_vs_fixed_allclose_1e-4": true,
+      "ar017_anchor_speedup_p50": 1.5502,
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__graph_adaptive": 1.0,
+        "baseline_eager__vs__graph_fixed": 1.0,
+        "graph_fixed__vs__graph_adaptive": 1.0
+      },
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "graph_validated_last_step": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_vs_ar017_adaptive": "inconclusive",
+      "h2_speedup_no_regression_vs_ar017": "supported",
+      "h3_publish_share_below_probe": "supported",
+      "h4_correctness_and_profiler": "supported",
+      "hidden_dim": 256,
+      "logits_parity_argmax_exact": true,
+      "num_candidates": 4,
+      "num_layers": 8,
+      "num_tokens": 2048,
+      "peak_memory_allocated_bytes": 332841984,
+      "phase_decomposition": {
+        "deviation_note": "phase_sum_ms and full_step_p50_ms are both recorded; their deviation is two-way (sync boundaries serialize the phases positively while host work between phases is missed negatively) and no direction is assumed",
+        "full_step_p50_ms": 4.708,
+        "method_note": "six sync-bounded phases driven through private APIs (runner._prefill_parent/_graph.replay/validate_budgets, mff._publish_graph_children), script-layer measurement outside the timed window",
+        "phase_sum_ms": 4.525,
+        "phases_ms": {
+          "logits_clone": {
+            "mean": 0.08357333135791123,
+            "n": 30,
+            "p50": 0.08060000254772604,
+            "std": 0.006838619535061186
+          },
+          "prefill": {
+            "mean": 0.38246999223095673,
+            "n": 30,
+            "p50": 0.3183000080753118,
+            "std": 0.10000690151469833
+          },
+          "publish": {
+            "mean": 2.4502033328947923,
+            "n": 30,
+            "p50": 2.131650020601228,
+            "std": 0.4717356497493547
+          },
+          "readback": {
+            "mean": 0.05413333613735934,
+            "n": 30,
+            "p50": 0.05199998850002885,
+            "std": 0.011319372687872779
+          },
+          "replay": {
+            "mean": 2.031490004931887,
+            "n": 30,
+            "p50": 1.8325000128243119,
+            "std": 0.5819328119682283
+          },
+          "revalidate_host": {
+            "mean": 0.11359667211460571,
+            "n": 30,
+            "p50": 0.10995002230629325,
+            "std": 0.008250033283193306
+          }
+        },
+        "probe_provenance": "ar018_hostcost_probe (temp probe, 2026-10-14, n=30, AR017 fixture/seed/steady capacity, sync-bounded six-phase decomposition)",
+        "probe_publish_share_reference": 0.607,
+        "publish_share_of_full_step": 0.452767
+      },
+      "profiler_consistent": true,
+      "seq_len": 512,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.4034,
+        "adaptive_vs_fixed": 1.203,
+        "fixed_vs_baseline": 1.9978
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 12.31837333374036,
+          "n": 30,
+          "p50": 11.315349984215572,
+          "std": 2.42394074989686
+        },
+        "graph_adaptive": {
+          "mean": 5.117240006802604,
+          "n": 30,
+          "p50": 4.708049993496388,
+          "std": 0.9382157700296023
+        },
+        "graph_fixed": {
+          "mean": 6.097113331391786,
+          "n": 30,
+          "p50": 5.6637999950908124,
+          "std": 0.9075925989827437
+        }
+      }
+    },
+    {
+      "adaptive_vs_fixed_allclose_1e-4": true,
+      "ar017_anchor_speedup_p50": 1.6839,
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__graph_adaptive": 1.0,
+        "baseline_eager__vs__graph_fixed": 1.0,
+        "graph_fixed__vs__graph_adaptive": 1.0
+      },
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "graph_validated_last_step": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_vs_ar017_adaptive": "supported",
+      "h2_speedup_no_regression_vs_ar017": "supported",
+      "h3_publish_share_below_probe": "supported",
+      "h4_correctness_and_profiler": "supported",
+      "hidden_dim": 256,
+      "logits_parity_argmax_exact": true,
+      "num_candidates": 8,
+      "num_layers": 8,
+      "num_tokens": 4096,
+      "peak_memory_allocated_bytes": 528679936,
+      "phase_decomposition": {
+        "deviation_note": "phase_sum_ms and full_step_p50_ms are both recorded; their deviation is two-way (sync boundaries serialize the phases positively while host work between phases is missed negatively) and no direction is assumed",
+        "full_step_p50_ms": 8.3,
+        "method_note": "six sync-bounded phases driven through private APIs (runner._prefill_parent/_graph.replay/validate_budgets, mff._publish_graph_children), script-layer measurement outside the timed window",
+        "phase_sum_ms": 8.0702,
+        "phases_ms": {
+          "logits_clone": {
+            "mean": 0.1292000039635847,
+            "n": 30,
+            "p50": 0.12525002239271998,
+            "std": 0.012900950437621048
+          },
+          "prefill": {
+            "mean": 0.3465466763979445,
+            "n": 30,
+            "p50": 0.3139000036753714,
+            "std": 0.07753987061298831
+          },
+          "publish": {
+            "mean": 4.539620001257087,
+            "n": 30,
+            "p50": 4.225449985824525,
+            "std": 0.6388170837889611
+          },
+          "readback": {
+            "mean": 0.05850333060758809,
+            "n": 30,
+            "p50": 0.056949997087940574,
+            "std": 0.012010705634042959
+          },
+          "replay": {
+            "mean": 3.468716658729439,
+            "n": 30,
+            "p50": 3.2374499714933336,
+            "std": 0.6358282360022669
+          },
+          "revalidate_host": {
+            "mean": 0.11387666260513167,
+            "n": 30,
+            "p50": 0.11124997399747372,
+            "std": 0.007398542405417914
+          }
+        },
+        "probe_provenance": "ar018_hostcost_probe (temp probe, 2026-10-14, n=30, AR017 fixture/seed/steady capacity, sync-bounded six-phase decomposition)",
+        "probe_publish_share_reference": 0.712,
+        "publish_share_of_full_step": 0.50909
+      },
+      "profiler_consistent": true,
+      "seq_len": 512,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.6743,
+        "adaptive_vs_fixed": 1.194,
+        "fixed_vs_baseline": 2.2398
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 23.6482766631525,
+          "n": 30,
+          "p50": 22.196950012585148,
+          "std": 3.35264603143227
+        },
+        "graph_adaptive": {
+          "mean": 9.044973331037909,
+          "n": 30,
+          "p50": 8.29999998677522,
+          "std": 1.1826882969378698
+        },
+        "graph_fixed": {
+          "mean": 10.597563337069005,
+          "n": 30,
+          "p50": 9.910200024023652,
+          "std": 1.0909282360425572
+        }
+      }
+    },
+    {
+      "adaptive_vs_fixed_allclose_1e-4": true,
+      "ar017_anchor_speedup_p50": 2.2993,
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__graph_adaptive": 1.0,
+        "baseline_eager__vs__graph_fixed": 1.0,
+        "graph_fixed__vs__graph_adaptive": 1.0
+      },
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "graph_validated_last_step": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_vs_ar017_adaptive": "supported",
+      "h2_speedup_no_regression_vs_ar017": "supported",
+      "h3_publish_share_below_probe": "supported",
+      "h4_correctness_and_profiler": "supported",
+      "hidden_dim": 1024,
+      "logits_parity_argmax_exact": true,
+      "num_candidates": 4,
+      "num_layers": 16,
+      "num_tokens": 2048,
+      "peak_memory_allocated_bytes": 2472541184,
+      "phase_decomposition": {
+        "deviation_note": "phase_sum_ms and full_step_p50_ms are both recorded; their deviation is two-way (sync boundaries serialize the phases positively while host work between phases is missed negatively) and no direction is assumed",
+        "full_step_p50_ms": 26.3182,
+        "method_note": "six sync-bounded phases driven through private APIs (runner._prefill_parent/_graph.replay/validate_budgets, mff._publish_graph_children), script-layer measurement outside the timed window",
+        "phase_sum_ms": 26.0026,
+        "phases_ms": {
+          "logits_clone": {
+            "mean": 0.08506999971965949,
+            "n": 30,
+            "p50": 0.08334999438375235,
+            "std": 0.006034522131913512
+          },
+          "prefill": {
+            "mean": 0.9448233254564306,
+            "n": 30,
+            "p50": 0.8262500050477684,
+            "std": 0.41609504089492877
+          },
+          "publish": {
+            "mean": 4.32028333695295,
+            "n": 30,
+            "p50": 4.144250007811934,
+            "std": 0.49899249352800085
+          },
+          "readback": {
+            "mean": 0.1053333340678364,
+            "n": 30,
+            "p50": 0.10084998211823404,
+            "std": 0.025167917578888758
+          },
+          "replay": {
+            "mean": 20.081206667236984,
+            "n": 30,
+            "p50": 20.663950010202825,
+            "std": 1.0329726453703183
+          },
+          "revalidate_host": {
+            "mean": 0.19339333133151135,
+            "n": 30,
+            "p50": 0.18394997459836304,
+            "std": 0.022536536842250293
+          }
+        },
+        "probe_provenance": "ar018_hostcost_probe (temp probe, 2026-10-14, n=30, AR017 fixture/seed/steady capacity, sync-bounded six-phase decomposition)",
+        "probe_publish_share_reference": 0.297,
+        "publish_share_of_full_step": 0.157467
+      },
+      "profiler_consistent": true,
+      "seq_len": 512,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.6607,
+        "adaptive_vs_fixed": 1.764,
+        "fixed_vs_baseline": 1.5084
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 70.37784000470613,
+          "n": 30,
+          "p50": 70.02605003071949,
+          "std": 0.9964381571582881
+        },
+        "graph_adaptive": {
+          "mean": 26.09006000178245,
+          "n": 30,
+          "p50": 26.318199990782887,
+          "std": 1.1743409691320426
+        },
+        "graph_fixed": {
+          "mean": 47.172700004496924,
+          "n": 30,
+          "p50": 46.4252500096336,
+          "std": 1.3233283917964356
+        }
+      }
+    },
+    {
+      "adaptive_vs_fixed_allclose_1e-4": true,
+      "ar017_anchor_speedup_p50": 2.4609,
+      "argmax_agreement_pairwise": {
+        "baseline_eager__vs__graph_adaptive": 1.0,
+        "baseline_eager__vs__graph_fixed": 1.0,
+        "graph_fixed__vs__graph_adaptive": 1.0
+      },
+      "graph_captured": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "graph_validated_last_step": {
+        "graph_adaptive": true,
+        "graph_fixed": true
+      },
+      "h1_vs_ar017_adaptive": "supported",
+      "h2_speedup_no_regression_vs_ar017": "supported",
+      "h3_publish_share_below_probe": "supported",
+      "h4_correctness_and_profiler": "supported",
+      "hidden_dim": 1024,
+      "logits_parity_argmax_exact": true,
+      "num_candidates": 8,
+      "num_layers": 16,
+      "num_tokens": 4096,
+      "peak_memory_allocated_bytes": 3521691648,
+      "phase_decomposition": {
+        "deviation_note": "phase_sum_ms and full_step_p50_ms are both recorded; their deviation is two-way (sync boundaries serialize the phases positively while host work between phases is missed negatively) and no direction is assumed",
+        "full_step_p50_ms": 48.5942,
+        "method_note": "six sync-bounded phases driven through private APIs (runner._prefill_parent/_graph.replay/validate_budgets, mff._publish_graph_children), script-layer measurement outside the timed window",
+        "phase_sum_ms": 46.7463,
+        "phases_ms": {
+          "logits_clone": {
+            "mean": 0.18378666524464884,
+            "n": 30,
+            "p50": 0.13150001177564263,
+            "std": 0.2596251183325447
+          },
+          "prefill": {
+            "mean": 1.630703336559236,
+            "n": 30,
+            "p50": 1.5555999998468906,
+            "std": 0.3901670494084066
+          },
+          "publish": {
+            "mean": 9.147229994414374,
+            "n": 30,
+            "p50": 8.545449993107468,
+            "std": 1.2919710588821842
+          },
+          "readback": {
+            "mean": 0.13027000435007116,
+            "n": 30,
+            "p50": 0.1280000142287463,
+            "std": 0.009845207551335201
+          },
+          "replay": {
+            "mean": 36.492540004352726,
+            "n": 30,
+            "p50": 36.190299986628816,
+            "std": 0.8215331968377904
+          },
+          "revalidate_host": {
+            "mean": 0.19528999303778014,
+            "n": 30,
+            "p50": 0.19540000357665122,
+            "std": 0.007943859692042485
+          }
+        },
+        "probe_provenance": "ar018_hostcost_probe (temp probe, 2026-10-14, n=30, AR017 fixture/seed/steady capacity, sync-bounded six-phase decomposition)",
+        "probe_publish_share_reference": 0.315,
+        "publish_share_of_full_step": 0.175853
+      },
+      "profiler_consistent": true,
+      "seq_len": 512,
+      "speedups_p50": {
+        "adaptive_vs_baseline": 2.9466,
+        "adaptive_vs_fixed": 1.8406,
+        "fixed_vs_baseline": 1.6008
+      },
+      "timings_ms": {
+        "baseline_eager": {
+          "mean": 143.12983333365992,
+          "n": 30,
+          "p50": 143.18564999848604,
+          "std": 0.8805604995672327
+        },
+        "graph_adaptive": {
+          "mean": 48.190893329835184,
+          "n": 30,
+          "p50": 48.59424999449402,
+          "std": 1.4592287786554725
+        },
+        "graph_fixed": {
+          "mean": 89.3708099979752,
+          "n": 30,
+          "p50": 89.44420001353137,
+          "std": 1.8237556500638554
+        }
+      }
+    }
+  ],
+  "hypotheses_declared": {
+    "H1": "AR018 adaptive p50 < AR017 artifact adaptive p50 per config (cross-artifact, two-sample 2-sigma via _verdict)",
+    "H2": "AR018 baseline/adaptive speedup >= AR017 artifact speedup (P1-7 fourth rung: no regression; equality is supported)",
+    "H3": "publish-phase share of the full adaptive step < the AR018 host-cost probe reference (ar018_hostcost_probe (temp probe, 2026-10-14, n=30, AR017 fixture/seed/steady capacity, sync-bounded six-phase decomposition))",
+    "H4": "three-path logits consistency (exact argmax + adaptive-vs-fixed allclose 1e-4) and profiler statistics equal to an independent per-row mask_buf re-sum"
+  },
+  "hypotheses_verdicts": {
+    "H1": "inconclusive",
+    "H2": "supported",
+    "H3": "supported",
+    "H4": "supported"
+  },
+  "meta": {
+    "capacity_ratio": 0.5,
+    "command": "python -m scripts.ar018_publish_bench",
+    "cross_artifact_anchor": {
+      "anchor_values_embedded": "per-config h1/h2 verdicts are computed against the AR017 artifact's stored p50/std/n (reproducible offline); the anchor speedup is recorded as ar017_anchor_speedup_p50",
+      "ar017_run_date_utc": "2026-10-13T16:24:08.960558+00:00",
+      "available": true,
+      "nature": "cross-artifact comparison (H1/H2): same machine class, seed, method, and config matrix as the AR017 run; the run_date differs, so day-to-day machine state is a declared confound carried by the 2-sigma criterion",
+      "path": "results\\optimization\\ar017_adaptive_bench.json"
+    },
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "gpu_driver_version": "556.18",
+    "gpu_driver_version_note": "queried via nvidia-smi (AR016 Minor-2 closure)",
+    "interleaving": "round-robin per repetition: baseline_eager -> graph_fixed -> graph_adaptive",
+    "kernel_count": null,
+    "kernel_count_note": "this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel counts omitted rather than fabricated - rerun on a CUPTI-capable host to record them",
+    "model": "synthetic LLaMA-layout V=1000, per-config (H, L)",
+    "peak_memory_method": "torch.cuda.reset_peak_memory_stats() before one untimed adaptive step, max_memory_allocated() after synchronize; quantifies the snapshot transient (srs risk-table promise)",
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + 30 reps + p50 + per-rep round-robin",
+    "reps": 30,
+    "run_date_utc": "2026-10-14T02:50:10.435869+00:00",
+    "seed": 2026,
+    "timing_method": "time.perf_counter around torch.cuda.synchronize() boundaries (host-side prefill/readback/publish included; CUDA-event timing would exclude them)",
+    "torch_version": "2.5.1+cu121",
+    "warmup": 5,
+    "warmup_note": "warmup covers capture plus the adaptation schedule (shrink patience 3 + throttle interval 2); timed steady state reflects the adapted capacity and the AR018 publish"
+  }
+}
