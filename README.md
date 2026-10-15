@@ -36,6 +36,10 @@ ActFold 用 **Branch Folding（分支折叠）** 攻击这一冗余：在每一�
 一致的位置就能获益。
 
 > **目标影响**：验证阶段 TFLOPs 削减 21%–62%，精度损失极小。
+>
+> **最新交付（AR022）**：Fast-dLLM-v2-1.5B 真实生成回路，贪心锚定批量投机
+> **7.02×** 于 baseline，且质量面与 baseline **逐位对齐**（post-hoc 置信
+> gap = 0.0、解码长度/早停完全恢复）。
 
 ### 核心思想
 
@@ -76,6 +80,7 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 9 | **position_embeddings 线程化 + 真实 checkpoint 端到端**（AR019） | 前三代墙钟证据全部来自合成 LLaMA-layout 模型；探针实测确证 remote 层必须收 rotary——`ManualFoldedForward` 不透传 `position_embeddings` 则 Fast-dLLM parent prefill 即 `TypeError` | `forward` 末位 `position_embeddings=(cos, sin)` 新参线程化**四构建面**（串行/批量 eager、graph 捕获静态体 by-reference 烘焙、AR017 自适应重捕获），镜像 attention_mask 契约（入口 ValueError 校验 + 重放期 `is` 对象恒一静默回退）；层接口零改动（`**kwargs` 通道）；`None` 不附加 kwarg，既有调用逐字节不变 | Fast-dLLM-v2-1.5B 真实块验证三路径 **2.44–2.62×**（p50，n=30）+ 逐位一致（maxdiff=0.0、argmax 一致率 1.0）+ 完美块二分（stable ratio 精确 = K_PROMPT/T） |
 | 10 | **发布路径 cache put 批量化**（AR020） | AR018 压缩后小几何发布相位仍占自适应全步 45.3–50.9%，剩余主体 = L·N+N 次逐条 `cache.put` 的宿主 launch 开销（WDDM 实测 ~30–40µs/次）；foreach 探针实测 L·N=224 条 bf16 宿主入队 **27.8×** | `BatchedPutCapable` 结构化协议 + 三 cache `put_batch`（**冲刷语义**：写入序恒=条目序，消除对 foreach 组内顺序的依赖）+ `_foreach_copy_` 单点封装（(device,dtype) 分组，旧 torch 逐对降级）+ 发布路径**每次发布能力探测分流**（无能力 cache 逐字节走原循环）+ `mff.cache` property 传播 | 真实 checkpoint 发布窗口 p50 **1.77–1.97×**（−43.4%~−49.2%）；主机调用账本 **116/232/116 → 1**；正确性门全 bit-equal；端到端 adaptive(batch) vs baseline **2.40–2.67×**；H1–H4 全 supported |
 | 11 | **生产生成回路折叠接线**（AR021） | AR015–020 批量验证栈**零生产调用方**（sampler 不传 pe 则真实 remote 必崩、掩码对象不钉则图捕获一次后永不重放、`[N,T]` 批量验证形态在生产回路不存在）；AR019 P5 实证 tau=0.95 gate 会把同块未翻位置误判 stable（parity 92.9% 先例）——链折叠直接上 gate 不精确 | sampler **(T,prompt_len) 键控折叠供给**（块因果∧pad 排除 `[T,T]` 掩码 + rotary pe + forced 三件套对象钉定，跨 sample 存续）+ **强制散度活跃块**（当前块整区不进 gate 判定面、全量重算——parity 由构造保证，P5 构造级绕开）+ **形状键控 runner 池**（opt-in `graph_runner_pool_size`，跨块增长每形状窗捕获/重放，LRU+cuBLAS workspace 回收）+ **批量投机块验证**（opt-in `num_block_candidates`：top-k 起草→单次 `[N,T]` 批量验证→min-prob 选定提交；AR016/017/018/020 批量面首次被生产回路行使） | 真实 generate() 三模式：**H1 supported（真实 checkpoint bit-exact）**；H2 inconclusive（Δ=−107.5ms 未越 2σ=265.3ms，小形状串行折叠开销>收益）；**H3 supported（batched vs serial 2.47× / vs baseline 2.38×，p50 1193.9 vs 2948.3/2840.7ms）**；H4 supported（池计数逐位对账、账本 c=4 界内、canary 真） |
+| 12 | **贪心锚定候选：批量投机质量对齐**（AR022） | AR021 批量投机 2.38× 但**质量面与 baseline 分叉**：块级 exact-match 0.0、post-hoc 置信 0.2897/0.1064 vs baseline 0.3697/0.5703、解码长度 160/77 vs baseline 早停 34/66（非贪心提交不命中 stop token）——速度-质量权衡是 AR021 的如实遗留 | `candidate_include_greedy`（opt-in）：候选**行 0 = 贪心假设**（draft top-k 有序集首位，srs 冻结 argmax 定义；确定性构建、零设备回读、零 generator 消费）；N 总数不变、随机行 j=1..N-1 在冻结种子公式中保持行号；贪心行进入 **min-prob 公平竞争、可落败**（UT-2203 后验陷阱构造级钉死，选定零特判）；`greedy_win_stats` 只读观测面 + `ActFoldConfig` YAML 消费面；四模式基准 MFF_C 与 MFF_B 同构独立实例——速度变量构造性清零 | 四模式 H1-H4 **全 supported**：posthoc 0.369661/0.570341 逐位==baseline（gap=0.0）、长度 34/66 早停**完全恢复**、块级 exact 4/4=1.0 vs batched 0.0；p50 440.9ms——**7.0236× vs baseline / 2.9498× vs batched**；复现自检 strict PASS（batched 逐位==AR021 先验） |
 
 ### 机理详解（按创新演进顺序）
 
@@ -252,11 +257,113 @@ warmup=中性）。**生产单发注记（A5）**：单次 generate 下每形状
 `[N,T]` 批量调用，捕获摊销为负——单发场景建议 `use_cuda_graph=False`
 （基准/批量场景 warmup+reps 摊销成立）。
 
+#### 11. 贪心锚定候选（AR022）：批量投机的质量对齐
+
+AR021 的如实遗留：批量投机把整代墙钟压到 2.38×，但投机提交是**非贪心**
+的——min-prob 准则选出的候选行不携带 draft argmax 的停止/置信结构，
+实测块级 exact-match 0.0、post-hoc 置信低于 baseline、且不命中 baseline
+的 stop token（prompt0 上 baseline 34 token 早停而 batched 生成满 128）。
+AR022 不换选择准则、不加特判，只用一个构建算子把贪心结构**送回竞争面**：
+
+- **贪心行（FR1）**：`candidate_include_greedy=True` 时 `[N,T]` 画布的
+  **行 0 = 贪心假设**——全部仍掩码位置填 draft top-k **有序集首位**
+  （`sorted=True` topk 的首列，srs 冻结的 argmax 定义），纯设备索引构建：
+  **确定性、零设备回读、零 generator 消费**（随机行用专用 CPU generator
+  采样 top-k 内选项，贪心行不消耗任何随机性）；
+- **N 语义**：`num_block_candidates` 仍是**候选总数**——贪心占 0 号位，
+  随机行变 `j=1..N-1` 且在冻结种子公式
+  `(S0·1_000_003 + block_idx·8_191 + small_block_idx·131 + j) & 0x7FFF_FFFF`
+  中保持行号 ⇒ 行 1..N-1 与 greedy-off 构建**逐位相同**（仅画布一致区
+  成立：首个投机小块内构造成立，胜者分叉后失效——A/B 是构建算子对照面，
+  非全程轨迹等价）；`_cand{j}` 自 AR021 起即"行 j"语义，分支命名零改动；
+- **公平竞争、可落败**：贪心行进入**原封不动的 min-prob 准则**，没有任何
+  行 0 特判——UT-2203 的后验陷阱 fixture（零混合层 + 正交嵌入 + 种子重放
+  all-C 候选行）构造级证明贪心行可输；选定时提交/停止/链延续与既有语义
+  完全一致；
+- **观测面与配置面（FR2/FR3）**：`greedy_win_stats` 只读 property
+  `{"greedy_wins", "speculative_calls"}`——实例级计数器跨 sample 存续
+  （graph_pool_stats 先例），仅贪心锚定投机路径递增（默认关恒 `{0, 0}`），
+  胜出判定 `j_star == 0`，基准以 before/after 快照差分导出 rate；
+  `ActFoldConfig.candidate_include_greedy` 提供 YAML 消费面（免
+  unknown-key 警告），`True` 且 `num_block_candidates==0` 在 sampler
+  config 构造期 `ValueError`（贪心锚定仅定义于投机路径）。
+
+四模式基准（新增 folded-batched-greedy = MFF_C：与 MFF_B **同构独立实例**
+——自有 cache/gate/pool/canary/AR017 policy，同 `[N,T]` 形状/N=4/top_k=10/
+prompts/seed，仅 `candidate_include_greedy=True`——速度变量构造性清零；
+folded-batched sidecar 同时充当 AR021 复现自检，strict 失配则四 verdict
+全置 blocked）给出定案：**H1-H4 全 supported**——质量三面全过（位置级
+4/4=1.0、块级 4/4=1.0 vs batched 0.0、posthoc 逐位==baseline gap=0.0），
+早停完全恢复（34/66 == baseline），且贪心行命中 stop token 使对齐模式
+反而**更快**（p50 440.9 vs 1300.6ms，7.02× vs baseline）——速度与质量
+在本工作负载上不再是对立面。greedy_win_rate 1.0（2/2）是本负载的观测值
+（机制允许落败），不是普适断言。
+
 ---
 
 ## 最新实验结果
 
-### 生产生成回路三模式基准（AR021）：真实 generate() 首测，batched 2.38×（最新头条）
+### 四模式投机质量对齐基准（AR022）：贪心锚定 7.02× 且质量逐位对齐 baseline（最新头条）
+
+**工作负载**：Fast-dLLM-v2-1.5B bf16（H=1536/L=28/V=151936，remote code）
+真实 `sample` 生成回路——AR021 协议全承（seed 2026、P=2 prompt padded
+32/64、num_tokens=128、warmup 每模式每 prompt 完整一轮丢弃、逐 rep
+round-robin、宿主 `perf_counter`+sync），新增第四模式；四模式共享同一
+模型实例/prompt 集/种子：**baseline** / **folded-serial**（AR021 FR2）/
+**folded-batched**（AR021 FR3，MFF_B——其 sidecar 质量面同时充当 AR021
+复现自检）/ **folded-batched-greedy**（AR022 对齐模式，MFF_C——与 MFF_B
+同构独立实例，仅 `candidate_include_greedy=True`；同 `[N,T]` 形状/N=4/
+top_k=10/seed ⇒ 速度变量**构造性清零**，同形状 A/B）。
+
+**四模式整代墙钟 p50 ms**（Quadro RTX 5000 16GB，AR019 venv
+transformers 4.53.1，torch 2.5.1+cu121，n=60/模式 = 2 prompt × 30 reps，
+单次预承诺运行 2026-10-15T04:21 UTC）：
+
+| 模式 | p50 | mean | std | vs baseline | vs folded-batched |
+|------|-----|------|-----|-------------|-------------------|
+| baseline（raw sampler） | 3096.8 | 3095.4 | 145.9 | — | — |
+| folded-serial（链折叠+串行池） | 3205.4 | 3197.6 | 141.6 | 0.9661× | — |
+| folded-batched（批量投机+批量池+AR017） | 1300.6 | 1315.1 | 808.4 | 2.381× | — |
+| folded-batched-greedy（贪心锚定，MFF_C） | **440.9** | 440.9 | 61.8 | **7.0236×** | **2.9498×** |
+
+逐 prompt p50（ms）：greedy **379.4/501.7** vs batched 2119.3/507.3——
+贪心行命中 baseline 的 stop token、恢复早停路径，对齐模式在**加速侧**
+通过速度保持门（H2 Δ=+859.682ms ≥ −2σ=−1616.7413ms，σ=808.3707）。
+
+**质量面对齐三面（H1，硬门全过）——对齐模式恢复 baseline 质量**：
+
+| 质量面 | baseline | folded-batched | folded-batched-greedy |
+|--------|----------|----------------|-----------------------|
+| 合并块级 exact-match（4 块） | —（参照） | 0/4 = 0.0 | **4/4 = 1.0** |
+| 合并位置级一致率（窗口 [32,34)/[64,66)） | —（参照） | — | **4/4 = 1.0**（> 0.5 门） |
+| post-hoc 置信 overall_mean（prompt0/1） | 0.369661 / 0.570341 | 0.289692 / 0.106418 | **0.369661 / 0.570341（gap = 0.0，逐位==baseline）** |
+| 解码长度（prompt0/1） | 34 / 66（早停） | 160 / 77 | **34 / 66（早停完全恢复）** |
+
+**假设判定（预承诺单次运行，无重跑钓鱼；判定式全文冻结于工件 meta）**：
+**H1 质量对齐 supported（三面全过）**；**H2 速度保持 supported**（Δ 在
+加速侧）；**H3 早停恢复 supported**（34/66 == baseline 实测）；
+**H4 全栈行使 supported**——MFF_C 在域窗（p32_block0_T64/p64_block0_T96）
+批量捕获 >0 且 timed 重放 30/30 >0；三 folded 模式降级类 canary
+timed == 0（结构性 eager 60/150/60 单独计数，by-design）；发布账本
+≤ 4·(L+N) 三模式逐字段（timed 段 ops serial 50460/batched 7980/greedy
+3540）；AR017 事件仅触发时验证（batched cumulative 2 全落 warmup=中性；
+greedy 0=未触发中性）。VRAM 峰值 5413.0/5413.1/5840.1/5672.0 MB。
+
+**复现自检 strict PASS**：folded-batched sidecar 质量面对 AR021 工件先验
+逐位相等（block_exact 0.0/0.0、len 160/77、posthoc_mean 0.289692/0.106418、
+posthoc_min 5e-06/0.0——同环境确定性假设成立，无 reproduction_anomaly）。
+**greedy_win 面**：greedy_win_rate 1.0（2 次投机调用 2 胜——本负载 P=2
+恰各 1 个投机小块；贪心可落败是机制属性（UT-2203），win_rate 是观测面
+不是断言面）。timed 段稳定比 serial 0.5774（n=47040）/batched 0.6790
+（n=22680）/greedy 0.5833（n=8400）。
+
+工件：`results/optimization/ar022_speculative_quality_bench.json`
+（H1-H4 判定式全文 + 贪心锚定声明 + 复现自检先验 `_AR021_PRIORS` 冻结于
+meta）；复现 `python -m scripts.ar022_speculative_quality_bench`
+（AR019 venv + 本地权重，[`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md)
+第 12 步；`--quick` 冒烟 ≤5min，其复现自检降级为结构性验证并如实注记）。
+
+### 生产生成回路三模式基准（AR021）：真实 generate() 首测，batched 2.38×
 
 **工作负载**：Fast-dLLM-v2-1.5B bf16（H=1536/L=28/V=151936，remote code）
 真实 **generate()**——P=2 prompt（预 padding 至 32 倍数，padded 32/64），
@@ -410,7 +517,8 @@ seed 2026，n=30 round-robin 交错；每步 = N 候选完整验证）：
 > 合成基准演进（AR015→AR016→AR017→AR018）见下表，两表同口径（三路径、
 > round-robin、p50、同型 GPU）；AR020 在同一工作负载上进一步给出发布窗口
 > A/B（loop vs batch 发布，见上表）；AR021 把整栈接入生产生成回路并在真实
-> generate() 面三模式复测（见头条表）。
+> generate() 面三模式复测；AR022 以贪心锚定候选把批量投机的质量面对齐
+> baseline（7.02×，见头条表）。
 
 ### 合成基准端到端墙钟（AR018）：折叠验证 vs 裸基线（P1-7 四级演进）
 
@@ -431,7 +539,9 @@ WDDM，驱动 556.18，seed 2026，n=30 round-robin 交错，p50 ms；
 > → AR019 真实 checkpoint 复测（Fast-dLLM-v2-1.5B 2.44–2.62×，逐位一致）
 > → AR020 发布 put 批量化（发布窗口 1.77–1.97×，端到端 2.40–2.67×）
 > → AR021 生产生成回路折叠接线（真实 generate()：batched vs baseline
-> 2.38×、vs serial 2.47×，folded-serial parity bit-exact）。
+> 2.38×、vs serial 2.47×，folded-serial parity bit-exact）
+> → AR022 贪心锚定候选（质量对齐：posthoc gap=0.0、早停恢复，
+> 7.02× vs baseline）。
 > 全部配置三路径 argmax 精确一致 + 自适应 vs 固定 allclose 1e-4；每分支
 > stable_ratio 与独立逐行重算逐值相等。
 
@@ -535,7 +645,7 @@ T=8192, H=4096 时融合 Triton kernel 达 **3.43×**（逐位精确，仅大形
 
 | 场景 | 配置 |
 |---|---|
-| 生产块解码生成（Fast-dLLM v2） | `sampler.sample(prompt_ids, folded_model=mff)`（AR021）：前缀块 gate 复用 + 活跃块强制散度（parity 由构造 bit-exact）+ `graph_runner_pool_size=8` 形状键控池；批量投机 `num_block_candidates=4`（opt-in，2.38× vs baseline——质量面 report-only）；**单发场景建议 `use_cuda_graph=False`**（捕获摊销为负，A5 注记） |
+| 生产块解码生成（Fast-dLLM v2） | `sampler.sample(prompt_ids, folded_model=mff)`（AR021）：前缀块 gate 复用 + 活跃块强制散度（parity 由构造 bit-exact）+ `graph_runner_pool_size=8` 形状键控池；批量投机 `num_block_candidates=4` + **`candidate_include_greedy=True`**（AR022 质量对齐：posthoc==baseline、早停恢复，**7.02× vs baseline**）；**单发场景建议 `use_cuda_graph=False`**（捕获摊销为负，A5 注记） |
 | 多分支验证（同父等长候选） | `ManualFoldedForward(use_cuda_graph=True, graph_adaptive_capacity=True)`——批量图路径 + 批量发布（`put_batch` 能力自动探测，AR020），真实 checkpoint **2.40–2.67×**（AR020）/ 合成 2.40–2.95×（AR018）vs 裸基线 |
 | remote-code 模型（Fast-dLLM v2 等） | 供给 `position_embeddings=(cos, sin)`（AR019 新参，模型自身 rotary_emb 产出）；transformers 4.53.1 venv（remote code 版本钉住） |
 | 长序列 / 大 batch（B×T ≥ 2048） | 追加 `use_split_layers: true`；T ≥ 8192 时融合 kernel 自动启用 |
@@ -580,11 +690,15 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
 # 生产生成回路三模式基准（AR021，P1-7 第七档；同 venv/权重）
 <venv目录>\Scripts\python -m scripts.ar021_generation_loop_bench \
     --model-path <本地权重目录> --reps 30               # --quick 冒烟
+
+# 四模式投机质量对齐基准（AR022，P1-7 第八档；同 venv/权重）
+<venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
+    --model-path <本地权重目录> --reps 30               # --quick 冒烟
 ```
 
 完整报告：[`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md)、
 [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md)、
-[`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md)（全部 28 个 AR 的
+[`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md)（全部 29 个 AR 的
 机制与证据链）、[`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md)。
 
 ---
@@ -595,6 +709,7 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
 |------|------|
 | **Branch Folding 引擎** | `ManualFoldedForward`（推荐路径）零侵入包装任意 Transformer 栈，逐 token 激活复用；`FoldedModel` 仍可用（已弃用） |
 | **生产生成回路折叠**（AR021） | `FastDLLMSampler.sample(prompt_ids, folded_model=mff)`：sampler (T,prompt_len) 键控供给（掩码/pe/forced 对象钉定）+ 强制散度活跃块（parity 由构造 bit-exact，真实 checkpoint 实测 bit-exact）+ 形状键控 runner 池（`graph_runner_pool_size`，opt-in 默认 legacy）+ 批量投机块验证（`num_block_candidates`，opt-in）——AR015-020 批量验证栈的生产接线 |
+| **贪心锚定候选**（AR022） | `candidate_include_greedy=True`：候选行 0 = draft argmax（top-k 有序集首位，确定性构建/零回读/零 generator），进入 min-prob 公平竞争（可落败，UT-2203 后验陷阱钉死）；N 总数不变、随机行 j=1..N-1 保持行号（与 greedy-off 构建逐位相同，画布一致区内）；`greedy_win_stats` 只读观测面 + `ActFoldConfig` YAML 消费面；默认 False 逐字节 AR021 末态，True+N=0 构造期 ValueError。实测：质量逐位对齐 baseline（gap=0.0、早停恢复）+ **7.02× vs baseline** |
 | **批量投机块验证**（AR021） | `num_block_candidates=N`：top-k 起草（种子公式冻结）→ 单次 `[N,T]` 批量验证 → min-prob 选定提交；AR016 批量图 + AR017 自适应 + AR018/020 发布路径首次被生产回路行使；默认 0 关逐字节不变 |
 | **position_embeddings 线程化**（AR019） | `position_embeddings=(cos, sin)` 新参贯穿四构建面（含 graph 烘焙与自适应重捕获），remote-code 模型（Fast-dLLM v2）可跑；`None` 时既有调用逐字节不变 |
 | **批量分支验证**（AR015） | `branch_ids` 复数 kwarg：同父等长候选单次批量前向，其余形态自动串行回退 |
@@ -602,7 +717,7 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
 | **自适应发散容量**（AR017） | `graph_adaptive_capacity=True`：观测驱动重捕获状态机，容量跟随实测需求，失败退化永不劣于现状 |
 | **压缩发布路径**（AR018） | 单次整块快照 + 批量稳定度归约（launch 3·L·N → L·N+2），发布内容逐位不变，零新增同步 |
 | **批量 cache 写**（AR020） | 三 cache `put_batch`（冲刷语义，写入序恒=条目序）+ `BatchedPutCapable` 结构化协议 + 发布路径能力探测分流（主机调用 L·N+N → 1）；`foreach` 单点封装，旧 torch 逐对降级；无能力 cache 逐字节走原循环 |
-| **真实 checkpoint 端到端**（AR019/AR021） | AR019：真实块验证三路径 2.44–2.62×（p50），逐位一致 + 完美块二分；AR021：真实 generate() 三模式，folded-serial parity bit-exact，folded-batched 2.38× vs baseline |
+| **真实 checkpoint 端到端**（AR019/AR021/AR022） | AR019：真实块验证三路径 2.44–2.62×（p50），逐位一致 + 完美块二分；AR021：真实 generate() 三模式，folded-serial parity bit-exact，folded-batched 2.38× vs baseline；AR022：四模式质量对齐——贪心锚定 posthoc 逐位==baseline、早停恢复，7.02× vs baseline |
 | **前缀折叠**（AR003/AR007） | 变长生成步前缀对齐折叠；父比子长时截断前缀复用，门控作语义安全网 |
 | **真接受语义**（AR004/AR006） | 同位置约定的接受率/log-prob 计量；`model_draft` 模式接入独立草稿模型（论文级指标） |
 | **向量化激活缓存** | 连续缓冲 + `index_select`；put/get 快 12–183× / 30–429× |
@@ -733,7 +848,7 @@ logits = mff(
 > 探测自动走单次 `put_batch`（主机调用 L·N+N → 1）——用户零配置；传给
 > `ManualFoldedForward` 的 cache 不暴露 `put_batch` 时逐字节走原循环。
 
-### 4. 生产生成回路折叠（AR021，Fast-dLLM v2）
+### 4. 生产生成回路折叠 + 贪心锚定批量投机（AR021/AR022，Fast-dLLM v2）
 
 ```python
 from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerConfig
@@ -741,23 +856,37 @@ from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerCon
 # 折叠接线：sampler 侧自动供给钉定的 mask/pe/forced 三件套
 # （(T, prompt_len) 键控、跨调用复用）；活跃块强制散度——parity 由构造保证
 config = FastDLLMSamplerConfig(
-    num_block_candidates=0,   # 0=关（默认，逐字节现状）；4=批量投机验证（opt-in）
-    candidate_top_k=10,       # 起草 top-k 池（num_block_candidates>0 时生效）
+    num_block_candidates=0,            # 0=关（默认，逐字节现状）
+    candidate_top_k=10,                # 起草 top-k 池（num_block_candidates>0 时生效）
+    candidate_include_greedy=False,    # AR022 贪心锚定（默认 False；True 需 N>0）
 )
 sampler = FastDLLMSampler(model, config)
 output = sampler.sample(prompt_ids, folded_model=mff)   # 要求 batch=1
+
+# 质量对齐模式（AR022）：行 0 = draft argmax 进入 min-prob 公平竞争
+config = FastDLLMSamplerConfig(
+    num_block_candidates=4,            # 批量投机验证（opt-in）
+    candidate_top_k=10,
+    candidate_include_greedy=True,     # 贪心锚定：posthoc==baseline、早停恢复
+)
+sampler = FastDLLMSampler(model, config)
+output = sampler.sample(prompt_ids, folded_model=mff)
+print(sampler.greedy_win_stats)        # {"greedy_wins": ..., "speculative_calls": ...}
 ```
 
 > 单发场景（单次 `generate()`）建议 `mff` 构造时 `use_cuda_graph=False`——
 > 每形状窗仅 1 次批量调用时图捕获摊销为负（AR021 工件 A5 注记）；批量/
 > 基准场景（warmup + 多次调用）摊销成立。质量注记：`num_block_candidates>0`
-> 的投机提交非贪心，不保证与逐迭代配方 exact-match（AR021 实测 exact-match
-> 0.0、置信低于 baseline——速度-质量权衡如实报告）。
+> 且 `candidate_include_greedy=False` 时投机提交非贪心，不保证与逐迭代配方
+> exact-match（AR021 实测 exact-match 0.0、置信低于 baseline——速度-质量
+> 权衡如实报告）；**开启 `candidate_include_greedy=True`（AR022）后本负载
+> 实测质量逐位对齐 baseline（posthoc gap=0.0、解码长度/早停恢复）且更快
+> （7.02× vs baseline / 2.95× vs 无锚定 batched）**。
 
 ### 5. 真实 checkpoint 基准（AR019 venv + 本地权重）
 
 ```bash
-# 详参 docs/RERUN_CHECKLIST.md 第 9/10/11 步（权重 curl 下载 + venv 创建）
+# 详参 docs/RERUN_CHECKLIST.md 第 9/10/11/12 步（权重 curl 下载 + venv 创建）
 <venv目录>\Scripts\python -m scripts.ar019_real_e2e_bench \
     --model-path <本地权重目录> --reps 30 --warmup 8   # --quick 冒烟
 
@@ -765,8 +894,12 @@ output = sampler.sample(prompt_ids, folded_model=mff)   # 要求 batch=1
 <venv目录>\Scripts\python -m scripts.ar020_publish_put_bench \
     --model-path <本地权重目录> --reps 30 --warmup 8   # --quick 冒烟
 
-# 生产生成回路三模式基准（AR021；同 venv/权重，~10min，峰值 ~5.4GB）
+# 生产生成回路三模式基准（AR021；同 venv/权重，峰值 ~5.4GB）
 <venv目录>\Scripts\python -m scripts.ar021_generation_loop_bench \
+    --model-path <本地权重目录> --reps 30               # --quick 冒烟 ≤5min
+
+# 四模式投机质量对齐基准（AR022；同 venv/权重，峰值 ~5.8GB）
+<venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
     --model-path <本地权重目录> --reps 30               # --quick 冒烟 ≤5min
 ```
 
@@ -832,14 +965,15 @@ bash scripts/run_benchmarks.sh actfold/configs/real_model_example.yaml
           │   （AR020 批量 put）       │
           └─────────────┬─────────────┘
                         │
-             ┌──────────▼──────────┐
-             │   Accepted Branch   │
-             │（AR019 真实 checkpoint│
-             │  pe 线程化 + AR021   │
-             │  生产生成回路折叠接线：│
-             │  强制散度活跃块 +     │
-             │  形状键控 runner 池） │
-             └─────────────────────┘
+              ┌──────────▼──────────┐
+              │   Accepted Branch   │
+              │（AR019 真实 checkpoint│
+              │  pe 线程化 + AR021   │
+              │  生产生成回路折叠接线：│
+              │  强制散度活跃块 +     │
+              │  形状键控 runner 池 + │
+              │  AR022 贪心锚定候选） │
+              └─────────────────────┘
 ```
 
 ### 模块地图
@@ -869,7 +1003,8 @@ actfold/
 
 > 采样器为高质量参考实现；发表数字请对具体 checkpoint 用官方实现复核。
 > Fast-dLLM 折叠路径（AR021）：传 `folded_model=MFF` 启用链折叠（强制散度
-> 活跃块 + 形状键控池），`num_block_candidates>0` 启用批量投机验证——两者
+> 活跃块 + 形状键控池），`num_block_candidates>0` 启用批量投机验证，
+> `candidate_include_greedy=True`（AR022）启用贪心锚定质量对齐——三者
 > 默认关（raw 配方逐字节不变）。
 
 ### 配置驱动评测
@@ -890,6 +1025,7 @@ use_cuda_graph: true          # 固定形状图捕获
 graph_capacity_ratio: 0.5
 graph_adaptive_capacity: true # AR017 自适应容量
 graph_runner_pool_size: 8     # AR021 形状键控 runner 池（0=legacy）
+candidate_include_greedy: false  # AR022 贪心锚定（YAML 消费面；True 需批量投机开启）
 use_cost_model: true
 use_folded_generation: true
 ```
@@ -911,12 +1047,16 @@ bash scripts/run_ablation.sh --synthetic
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
 - **mypy**（`--ignore-missing-imports`，67 文件）clean
-- **pytest** 快速套件 **941 passed**（920 AR020 基线 + AR021 UT-2101~2112
-  折叠供给/强制散度四路径/池 LRU+VRAM/图 forced 缓冲/批量投机/链延续/默认
-  零扰动 + pe-dtype 扩展，CUDA 实测；3 skipped）
+- **pytest** 快速套件 **951 passed / 4 skipped / 0 failed**（943 AR021 基线 +
+  AR022 UT-2201~2207 贪心锚定：默认零扰动/贪心行构建/后验陷阱可落败/
+  greedy_win 观测面/构造期校验/YAML 消费面/停止与链延续，CUDA 实测；skip =
+  1 CUPTI + 3 evalplus-unix 平台面；环境注记：开发机 `lm_eval` 缺失致 2 例
+  eval 后端测试失败——stash 基线复跑证实先在、与 AR022 无关，验收以
+  deselect 排除留档）
 - 每个机制的验收面：Red/Green 分离 TDD + **mutation 测试**（删机制必红，
   SHA256 逐字节还原）+ 跨工件墙钟基准（声明与判定分离，2σ 判据，
-  inconclusive 诚实照收）
+  inconclusive 诚实照收）+ 严格复现自检（AR022：batched 面对 AR021 工件
+  先验逐位核对，失配全 verdict blocked）
 
 ```bash
 python -m black --check actfold tests demo.py scripts
@@ -935,32 +1075,34 @@ python demo.py
 - [`docs/ALGORITHM.md`](docs/ALGORITHM.md) — Branch Folding 形式化描述
 - [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — 复现工作流
 - [`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md) — 两阶段深度实验报告（诊断 + 优化，真实模型实测）
-- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **28 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
+- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **29 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
-- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令，第 11 步 = AR021）
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令，第 12 步 = AR022）
 - [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR021）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR022）
 
 ---
 
 ## 当前限制与路线图
 
-1. **P1-7 端到端证据链七档全部收官，生产回路接线完成**。批量前向（AR015）→
+1. **P1-7 端到端证据链八档收官：速度与质量双面闭环**。批量前向（AR015）→
    批量图捕获（AR016）→ 自适应容量（AR017）→ 发布压缩（AR018）→ 真实
    checkpoint 复测（AR019）→ 发布 put 批量化（AR020）→ 生产生成回路折叠
-   接线（AR021）：真实 checkpoint 端到端 **2.40–2.67×**（AR020 四路径）、
-   发布窗口 **1.77–1.97×**、主机调用账本 **L·N+N → 1**、合成基准
-   2.40–2.95×；AR021 把整栈接入生产 `generate()` 并在真实生成面三模式
-   复测——**folded-serial parity bit-exact（H1）+ folded-batched
-   2.38× vs baseline / 2.47× vs serial（H3）+ 全栈生产行使（H4）**。
-   保留判定：AR019 (256,4) 首配置 H1 因 WDDM 热身方差欠功效（方向压倒性）、
-   AR021 H2 inconclusive（见第 4 条）——均按预承诺单次运行纪律如实记录。
+   接线（AR021）→ **贪心锚定质量对齐（AR022）**：真实 checkpoint 端到端
+   **2.40–2.67×**（AR020 四路径）、发布窗口 **1.77–1.97×**、主机调用账本
+   **L·N+N → 1**、合成基准 2.40–2.95×；AR021 把整栈接入生产 `generate()`
+   （folded-serial parity bit-exact + folded-batched 2.38×）；AR022 把批量
+   投机的质量面对齐 baseline——**posthoc 逐位==baseline（gap=0.0）+ 早停
+   恢复（34/66）+ 7.02× vs baseline（H1-H4 全 supported，复现自检 strict
+   PASS）**。保留判定：AR019 (256,4) 首配置 H1 因 WDDM 热身方差欠功效
+   （方向压倒性）、AR021 H2 inconclusive（见第 4 条）——均按预承诺单次
+   运行纪律如实记录。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
    图缓冲不可行——机制对其同样适用，待更大 GPU 按同法扩展；真实模型两阶段
    实验（TFLOPs 削减与逐层结论）已在[最新实验结果](#最新实验结果)覆盖。
-   AR021 折叠接线目前仅覆盖 Fast-dLLM v2 sampler（LLaDA/Dream remote 代码
-   各异，同类接线为后续独立条目）。
+   AR021 折叠接线与 AR022 贪心锚定目前仅覆盖 Fast-dLLM v2 sampler
+   （LLaDA/Dream remote 代码各异，同类接线为后续独立条目）。
 3. **批量路径要求同父、等长、parent-batch==1**。变长/多父批量仍是串行回退
    （变长步已在前缀折叠下获益，AR003/AR007）；多祖先激活树是路线图主体
    （AR016 遗留）。
@@ -971,16 +1113,18 @@ python demo.py
    复用收益；批量模式（folded-batched）不受此限（2.47× supported）。
    更长生成（更多形状窗、更大 T）下串行折叠的相对收益预期改善——待后续
    按同法实测，不预设。
-5. **folded-batched 质量面 report-only（AR021）**。批量投机提交为单一
-   min-prob 准则（非贪心）：真实 checkpoint 实测块级 exact-match 0.0、
-   post-hoc 置信低于 baseline（0.2897/0.1064 vs 0.3697/0.5703），且不
-   命中 baseline 的 stop token（prompt0：baseline 34 token 早停 vs
-   batched 生成满 128 token）——属设计行为（速度-质量权衡），接受策略
-   族谱（多准则/贪心变体）留后续 AR。
+5. **贪心锚定的实证边界（AR022 收口后的剩余口径）**。质量对齐结论
+   （posthoc gap=0.0、早停恢复、exact 1.0）与 greedy_win_rate 1.0（2/2）
+   均来自单次预承诺运行 × P=2 prompt 的同形状 A/B——**贪心行可落败是机制
+   属性**（UT-2203 后验陷阱构造级钉死），win_rate 在更大 prompt 集/更长
+   生成/其他 checkpoint 上的分布未测，不预设；未锚定的 folded-batched
+   质量面（exact 0.0、置信低于 baseline）仍是如实报告的现状——接受策略
+   族谱（多准则/温度化 min-prob/贪心变体）留后续 AR。
 6. **生产单发场景图摊销为负（AR021 A5 注记）**。block_size==small_block_size
    下单次 generate 每形状窗仅 1 次 `[N,T]` 批量调用——捕获（≈2-3 次前向
    成本）服务 1 次重放，摊销为负；单发场景建议 `use_cuda_graph=False`。
-   基准/批量场景（warmup 预捕获 + 多 rep 重放）摊销成立（AR021 基准协议）。
+   基准/批量场景（warmup 预捕获 + 多 rep 重放）摊销成立（AR021/AR022
+   基准协议）。
 7. **小几何首配置 WDDM 方差**。锁时钟需管理员权限；(256,4) 级 2σ 检验
    欠功效先例在案（AR017/18/19 三代同类，效应 delta 稳定方向正；AR020 的
    发布窗口/端到端判定在 (256,4) 均已 supported）。发布窗口的宿主 launch
@@ -1002,6 +1146,7 @@ python demo.py
 | remote 模型前向 `TypeError: cannot unpack non-iterable NoneType` | remote attention 层需要 rotary（`cos, sin = position_embeddings`）而调用未供给 | 经 `ManualFoldedForward(..., position_embeddings=(cos, sin))` 供给（AR019；模型自身 rotary_emb 产出，dtype 跟随模型） |
 | `ValueError: ... supports batch 1 only` | 折叠采样路径收到 B>1（`[T,T]` 折叠掩码不可表达逐行 pad） | 折叠路径逐 prompt 调用（AR021）；batch 需求走 raw 路径 |
 | `ValueError: num_block_candidates > 0 requires a folded_model...` | 批量投机模式缺 `branch_ids` 能力的 folded_model | 传入 `ManualFoldedForward`（构造期显式报错，不静默降级） |
+| `ValueError: candidate_include_greedy=True requires num_block_candidates > 0` | 贪心锚定仅定义于投机路径（AR022） | 同时设置 `num_block_candidates>0`（构造期显式报错，不静默降级） |
 | CUDA 上未用 Triton kernel | 未装 `triton` / 无 C 编译器（bf16 键记录） / hidden dim 不被 128 整除 | Linux/WSL 安装 `triton>=2.0`；PyTorch 回退恒正确（AR014 键记录） |
 | `evalplus` 在 Windows 失败 | 沙箱依赖 Unix `resource` 模块 | WSL 内运行 evalplus，或 Windows 用 lm-eval |
 | 慢测试超时 | 真实后端需加载模型与数据集 | 快速套件 `-m "not slow"`，慢测试单独跑 |
