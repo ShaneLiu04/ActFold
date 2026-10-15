@@ -743,6 +743,50 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 
 ---
 
+## 第二十九部分 AR022 批量投机质量对齐：贪心锚定候选机制 + 四模式质量/速度双面基准（2026-10-15）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | AR021 留下的质量缺口：批量投机（folded-batched）速度 2.3795× 但**质量面与 baseline 分叉**——块级 exact-match 0.0、post-hoc 置信 0.2897/0.1064 vs baseline 0.3697/0.5703、解码长度 160/77 vs baseline 早停 34/66（投机提交非贪心未命中 stop token）。本 AR：**贪心锚定候选机制**（FR1，`candidate_include_greedy`——行 0 = 贪心假设进入 min-prob 公平竞争）+ greedy_win 观测面（FR2）+ YAML 消费面（FR3）+ 四模式基准（FR4，新增 folded-batched-greedy 对齐模式，同形状 A/B 构造性隔离速度变量） | ✅ 完成 |
+| 机理定案 | 贪心行算子 = **draft top-k 有序集首位**（`sorted=True` topk 的 `draft_set[:, 0]`，srs 冻结的 argmax 定义）——纯设备索引构建，**确定性、零设备回读、零 generator 消费**（与随机行的专用 CPU generator 形成对照：贪心行不消耗任何随机性）；**N 语义**：候选总数 N 不变，贪心占 0 号位，随机行 j=1..N-1 在冻结种子公式中保持行号 ⇒ 行 1..N-1 与 greedy-off 构建逐位相同（**仅画布一致区成立**：首个投机小块内构造成立，胜者分叉后失效——A/B 是构建算子对照面，非全程轨迹等价）；`_cand{j}` 自 AR021 起即"行 j"语义（贪心行 = `_cand0`），分支命名零改动 | ✅ 完成 |
+| 生产改动（2 文件） | ①`fast_dllm_sampler.py`：`FastDLLMSamplerConfig.candidate_include_greedy`（默认 False = AR021 末态逐字节）+ `__post_init__` 校验（True 且 `num_block_candidates==0` → 构造期 `ValueError`——贪心锚定仅定义于投机路径）+ `_speculative_small_block` 贪心行构建（行 0 = top-k 有序集首位；随机行循环起点 0→1）+ `greedy_win_stats` 只读 property（实例级计数器跨 sample 存续，graph_pool_stats 先例；仅贪心锚定投机路径递增，win 判定 `j_star==0`；默认关恒 `{0, 0}`）；②`utils/config_manager.py`：`ActFoldConfig.candidate_include_greedy`（YAML 消费面——`load_config` 免 unknown-key UserWarning（#5）；操作字段与 True+N=0 校验留在 FastDLLMSamplerConfig，num_block_candidates 所在处） | ✅ 完成 |
+| 新测试 | UT-2201~2207（`tests/test_speculative_greedy_alignment.py`，8 测试函数/1289 行）：2201 默认零扰动（False 逐字节 == AR021 末态：raw/N=0/投机 N=4/stop 四面 + mask-token argmax 边界（constant-mask head 双路无异常，无特判面））；2202 贪心行构建（行 0 == argmax/top-k 首位/随机行 j=1..N-1 与 greedy-off 逐位相同——fixture 钉死 num_tokens ≤ block_size 单小块，画布一致前提；generator 计数 N-1 vs N/RNG 态快照/零回读 spy）；2203 **贪心可落败**（`_PosteriorTrapFixture`：零混合层+正交嵌入+右移表头+种子重放 all-C 候选行——后验陷阱构造级证明 min-prob 下贪心行可输，选定时零特判）；2204 greedy_win 观测面（递增/只读/schema `{greedy_wins, speculative_calls}`/探针外部 mutate 不泄漏/property 不可赋值）；2205 停止语义/链延续（贪心胜出+stop → finished/pad 基线同式 + `_folding_parent` = 胜者分支 id（`_cand0` 贪心/`_cand1` 随机两分支））；2206 构造期 ValueError（True+N=0 冻结文案）+ YAML 消费面（load_config 零 UserWarning + 默认 False）；2207 N=1 退化（`[1,T]` 单行纯贪心/`range(1,1)` 空无随机行/平凡胜出/链延续正确） | ✅ 完成 |
+| mutation 自证 | **5 个变异 5 杀**（M1 贪心行取末位→5 failed；M2 种子 j 偏移→3 failed 含冻结面 UT-2109c；M3 恒选贪心→2 failed；M4 计数缺失→4 failed；M5 校验条件弱化→1 failed），全红后还原（SHA256 逐次恒 57A24F00…） | ✅ 完成 |
+| 基准 | `scripts/ar022_speculative_quality_bench.py`（1343 行，**导入式**复用 ar021 助手 30 符号 + 模块别名 `_ar021`——设计 §4.1.4 定案，ar021 脚本本体零改动；三处导入耦合诚实注记：`_snapshot_events` 全局赋值/`_ctx_mask_map` 本地三模式副本/模块级 `apply_hf_env()` 幂等）：**四模式**（baseline / folded-serial MFF_A / folded-batched MFF_B / **folded-batched-greedy MFF_C**——与 MFF_B 同构独立实例（自有 cache/gate/pool/canary/AR017 policy），仅 `candidate_include_greedy=True`；同 `[N,T]` 形状/N=4/top_k=10/prompts/seed ⇒ 速度变量构造性清零，同形状 A/B）；AR021 协议全承（seed 2026、P=2 prompt padded 32/64、num_tokens=128、warmup 每模式每 prompt 一轮丢弃、逐 rep 四模式 round-robin、宿主 perf_counter+sync）；H1-H4 判定式全文冻结入 meta；**复现自检**：folded-batched sidecar 质量面对 AR021 工件先验（`_AR021_PRIORS`）逐位核对，strict 失配 ⇒ 四 verdict 全置 blocked（不静默替换不造假）；`--quick` 冒烟（reps=3/单 prompt/64 token ≤5min，自检降级结构性验证如实注记） | ✅ 完成 |
+| 门控 | req 一轮 PASS（0 Major/1 Minor/3 Nit 当轮修：H1(a) 位置级比对窗口冻结/措辞三处）；design 一轮 PASS（0 Major/1 Minor/4 Nit 当轮修：'行 1..N-1 逐位相同'补画布一致前提三处/导入耦合第三条/`_position_match` 构造依据/blocked 作用域明示） | ✅ 完成 |
+| 质量门 | 全量 **951 passed/4 skipped/0 failed**（AR021 基线 943 + 新增 8，零既有失败；环境注记：开发机 `lm_eval` 缺失致 2 例 eval 后端测试失败——stash 基线复跑证实先在、与 AR022 无关，验收运行以 deselect 排除并留档；skip = 1 CUPTI + 3 evalplus-unix 平台面）；mypy 67 文件 clean；pyflakes 零；black 改动 4 文件 100 列过；demo 三锚点 85.5%/2.35e-03/93.75% 命中；冻结面 UT-2108/2109/2109c/2110 零改动通过 | ✅ 完成 |
+
+**实测四模式整代墙钟与质量面（Fast-dLLM-v2-1.5B bf16 真实 `sample` 生成回路，H=1536/L=28/V=151936，Quadro RTX 5000，驱动 556.18，AR019 venv transformers 4.53.1，torch 2.5.1+cu121，seed 2026，P=2 prompt（padded 32/64）× reps=30 四模式 round-robin（n=60/模式），宿主 perf_counter+sync，p50 ms，单次预承诺运行 2026-10-15T04:21 UTC）**：
+
+| 模式 | p50 | mean | std | vs baseline | vs folded-batched |
+|------|-----|------|-----|-------------|-------------------|
+| baseline（raw sampler） | 3096.8 | 3095.4 | 145.9 | — | — |
+| folded-serial（FR2 链折叠+串行池） | 3205.4 | 3197.6 | 141.6 | 0.9661× | — |
+| folded-batched（FR3 批量投机+批量池+AR017） | 1300.6 | 1315.1 | 808.4 | 2.381× | — |
+| folded-batched-greedy（AR022 贪心锚定，MFF_C） | **440.9** | 440.9 | 61.8 | **7.0236×** | **2.9498×** |
+
+质量面对齐三面（H1，硬门）——**对齐模式恢复 baseline 质量**：
+
+| 质量面 | baseline | folded-batched | folded-batched-greedy（对齐） |
+|--------|----------|----------------|-------------------------------|
+| 合并块级 exact-match（4 块） | —（参照） | 0/4 = 0.0 | **4/4 = 1.0** |
+| 合并位置级一致率（窗口 [32,34)/[64,66)） | —（参照） | — | **4/4 = 1.0**（> 0.5 门） |
+| post-hoc 置信 overall_mean（prompt0/1） | 0.369661 / 0.570341 | 0.289692 / 0.106418 | **0.369661 / 0.570341（gap = 0.0，逐位==baseline）** |
+| 解码长度（prompt0/1） | 34 / 66（早停） | 160 / 77 | **34 / 66（早停完全恢复）** |
+
+**假设判定（预承诺单次运行，无重跑钓鱼；判定式全文冻结于工件 meta）**：
+
+- **H1 质量对齐（硬门，三面全过）：supported**——(a) 合并位置级一致率 4/4 = 1.0 > 0.5；(b) 合并块级 exact-match 1.0 > folded-batched 同准则实测 0.0；(c) 逐 prompt posthoc overall_mean 0.369661/0.570341 == baseline（gap = 0.0）且 > batched 实测 0.289692/0.106418；
+- **H2 速度保持（硬门）：supported**——p50(batched) − p50(greedy) = +859.682ms ≥ −2σ = −1616.7413ms（σ = 808.3707 = max(σ_greedy, σ_batched)）；实际为**加速侧**（greedy 反而比 batched 快 2.9498×——贪心行命中 stop token 恢复早停，两 prompt p50 379.4/501.7ms vs batched 2119.3/507.3ms）；
+- **H3 早停恢复：supported**——两 prompt 对齐解码长度 34/66 == baseline 实测 34/66（batched 的 160/77 完全恢复）；
+- **H4 全栈行使：supported**——(i) MFF_C 在域窗批量捕获 >0 且 timed 重放 >0（p32_block0_T64/p64_block0_T96，批量池 2 runner）；(ii) 三 folded 模式降级类 canary timed == 0 全真（结构性 eager 单独计数：serial 60/batched 150/greedy 60 timed，by-design）；(iii) 发布账本 ≤ 4·(L+N) 三模式逐字段（timed 段 ops 总计 serial 50460/batched 7980/greedy 3540）；(iv) AR017 事件仅在触发时验证（batched cumulative 2 全落 warmup timed=0 中性；greedy 0 未触发=中性，MFF_B/MFF_C 独立判定）。
+
+**复现自检（strict PASS，无 reproduction_anomaly）**：folded-batched sidecar 质量面对 AR021 工件先验逐位相等——block_exact 0.0/0.0、len_other 160/77、posthoc_mean 0.289692/0.106418、posthoc_min 5e-06/0.0 全部一致（同环境确定性假设成立，四 verdict 有效）。**greedy_win 面**：greedy_win_rate 1.0（2 次投机调用 2 胜——本基准 P=2 prompt 恰各 1 个投机小块；贪心全胜不构成普适结论，机制上贪心可落败（UT-2203），win_rate 是观测面不是断言面）。**greedy 模式池计数**：批量池 2 runner（各 1 捕获，timed 重放 30/30）；timed 段稳定比 mean 0.5833（n=8400）；VRAM 峰值 baseline 5413.0 / serial 5413.1 / batched 5840.1 / greedy 5672.0 MB（16GB 卡安全）。
+
+**语义要点**：(1) **对齐机理 = 贪心行进入 min-prob 公平竞争**——非"恒选贪心"（M3 mutation 证明恒选必红），贪心行的价值是它携带 draft argmax 的停止/置信结构，实测在本工作负载全胜且恢复 baseline 早停与置信逐位；(2) **速度变量构造性隔离**——MFF_C 与 MFF_B 同 N/形状/seed/prompt，唯一差异 = 行 0 构建算子，440.9 vs 1300.6ms 的差全归因于质量对齐（贪心行命中 stop ⇒ 恢复 baseline 早停路径）；(3) **greedy_win_stats 是观测面**——实例级跨 sample 累计，基准以 before/after 快照差分导出 rate，永不在生产路径重置；(4) **YAML 面与操作面分离**——`ActFoldConfig.candidate_include_greedy` 仅消费（免 unknown-key 警告），True+N=0 校验在 sampler config 构造期（错误最早暴露于消费点）。**遗留**：LLaDA/Dream sampler 同类锚定（remote 代码各异）；更大 prompt 集/P 下的 greedy_win_rate 统计（本 AR P=2 观测面）；eval 适配器改造（LM-eval 任务级质量跑分，后续独立 AR）；批量投机接受策略族谱（min-prob + 贪心锚定已定案，族谱留后续）。
+
+---
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```
