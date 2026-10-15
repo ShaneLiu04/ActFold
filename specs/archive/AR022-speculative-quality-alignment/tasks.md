@@ -19,7 +19,7 @@
 | T006 | 文档收口五件：GUIDE 第二十九部分 / CHANGELOG / AGENTS.md 新条目（贪心锚定候选契约）/ RERUN_CHECKLIST / README 全量中文重写 | T005 | passing | 2026-10-15 完成：AGENTS **#44**（贪心锚定候选契约 8 面：行 0=topk 首位/N 语义/可落败/ValueError/探针/画布一致区前提/YAML 面/实证面）；GUIDE 第二十九部分 +44 行；CHANGELOG AR021 上方插条；RERUN 资源表+第 12 步；README 1039→1182 行全量重写（核心创新表第 12 行+机理深潜第 11 节/四模式头条表/951 计数/限制路线图重写）；42 项数字溯源逐项工件核验（含 p50 3096.8/3205.4/1300.6/440.9、逐 prompt greedy 379.4/501.7、VRAM 5413.0/5413.1/5840.1/5672.0、稳定比三模式、H4 池窗重放 30/30）；未经工件支撑的时长表述已清除；子代理 ses_ec23011a3ffecs6FORkg61Y5UH |
 | T007 | review 门控（只读子代理：spec/design 合规 + 代码审查），全部问题（含 Minor）修复 | T006 | passing | 2026-10-15 完成：**PASS**（0 Major/5 Minor/3 Nit，审查代理 ses_ec21b32f6ffectbcOLWW0t2JjF）；A-F 六维度全 VERIFIED（srs FR1-FR5/design §4.2.2 五插入点/代码 #10#37#41-43/UT 断言面/39 项数字逐位核对/运维一致性）；mutation 纸面复核 5/5 成立；**全部 8 项当轮修入**：Minor-1 GUIDE UT 编号映射修正（2205=停止链/2206=校验+YAML/2207=N=1，补 mask-token/N=1 缺失面）；Minor-2 测试基线口径统一 951/4/0（README/CHANGELOG/GUIDE/tasks 四处，环境注记保留；skip=1 CUPTI+3 evalplus-unix——ST 复跑裁定）；Minor-3 工件字节数 53131（≈51.9 KiB<96KB 单段可推）；Minor-4 导入 30 符号+`_ar021` 别名；Minor-5 测试 1289 行；Nit-1 design §7 追记导入清单差异（指示性枚举非逐字契约）；Nit-2 UT-2204 补 property 不可赋值断言（AttributeError，8 passed 复验）；Nit-3 quick 工件不入库（git status 确认 untracked，T009 排除） |
 | T008 | ST 验收：st-cases.md 生成 + 执行（正常/边界/异常/回归四类），一次成 Go | T007 | passing | 2026-10-15 完成：**Go 一次成**（18/18 全 PASS——N1-N6 正常/B1-B5 边界/E1-E3 异常/R1-R4 回归；工件复算 109 项独立断言防自证全 PASS；需求覆盖 6/6；零产品缺陷）；st-cases.md 409 行；子代理 ses_ec2034a9fffejLveu7BBJ1OL1z；主代理后置裁定：skip 口径定案 951/4/0（"3 skipped"为误记，4 skip=1 CUPTI+3 evalplus-unix，四处文档已修正） |
-| T009 | 归档 `specs/archive/AR022-speculative-quality-alignment/`，本地 commit + gitee 推送 + 双端树验证 | T008 | pending | **gitee 推送 >96KB 须四段传输链**（华为 HIS 代理对 gitee.com 上传体 >≈96KB 即 403——commit-tree 构造部分树逐段快进推送，每包 ≤49KB；AR021 T009 归档记录先例）；双端树验证（永久 commit id 分歧预期内，tip 树与消息一致） |
+| T009 | 归档 `specs/archive/AR022-speculative-quality-alignment/`，本地 commit + gitee 推送 + 双端树验证 | T008 | passing | 2026-10-15 完成：本地主体 commit `b474363`（14 文件 +6204/−47，quick 工件排除）+ T009 标记 commit；gitee **七段快进传输链**（`72edfa011`→`5e3185272`→`44e5baf73`→`37828ae25`→`f6a702fe3`→`633b7b17a`→`7de5afe2a`，每段 thin 包 4.3-31.8KB 全部 <96KB 代理限，一次性 read-tree 基树 4c3a665d 后逐批累加——每段重读基树会使累加失效，AR021 记录补强）+ T009 标记段；双端树验证 PASS（最终树 3e301f53 与本地 b474363 一致——永久 commit id 分歧预期内）；诊断注记：双端链完全不相交（增量对象 1120=整仓 3.93MB），直接推不可行，分段链为唯一通路 |
 
 ## 状态说明
 
@@ -73,3 +73,11 @@
 - 总判定：**Go 一次成**（18/18 用例全 PASS：正常 6/边界 5/异常 3/回归 4；st-cases.md 409 行）；工件级 H1-H4/质量面/greedy_win/复现自检共 109 项独立断言（防自证复算）全 PASS；需求覆盖 6/6
 - 主代理后置裁定：测试基线 skip 口径定案 **951 passed/4 skipped/0 failed**（review 报告"3 skipped"为计数笔误，本人 canonical 命令复跑两次 + `-rs` 枚举：4 skip = 1 CUPTI（LIBKINETO_NOCUPTI）+ 3 evalplus-unix（resource 模块）；README/CHANGELOG/GUIDE/tasks 四处已统一修正）
 - 执行注记（ST 侧留档）：跨工件噪声带容差 0.063%（2.381 vs 2.3795）；E1 live 脚本 7 断言；零产品缺陷
+
+### 2026-10-15 T009 归档与推送记录（gitee 运维）
+
+- 本地：主体 commit `b474363`（AR022 全交付 14 文件 +6204/−47）+ 本 T009 标记 commit
+- gitee：七段快进传输链 `72edfa011`（生产+清单+tasks）→`5e3185272`（srs+st-cases+工件）→`44e5baf73`（测试+基准脚本）→`37828ae25`（design+AGENTS）→`f6a702fe3`（README）→`633b7b17a`（GUIDE）→`7de5afe2a`（CHANGELOG，终树 3e301f53==b474363 树）+ T009 标记段（树==本地标记树）
+- 每段 thin 包实测 4.3/31.8/30.6/22.7/6.0/5.6/4.3 KB——全部远低于 ≈96KB 华为 HIS 代理 403 限；段链构造：临时 index `GIT_INDEX_FILE` + **一次性** `read-tree 4c3a665d`（gitee 基树）+ 逐段 `update-index --cacheinfo` 累加 + `write-tree` + `commit-tree -p 前段`（**教训：每段重读基树会使累加失效**——首次构造终树不等，改为单次 read-tree 后逐批累加即闭合）
+- 双端树验证：本地 tip 树 == gitee tip 树（PASS）；永久 commit id 分歧预期内（AR021 先例）
+- 环境注记：双端 git 链完全不相交（`rev-list b474363 --not b72f0e0` = 1120 对象=整仓，thin 直推 3.93MB）——分段链是唯一可行通路；PS 管道 CR 污染 revs 输入，pack 估测走 python subprocess（二进制安全）
