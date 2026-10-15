@@ -32,6 +32,7 @@
 | `demo.py` 基线对拍 | 合成小模型 | CPU 即可 |
 | `ar019_real_e2e_bench`（真实块验证三路径） | Fast-dLLM-v2-1.5B bf16（28 层, H=1536，本地权重目录） | 实测峰值 5624/7640/8949 MB（三配置），16 GB 卡可跑 |
 | `ar021_generation_loop_bench`（生产生成回路三模式） | Fast-dLLM-v2-1.5B bf16（同上权重；AR019 venv） | 实测峰值 ≤5374.5 MB（~5.4 GB），16 GB 卡可跑 |
+| `ar022_speculative_quality_bench`（四模式质量对齐基准） | Fast-dLLM-v2-1.5B bf16（同上权重；AR019 venv） | 实测峰值 ≤5840.1 MB（~5.8 GB），16 GB 卡可跑 |
 
 ## 3. 重跑步骤
 
@@ -118,6 +119,31 @@ python demo.py
 #    report-only：exact-match 0.0、置信低于 baseline）；H4 supported（在域窗
 #    串行捕获/重放>0、批量捕获 5/5 窗、账本 c=4 界内、canary 降级类 timed=0、
 #    AR017 事件全落 warmup=中性）
+#
+# 12) AR022 四模式投机质量对齐基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#    a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录；
+#       导入式复用 ar021 助手（脚本以 `python -m scripts.ar022_...` 运行，
+#       ar021 脚本本体零改动）
+#    b) 基准（四模式 baseline/folded-serial/folded-batched/folded-batched-greedy
+#       ——MFF_C 与 MFF_B 同构独立实例 + candidate_include_greedy=True；
+#       预承诺单次纪律，不重跑钓鱼；全量 reps=30，峰值 VRAM
+#       ~5.8GB；--quick 冒烟 = 单 prompt/reps=3/64 token ≤5min，其复现自检
+#       降级为结构性验证（num_tokens=64 不可比全量先验，如实注记））：
+<venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
+    --model-path <本地权重目录> --hf-home <HF缓存目录> --reps 30
+#    工件：results/optimization/ar022_speculative_quality_bench.json
+#    （H1-H4 判定式全文/贪心锚定声明/复现自检先验 _AR021_PRIORS 冻结于 meta；
+#    复现自检 strict 失配 ⇒ 四 verdict 全置 blocked，不静默替换）
+#    对照数字：H1-H4 全 supported——H1 三面全过（合并位置级 4/4=1.0>0.5、
+#    合并块级 4/4=1.0>batched 0.0、posthoc 0.369661/0.570341 逐位==baseline
+#    gap=0.0）；H2 速度保持（Δ=+859.682ms 加速侧，σ=808.3707）；H3 早停恢复
+#    （长度 34/66 ==baseline，batched 160/77 完全恢复）；H4 全栈（MFF_C 在域窗
+#    捕获/重放 30/30>0、三模式 canary 降级类 timed=0、账本界内、AR017 中性）；
+#    p50 baseline 3096.8 / serial 3205.4 / batched 1300.6 / greedy 440.9 ms
+#    （greedy vs baseline 7.0236×、vs batched 2.9498×、batched vs baseline
+#    2.381× 与 AR021 2.3795× 跨工件一致）；greedy_win_rate 1.0（2/2 观测面）；
+#    复现自检 strict PASS（batched sidecar 逐位==AR021 先验，无
+#    reproduction_anomaly）
 ```
 
 ## 4. 方法学要求（重跑必须满足）

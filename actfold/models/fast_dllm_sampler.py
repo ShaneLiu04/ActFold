@@ -66,6 +66,17 @@ class FastDLLMSamplerConfig(SamplerConfig):
         candidate_top_k: Draft-set size per position for the speculative
             candidates (top-k tokens of the draft logits). Consumed only
             when ``num_block_candidates > 0``.
+        candidate_include_greedy: AR022 greedy anchoring. ``True`` pins
+            candidate row 0 to the greedy hypothesis — the still-masked
+            small-block positions are filled with the draft's argmax (the
+            top-k ordered-set first entry, by the srs-frozen definition)
+            deterministically, with zero device readback and zero generator
+            consumption; random candidate rows become ``j=1..N-1`` (the
+            frozen per-candidate seed formula keeps ``j`` as the row
+            number). The ``[N, T]`` batch shape, ``branch_ids`` naming,
+            min-prob selection, and chain/stop semantics are unchanged.
+            ``False`` (the default) is byte-identical to the AR021 end
+            state; ``True`` requires ``num_block_candidates > 0``.
     """
 
     block_size: int = 32
@@ -76,6 +87,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
     mask_token_id: int | None = None
     num_block_candidates: int = 0
     candidate_top_k: int = 10
+    candidate_include_greedy: bool = False
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -84,6 +96,12 @@ class FastDLLMSamplerConfig(SamplerConfig):
             )
         if self.candidate_top_k < 1:
             raise ValueError(f"candidate_top_k must be >= 1, got {self.candidate_top_k}")
+        if self.candidate_include_greedy and self.num_block_candidates == 0:
+            raise ValueError(
+                "candidate_include_greedy=True requires num_block_candidates"
+                " > 0 (greedy anchoring is defined only on the speculative"
+                f" path; got num_block_candidates={self.num_block_candidates})"
+            )
 
 
 @dataclass
@@ -128,6 +146,27 @@ class FastDLLMSampler(DiffusionSampler):
         if self.config.block_size % self.config.small_block_size != 0:
             raise ValueError("block_size must be divisible by small_block_size")
         self._fold_ctx_cache: "OrderedDict[tuple[int, int], _FoldCtx]" = OrderedDict()
+        # AR022 FR2: instance-level greedy_win observation counters. They
+        # survive across ``sample`` calls (the graph_pool_stats precedent)
+        # and are only ever incremented on the greedy-anchored speculative
+        # path; the default-off configuration keeps both at zero.
+        self._greedy_wins = 0
+        self._greedy_spec_calls = 0
+
+    @property
+    def greedy_win_stats(self) -> dict[str, int]:
+        """Read-only greedy_win observation face (AR022 FR2).
+
+        Returns:
+            ``{"greedy_wins": int, "speculative_calls": int}`` — instance-
+            level cumulative counts surviving across ``sample`` calls (the
+            ``graph_pool_stats`` precedent). Only the
+            ``candidate_include_greedy=True`` speculative path increments
+            them (default off stays at ``{0, 0}``). The per-small-block
+            greedy_win decision is ``j_star == 0``; ``greedy_win_rate`` is
+            derived by the benchmark script from before/after snapshots.
+        """
+        return {"greedy_wins": self._greedy_wins, "speculative_calls": self._greedy_spec_calls}
 
     def initialize(self, prompt_ids: torch.Tensor) -> torch.Tensor:
         """Return prompt_ids; block-wise state is built inside :meth:`sample`."""
@@ -338,6 +377,16 @@ class FastDLLMSampler(DiffusionSampler):
         maximal. The folding chain parent switches to the selected candidate
         branch; the stop-token check matches the baseline's
         ``finished`` semantics.
+
+        AR022 greedy anchoring (``candidate_include_greedy=True``): row 0
+        is the greedy hypothesis — the still-masked positions filled with
+        the draft argmax (the top-k ordered-set first entry) — built with
+        pure device indexing (zero readback, zero generator consumption);
+        the random rows become ``j=1..N-1`` with ``j`` keeping its row
+        number in the frozen seed formula. The greedy row competes under
+        the unchanged min-prob rule and CAN LOSE. ``branch_ids`` naming is
+        unchanged: ``_cand{j}`` has meant "row j" since AR021 (never
+        "random draw j").
         """
         cfg = self.config
         num_candidates = int(cfg.num_block_candidates)
@@ -349,8 +398,15 @@ class FastDLLMSampler(DiffusionSampler):
         cands = x.repeat(num_candidates, 1)
         if num_masked > 0:
             draft_set = topk_idx[0, masked_local, :]  # [M, k]
+            if cfg.candidate_include_greedy:
+                # Greedy hypothesis (AR022 FR1): the still-masked positions
+                # take the draft argmax = the top-k ordered-set first entry
+                # (sorted=True topk). Same advanced-indexing fill as the
+                # random rows below; the index tensor stays on-device, so
+                # the construction is readback-free and deterministic.
+                cands[0, masked_local + sb_start] = draft_set[:, 0]
             base_seed = int(cfg.seed) if cfg.seed is not None else 0
-            for j in range(num_candidates):
+            for j in range(1 if cfg.candidate_include_greedy else 0, num_candidates):
                 seed_j = (
                     base_seed * 1_000_003 + int(block_idx) * 8_191 + int(small_block_idx) * 131 + j
                 ) & 0x7FFF_FFFF
@@ -377,6 +433,10 @@ class FastDLLMSampler(DiffusionSampler):
         scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)
         min_scores = scores.min(dim=-1).values
         j_star = int(min_scores.argmax())
+        if cfg.candidate_include_greedy:
+            self._greedy_spec_calls += 1
+            if j_star == 0:
+                self._greedy_wins += 1
         x[:, sb_start:sb_end] = cands[j_star, sb_start:sb_end].unsqueeze(0)
         finished |= (x[:, sb_start:sb_end] == self._stop_token_id).any(dim=1)
         self._folding_parent = cand_branch_ids[j_star]

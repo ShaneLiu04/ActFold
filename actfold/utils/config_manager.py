@@ -105,6 +105,12 @@ class ActFoldConfig:
     use_adaptive_draft_growth: bool = False
     min_stable_ratio_to_expand: float = 0.7
     diffusion_sampler: str = "native"  # "native" | "autoregressive"
+    # AR022: YAML consumption face for the greedy-anchoring knob. The
+    # operational field and its True+N=0 construction-time validation live
+    # on FastDLLMSamplerConfig (where num_block_candidates lives); this
+    # field exists so load_config consumes the key programmatically without
+    # the unknown-key UserWarning (AGENTS #5).
+    candidate_include_greedy: bool = False
     max_new_tokens: int = 256
 
     def __post_init__(self) -> None:
