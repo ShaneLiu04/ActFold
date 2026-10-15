@@ -1,0 +1,1516 @@
+{
+  "batch_canary": {
+    "folded-batched": {
+      "cumulative_degradation_fallbacks": 0,
+      "cumulative_structural_eager": 160,
+      "pass": true,
+      "timed_degradation_fallbacks": 0,
+      "timed_structural_eager": 150
+    },
+    "folded-batched-greedy": {
+      "cumulative_degradation_fallbacks": 0,
+      "cumulative_structural_eager": 64,
+      "pass": true,
+      "timed_degradation_fallbacks": 0,
+      "timed_structural_eager": 60
+    },
+    "folded-serial": {
+      "cumulative_degradation_fallbacks": 0,
+      "cumulative_structural_eager": 64,
+      "pass": true,
+      "timed_degradation_fallbacks": 0,
+      "timed_structural_eager": 60
+    },
+    "note": "canary = degradation class only, timed segment == 0; structural eager (by-design window populate/switch) is counted separately and never fails the canary (AR020-style); all three folded modes",
+    "pass": true
+  },
+  "hypotheses_declared": {
+    "H1": "aligned-mode (folded-batched-greedy) committed-token quality aligns with baseline: supported iff three faces ALL pass -- (a) merged position-level agreement rate (aligned vs baseline; canvas-absolute positions over [padded_len, min(len_aligned, len_baseline)), the both-mode generated-token positions, per-position token equality, merged over prompts as sum(matched)/sum(compared)) > 0.5; (b) merged block-level exact-match rate > the folded-batched same-criterion MEASURED aggregate this run (AR021 prior 0.0 -> strictly positive passes); (c) per prompt aligned posthoc overall_mean > the folded-batched same-prompt MEASURED value this run (priors 0.289692 / 0.106418 as reference anchors); any face failing -> refuted (deterministic output, no inconclusive); greedy_win_rate and the vs-baseline confidence gap are mechanism report faces",
+    "H2": "aligned-mode whole-generation wall clock does not regress vs folded-batched (same [N,T] shape A/B): sigma = max(sigma_aligned, sigma_batched); supported iff p50(batched) - p50(aligned) >= -2*sigma (acceleration and parity both pass); refuted iff the regression exceeds 2*sigma; no inconclusive (directional no-regression gate); vs-baseline speedup is a report face",
+    "H3": "aligned-mode decode length matches baseline (stop-token hit face restored): supported iff BOTH prompts' aligned decode lengths == the baseline same-prompt MEASURED lengths this run (priors 34 / 66 as reference anchors); else refuted; the improvement vs folded-batched (priors 160 / 77) is a numbers report subfield",
+    "H4": "aligned-mode full-stack contract faces do not regress vs the AR021 criterion: (i) every aligned-mode shape window containing a batched call has batched captures > 0 AND timed replays > 0 (AR021 H4 criterion applied to MFF_C); (ii) the degradation-class no-fallback canary is timed == 0 for ALL THREE folded modes; (iii) the publish ledger stays within c*(L+N) with c=4 frozen (three folded modes, per prompt sidecar); (iv) AR017 adaptive events are verified only when their trigger condition actually fired (untriggered = neutral; MFF_B and MFF_C judged independently). Otherwise refuted"
+  },
+  "hypotheses_verdicts": {
+    "H1": {
+      "faces": {
+        "a_merged_position_rate_gt_0_5": true,
+        "b_merged_block_rate_gt_batched_measured": true,
+        "c_per_prompt_posthoc_gt_batched_measured": true
+      },
+      "hypothesis": "aligned-mode (folded-batched-greedy) committed-token quality aligns with baseline: supported iff three faces ALL pass -- (a) merged position-level agreement rate (aligned vs baseline; canvas-absolute positions over [padded_len, min(len_aligned, len_baseline)), the both-mode generated-token positions, per-position token equality, merged over prompts as sum(matched)/sum(compared)) > 0.5; (b) merged block-level exact-match rate > the folded-batched same-criterion MEASURED aggregate this run (AR021 prior 0.0 -> strictly positive passes); (c) per prompt aligned posthoc overall_mean > the folded-batched same-prompt MEASURED value this run (priors 0.289692 / 0.106418 as reference anchors); any face failing -> refuted (deterministic output, no inconclusive); greedy_win_rate and the vs-baseline confidence gap are mechanism report faces",
+      "numbers": {
+        "greedy_win": {
+          "calls": 2,
+          "rate": 1.0,
+          "wins": 2
+        },
+        "merged_block_match": {
+          "folded-batched": {
+            "compared": 4,
+            "matched": 0,
+            "rate": 0.0
+          },
+          "folded-batched-greedy": {
+            "compared": 4,
+            "matched": 4,
+            "rate": 1.0
+          }
+        },
+        "merged_position_match": {
+          "compared": 4,
+          "matched": 4,
+          "rate": 1.0
+        },
+        "per_prompt_compared_counts": [
+          2,
+          2
+        ],
+        "per_prompt_position_match": [
+          {
+            "compared": 2,
+            "comparison_window": "[32, 34)",
+            "len_baseline": 34,
+            "len_other": 34,
+            "matched": 2,
+            "rate": 1.0
+          },
+          {
+            "compared": 2,
+            "comparison_window": "[64, 66)",
+            "len_baseline": 66,
+            "len_other": 66,
+            "matched": 2,
+            "rate": 1.0
+          }
+        ],
+        "per_prompt_posthoc": [
+          {
+            "aligned_overall_mean": 0.369661,
+            "aligned_vs_baseline_gap": 0.0,
+            "baseline_overall_mean": 0.369661,
+            "batched_overall_mean": 0.289692,
+            "pass": true,
+            "prompt_index": 0
+          },
+          {
+            "aligned_overall_mean": 0.570341,
+            "aligned_vs_baseline_gap": 0.0,
+            "baseline_overall_mean": 0.570341,
+            "batched_overall_mean": 0.106418,
+            "pass": true,
+            "prompt_index": 1
+          }
+        ]
+      },
+      "verdict": "supported"
+    },
+    "H2": {
+      "hypothesis": "aligned-mode whole-generation wall clock does not regress vs folded-batched (same [N,T] shape A/B): sigma = max(sigma_aligned, sigma_batched); supported iff p50(batched) - p50(aligned) >= -2*sigma (acceleration and parity both pass); refuted iff the regression exceeds 2*sigma; no inconclusive (directional no-regression gate); vs-baseline speedup is a report face",
+      "numbers": {
+        "delta_batched_minus_greedy_ms": 859.682,
+        "p50_folded_batched_greedy_ms": 440.9058,
+        "p50_folded_batched_ms": 1300.5878,
+        "rule": "supported iff p50(batched) - p50(greedy) >= -2*sigma",
+        "sigma_ms": 808.3707,
+        "sigma_rule": "sigma = max(sigma_greedy, sigma_batched)",
+        "threshold_minus_2sigma_ms": -1616.7413
+      },
+      "verdict": "supported"
+    },
+    "H3": {
+      "hypothesis": "aligned-mode decode length matches baseline (stop-token hit face restored): supported iff BOTH prompts' aligned decode lengths == the baseline same-prompt MEASURED lengths this run (priors 34 / 66 as reference anchors); else refuted; the improvement vs folded-batched (priors 160 / 77) is a numbers report subfield",
+      "numbers": {
+        "per_prompt_decode_lengths": [
+          {
+            "len_aligned": 34,
+            "len_baseline_measured": 34,
+            "len_folded_batched_measured": 160,
+            "matches_baseline": true,
+            "prompt_index": 0
+          },
+          {
+            "len_aligned": 66,
+            "len_baseline_measured": 66,
+            "len_folded_batched_measured": 77,
+            "matches_baseline": true,
+            "prompt_index": 1
+          }
+        ]
+      },
+      "verdict": "supported"
+    },
+    "H4": {
+      "hypothesis": "aligned-mode full-stack contract faces do not regress vs the AR021 criterion: (i) every aligned-mode shape window containing a batched call has batched captures > 0 AND timed replays > 0 (AR021 H4 criterion applied to MFF_C); (ii) the degradation-class no-fallback canary is timed == 0 for ALL THREE folded modes; (iii) the publish ledger stays within c*(L+N) with c=4 frozen (three folded modes, per prompt sidecar); (iv) AR017 adaptive events are verified only when their trigger condition actually fired (untriggered = neutral; MFF_B and MFF_C judged independently). Otherwise refuted",
+      "numbers": {
+        "aligned_batched_capture_positive": true,
+        "aligned_batched_scope_windows": [
+          "p32_block0_T64",
+          "p64_block0_T96"
+        ],
+        "aligned_batched_timed_replay_positive": true,
+        "ar017_events": {
+          "folded-batched": {
+            "cumulative": 2,
+            "timed": 0
+          },
+          "folded-batched-greedy": {
+            "cumulative": 0,
+            "timed": 0
+          },
+          "note": "verified only when the trigger condition actually fired (untriggered = neutral, never refutes); the policy records only successful re-captures, so a positive count means the trigger condition actually fired; MFF_B and MFF_C are judged independently (independent instances by construction)"
+        },
+        "canary_degradation_timed_zero": {
+          "folded-batched": true,
+          "folded-batched-greedy": true,
+          "folded-serial": true
+        },
+        "ledger_within_bound": {
+          "folded-batched": true,
+          "folded-batched-greedy": true,
+          "folded-serial": true
+        }
+      },
+      "verdict": "supported"
+    }
+  },
+  "ledger": {
+    "c": 4,
+    "normalization": "ops <= c*((L+1)*serial_events + (L+N)*batched_events) per sidecar generation; L = num_hidden_layers, N = 4",
+    "num_layers": 28,
+    "per_prompt": {
+      "prompt0": {
+        "folded-batched": {
+          "batched_events": 4,
+          "bound": 1324,
+          "ops_delta": 207,
+          "serial_events": 7,
+          "within_bound": true
+        },
+        "folded-batched-greedy": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 59,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "folded-serial": {
+          "batched_events": 0,
+          "bound": 3596,
+          "ops_delta": 899,
+          "serial_events": 31,
+          "within_bound": true
+        }
+      },
+      "prompt1": {
+        "folded-batched": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 59,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "folded-batched-greedy": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 59,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "folded-serial": {
+          "batched_events": 0,
+          "bound": 3132,
+          "ops_delta": 783,
+          "serial_events": 27,
+          "within_bound": true
+        }
+      }
+    },
+    "timed_segment_ops_total": {
+      "folded-batched": 7980,
+      "folded-batched-greedy": 3540,
+      "folded-serial": 50460
+    },
+    "within_bound": {
+      "folded-batched": true,
+      "folded-batched-greedy": true,
+      "folded-serial": true
+    }
+  },
+  "meta": {
+    "a5_scheme_a_note": "warmup pre-capture amortization holds under the bench protocol (every timed rep replays each window's runners); in single-shot production generation the capture amortizes NEGATIVE (one capture ~= 2-3 forwards serving a single replay) -- recommend use_cuda_graph=False for single-shot generate scenarios",
+    "block_constants": {
+      "block_size": 32,
+      "small_block_size": 32,
+      "temperature": 0.0,
+      "threshold": 0.95
+    },
+    "cache_budget_tokens_per_layer": 8192,
+    "canary_note": "the no-fallback canary checks the DEGRADATION class only (timed segment == 0): every non-structural graph-path eager fallback; structural eager (window-populate, window-switch, last-window no-AR) is counted separately and excluded by design (else the canary is constructively false)",
+    "command": "python -m scripts.ar022_speculative_quality_bench --reps 30 --model-path C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "forced_divergent_declaration": "the sampler pins a per-(T, prompt_len) forced base tensor whose True positions cover exactly the active block; every folded forward (denoise iterations, the block-advance AR step, and the [N,T] batched verification) threads it through ManualFoldedForward(forced_divergent=...); the freshly committed / actively denoised region is always recomputed, never gate-certified stable against a stale parent",
+    "gpu_driver_version": "556.18",
+    "gpu_driver_version_note": "queried via nvidia-smi; null means the query failed on this host and the value was omitted rather than fabricated",
+    "greedy_anchor_declaration": "candidate row 0 = the greedy hypothesis: every still-masked position is filled with the draft top-k ordered-set head (the frozen argmax definition; deterministic construction, zero device readback, no generator); N semantics frozen: total candidates = config N, greedy occupies row 0, random candidates = N-1 (j = 1..N-1, the frozen seed formula keeps j as the row number, so rows 1..N-1 match a greedy-off same-seed run inside the canvas-consistent region -- the first speculative small block); branch_ids keep their AR021 row-number semantics (_cand0 names the greedy row); min-prob selection is unchanged -- the greedy row competes with no exemption or weighting and may lose",
+    "h4_scope_note": "the aligned-mode batched capture/replay sub-criterion is verified on every shape window with >= 1 batched call in the sidecar generation (the AR021 H4 criterion applied to MFF_C); the degradation canary and the c=4 ledger bound cover ALL THREE folded modes; AR017 events are verified only when triggered (untriggered = neutral), MFF_B and MFF_C judged independently",
+    "interleaving": "per-rep round-robin over the four modes; rep r starts at position r%4 (anti-drift, WDDM fairness)",
+    "kernel_count": null,
+    "kernel_count_note": "runtime CUPTI probe: this torch build cannot record CUDA profiler events (LIBKINETO_NOCUPTI); kernel-launch counts recorded null + note, never fabricated (#39) - the write_op_count ledger and graph_pool_stats counters are the structural evidence",
+    "ledger_c": 4,
+    "ledger_normalization": "per publish event: a serial forward publishes 1 event counting L+1 ops (<= 4*(L+1), trivially in bound); a batched publish counts O(L+N) ops (put_batch foreach groups + immediate executions, <= 4*(L+N)); the aggregate over a generation preserves the bounds (AR020-style, c frozen at design); verified on the untimed sidecar generation (same deterministic trajectory as the timed reps)",
+    "mode_configs": {
+      "baseline": {
+        "description": "raw FastDLLMSampler (unchanged recipe)",
+        "folded_model": null,
+        "num_block_candidates": 0
+      },
+      "folded-batched": {
+        "description": "FR3 batched speculative block verification (N=4 from the AR019 artifact matrix, candidate_top_k=10, A5 scheme a); AR017 adaptive capacity engaged on the batched path only (#37); split_layers=False on all three MFF instances (Split-layer resident hooks would stack on the shared model)",
+        "mff_kwargs": {
+          "cache": "ActivationCache(8192 tokens/layer)",
+          "gate": "SimilarityGate(tau=0.95, cosine, eps=1e-08)",
+          "graph_adaptive_capacity": true,
+          "graph_adaptive_config": "AdaptiveCapacityConfig()",
+          "graph_capacity_ratio": 0.5,
+          "graph_runner_pool_size": 8,
+          "scheduler": null,
+          "split_layers": false,
+          "use_cuda_graph": true
+        },
+        "sampler": {
+          "candidate_top_k": 10,
+          "num_block_candidates": 4
+        }
+      },
+      "folded-batched-greedy": {
+        "description": "AR022 alignment mode: MFF_C, an independent instance constructed identically to MFF_B (own cache/gate/pool/canary/AR017 policy -- per-mode isolation for H4) with candidate_include_greedy=True (row 0 = greedy hypothesis); same [N,T] batched shape, N, top-k, prompt set, and seed as folded-batched -- the speed variable is constructively zeroed (same-shape A/B)",
+        "mff_kwargs": {
+          "cache": "ActivationCache(8192 tokens/layer)",
+          "gate": "SimilarityGate(tau=0.95, cosine, eps=1e-08)",
+          "graph_adaptive_capacity": true,
+          "graph_adaptive_config": "AdaptiveCapacityConfig()",
+          "graph_capacity_ratio": 0.5,
+          "graph_runner_pool_size": 8,
+          "scheduler": null,
+          "split_layers": false,
+          "use_cuda_graph": true
+        },
+        "sampler": {
+          "candidate_include_greedy": true,
+          "candidate_top_k": 10,
+          "num_block_candidates": 4
+        }
+      },
+      "folded-serial": {
+        "description": "FR2 serial chain folding (#26) with the pinned fold-context trio and the shape-keyed serial pool",
+        "mff_kwargs": {
+          "cache": "ActivationCache(8192 tokens/layer)",
+          "gate": "SimilarityGate(tau=0.95, cosine, eps=1e-08)",
+          "graph_adaptive_capacity": false,
+          "graph_adaptive_config": null,
+          "graph_capacity_ratio": 0.5,
+          "graph_runner_pool_size": 8,
+          "scheduler": null,
+          "split_layers": false,
+          "use_cuda_graph": true
+        },
+        "sampler": {
+          "num_block_candidates": 0
+        }
+      }
+    },
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "platform_note": "Windows WDDM display-driver mode (no clock locking); noise mitigated by warmup + reps + p50 + per-rep round-robin",
+    "pool_cap": 8,
+    "prompts": {
+      "count": 2,
+      "num_tokens": 128,
+      "padded_token_lens": [
+        32,
+        64
+      ],
+      "prepad_note": "prompts pre-padded to exact 32-token multiples (pad=eos) so the sampler's own first-block padding is zero and the pinned fold-context mask is the pure block-causal mask, element-equal to the remote model's internal eval_mask (the raw path's [B,T] mask is overwritten internally by the remote forward); non-zero padding would break cross-mode parity by construction",
+      "raw_token_lens": [
+        21,
+        37
+      ],
+      "shape_windows_W": 4,
+      "texts": [
+        "Explain the key ideas of the theory of relativity in a few short sentences for a general audience.",
+        "The ocean appears blue because water absorbs red light more strongly than blue light. Describe how photosynthesis works in plants, why chlorophyll matters, and list the first five prime numbers."
+      ]
+    },
+    "quick": false,
+    "reproduction_selfcheck_declaration": "the folded-batched sidecar quality face (same seed, deterministic trajectory, warmup-post replay pool state) is compared for STRICT equality against the AR021 artifact priors (quality.h3_batched_vs_baseline: block_exact_match 0.0/0.0, len_other 160/77, posthoc_mean 0.289692/0.106418, posthoc_min 5e-06/0.0); on mismatch the artifact records reproduction_anomaly and ALL FOUR H verdicts are set to 'blocked' (the same-environment determinism assumption failed wholesale; no single-face verdict is trustworthy; never silently substituted, never fabricated); the check binds same-GPU/driver/venv reruns (RERUN_CHECKLIST scope) -- a different host failing equality is recorded blocked honestly; under --quick the face degrades to a structural validation (single prompt / num_tokens=64 cannot reproduce the full-scale priors) and does not gate",
+    "reps": 30,
+    "run_date_utc": "2026-10-15T04:21:48.583887+00:00",
+    "seed": 2026,
+    "shape_keyed_pool_declaration": "graph_runner_pool_size=8 per MFF instance: one runner per (tokens shape, pinned mask identity) window == (T, prompt_len) serial / (N, T, prompt_len) batched; expected entries <= 8 per pool (W*P upper bound; folded-batched and folded-batched-greedy: serial (W-1)*P, batched W*P; folded-serial <= W*P data-dependent), zero evictions at cap=8 (LRU is a defensive bound only); MFF_A/B/C are independent instances, so their pools are fully isolated",
+    "sigma_convention": "sigma = max(sigma_a, sigma_b) bound to the mode pair; H2 (greedy vs batched) uses sigma = max(sigma_greedy, sigma_batched) with the directional no-regression rule (supported iff p50(batched) - p50(greedy) >= -2*sigma; no inconclusive); quality faces are deterministic single-shot sidecar measurements with no sigma; samples pooled over prompts x reps per mode",
+    "single_run_discipline": "pre-committed single-shot verdict, no rerun fishing",
+    "timing_method": "host perf_counter + torch.cuda.synchronize (#39); whole-generation wall clock plus per-block anchors (the forward wrappers observe the step_idx change as the block boundary; syncs only at those boundaries)",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "use_cuda_graph": true,
+    "venv": true,
+    "vram_note": "three MFF instances (MFF_A/B/C) are resident for the whole run, so every mode's peak includes all three pools; the design estimate was ~5.8GB + interaction margin <= 6.5GB on a 16GB card (AR021 folded-batched peak 5374.5MB + one MFF_C-shaped increment ~427MB); the measured peaks above are the honest calibration",
+    "vram_peak_mb_per_mode": {
+      "baseline": {
+        "max_over_reps_mb": 5413.0,
+        "per_rep_mb": [
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0,
+          5413.0
+        ]
+      },
+      "folded-batched": {
+        "max_over_reps_mb": 5840.1,
+        "per_rep_mb": [
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1,
+          5840.1
+        ]
+      },
+      "folded-batched-greedy": {
+        "max_over_reps_mb": 5672.0,
+        "per_rep_mb": [
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0,
+          5672.0
+        ]
+      },
+      "folded-serial": {
+        "max_over_reps_mb": 5413.1,
+        "per_rep_mb": [
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1,
+          5413.1
+        ]
+      }
+    },
+    "warmup_strategy": "one full discarded sample per (mode, prompt) before any timing, all four modes: per-shape-window pool pre-capture (A5 scheme a: the warmup round naturally captures every window's serial and batched runners, MFF_A/B/C alike) + Triton/JIT warmup + the AR017 adaptive transition; capture costs are excluded from p50 (srs FR4); timed-segment re-captures, if any, are counted and timed honestly"
+  },
+  "mode_comparison": {
+    "baseline": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 3092.8563033269406,
+          "n": 60,
+          "p50": 3094.518150028307,
+          "std": 146.0338362404133
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 2951.041670003906,
+          "n": 30,
+          "p50": 2957.039100001566,
+          "std": 22.552452670069414
+        },
+        "prompt1": {
+          "mean": 3239.7295733137676,
+          "n": 30,
+          "p50": 3243.484449980315,
+          "std": 19.254537309053536
+        }
+      },
+      "stable_ratio_timed": null,
+      "whole_gen_ms": {
+        "mean": 3095.385621658837,
+        "n": 60,
+        "p50": 3096.763050009031,
+        "std": 145.85901255517862
+      }
+    },
+    "folded-batched": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 440.0673299989042,
+          "n": 60,
+          "p50": 439.28290001349524,
+          "std": 63.21044716860633
+        },
+        "block1": {
+          "mean": 526.7926633358002,
+          "n": 30,
+          "p50": 525.6282499758527,
+          "std": 7.948920601313794
+        },
+        "block2": {
+          "mean": 607.5213733439645,
+          "n": 30,
+          "p50": 605.8866000385024,
+          "std": 6.969686038753336
+        },
+        "block3": {
+          "mean": 603.1255966595685,
+          "n": 30,
+          "p50": 603.1443499960005,
+          "std": 8.640714313848394
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 2123.259266656047,
+          "n": 30,
+          "p50": 2119.257899990771,
+          "std": 24.084424155476306
+        },
+        "prompt1": {
+          "mean": 506.89263332945603,
+          "n": 30,
+          "p50": 507.28045002324507,
+          "std": 5.065066495239817
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.8,
+        "mean": 0.679,
+        "min": 0.5,
+        "n": 22680,
+        "std": 0.0991
+      },
+      "whole_gen_ms": {
+        "mean": 1315.0759499927517,
+        "n": 60,
+        "p50": 1300.5878499825485,
+        "std": 808.370664067936
+      }
+    },
+    "folded-batched-greedy": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 437.1947166606939,
+          "n": 60,
+          "p50": 436.0461499891244,
+          "std": 61.7463951025054
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 379.24653000275913,
+          "n": 30,
+          "p50": 379.3885500053875,
+          "std": 3.633351766970993
+        },
+        "prompt1": {
+          "mean": 502.59731000987813,
+          "n": 30,
+          "p50": 501.6707500908524,
+          "std": 3.791973518549804
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.6667,
+        "mean": 0.5833,
+        "min": 0.5,
+        "n": 8400,
+        "std": 0.0833
+      },
+      "whole_gen_ms": {
+        "mean": 440.92192000631866,
+        "n": 60,
+        "p50": 440.9058499732055,
+        "std": 61.7870851085009
+      }
+    },
+    "folded-serial": {
+      "per_block_ms": {
+        "block0": {
+          "mean": 3187.6877666683868,
+          "n": 60,
+          "p50": 3196.1549999541603,
+          "std": 141.98377458358294
+        }
+      },
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 3057.678486670678,
+          "n": 30,
+          "p50": 3057.175100024324,
+          "std": 21.539104131614412
+        },
+        "prompt1": {
+          "mean": 3337.6047399787544,
+          "n": 30,
+          "p50": 3332.433999981731,
+          "std": 21.80675787093308
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.6667,
+        "mean": 0.5774,
+        "min": 0.5,
+        "n": 47040,
+        "std": 0.0831
+      },
+      "whole_gen_ms": {
+        "mean": 3197.641613324716,
+        "n": 60,
+        "p50": 3205.3720999974757,
+        "std": 141.6312489198318
+      }
+    }
+  },
+  "per_shape_window": {
+    "folded-batched": {
+      "ar017_recapture_events": {
+        "cumulative": 2,
+        "timed": 0
+      },
+      "batched": {
+        "pool_size": 5,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block1_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block2_T128": {
+            "captures_cumulative": 2,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block3_T160": {
+            "captures_cumulative": 2,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "degradation_fallback_count": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "semantics": "captures_cumulative: instance lifetime (warmup + sidecar + timed, H4 capture criterion); replays_timed / *_timed: diff from the post-warmup snapshot (sidecar included in the snapshot base); evictions: cumulative",
+      "serial": {
+        "pool_size": 4,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block1_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p32_block2_T128": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "sidecar_forwards_per_window": {
+        "p32_block0_T64": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block1_T96": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block2_T128": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p32_block3_T160": {
+          "batched": 1,
+          "serial": 1
+        },
+        "p64_block0_T96": {
+          "batched": 1,
+          "serial": 2
+        }
+      },
+      "structural_eager_count": {
+        "cumulative": 160,
+        "timed": 150
+      }
+    },
+    "folded-batched-greedy": {
+      "ar017_recapture_events": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "batched": {
+        "pool_size": 2,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "degradation_fallback_count": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "semantics": "captures_cumulative: instance lifetime (warmup + sidecar + timed, H4 capture criterion); replays_timed / *_timed: diff from the post-warmup snapshot (sidecar included in the snapshot base); evictions: cumulative",
+      "serial": {
+        "pool_size": 2,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 31,
+            "replays_timed": 30
+          }
+        }
+      },
+      "sidecar_forwards_per_window": {
+        "p32_block0_T64": {
+          "batched": 1,
+          "serial": 2
+        },
+        "p64_block0_T96": {
+          "batched": 1,
+          "serial": 2
+        }
+      },
+      "structural_eager_count": {
+        "cumulative": 64,
+        "timed": 60
+      }
+    },
+    "folded-serial": {
+      "ar017_recapture_events": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "batched": {
+        "pool_size": 0,
+        "windows": {}
+      },
+      "degradation_fallback_count": {
+        "cumulative": 0,
+        "timed": 0
+      },
+      "semantics": "captures_cumulative: instance lifetime (warmup + sidecar + timed, H4 capture criterion); replays_timed / *_timed: diff from the post-warmup snapshot (sidecar included in the snapshot base); evictions: cumulative",
+      "serial": {
+        "pool_size": 2,
+        "windows": {
+          "p32_block0_T64": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 959,
+            "replays_timed": 900
+          },
+          "p64_block0_T96": {
+            "captures_cumulative": 1,
+            "evictions": 0,
+            "replays_cumulative": 831,
+            "replays_timed": 780
+          }
+        }
+      },
+      "sidecar_forwards_per_window": {
+        "p32_block0_T64": {
+          "batched": 0,
+          "serial": 31
+        },
+        "p64_block0_T96": {
+          "batched": 0,
+          "serial": 27
+        }
+      },
+      "structural_eager_count": {
+        "cumulative": 64,
+        "timed": 60
+      }
+    }
+  },
+  "quality": {
+    "aligned_vs_baseline": [
+      {
+        "block_exact_match": {
+          "len_baseline": 34,
+          "len_other": 34,
+          "overall_exact_match": 1.0,
+          "per_block_exact_match": {
+            "block0": 1.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "block_match_counts": {
+          "compared": 2,
+          "matched": 2,
+          "rate": 1.0
+        },
+        "greedy_win": {
+          "calls": 1,
+          "rate": 1.0,
+          "wins": 1
+        },
+        "len_aligned": 34,
+        "len_baseline": 34,
+        "position_match": {
+          "compared": 2,
+          "comparison_window": "[32, 34)",
+          "len_baseline": 34,
+          "len_other": 34,
+          "matched": 2,
+          "rate": 1.0
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched-greedy": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_exact_match": {
+          "len_baseline": 66,
+          "len_other": 66,
+          "overall_exact_match": 1.0,
+          "per_block_exact_match": {
+            "block0": 1.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "block_match_counts": {
+          "compared": 2,
+          "matched": 2,
+          "rate": 1.0
+        },
+        "greedy_win": {
+          "calls": 1,
+          "rate": 1.0,
+          "wins": 1
+        },
+        "len_aligned": 66,
+        "len_baseline": 66,
+        "position_match": {
+          "compared": 2,
+          "comparison_window": "[64, 66)",
+          "len_baseline": 66,
+          "len_other": 66,
+          "matched": 2,
+          "rate": 1.0
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched-greedy": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 1
+      }
+    ],
+    "batched_vs_baseline": [
+      {
+        "block_exact_match": {
+          "len_baseline": 34,
+          "len_other": 160,
+          "overall_exact_match": 0.0,
+          "per_block_exact_match": {
+            "block0": 0.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "block_match_counts": {
+          "compared": 2,
+          "matched": 0,
+          "rate": 0.0
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched": {
+            "overall_mean": 0.289692,
+            "overall_min": 5e-06,
+            "per_block": {
+              "block0": {
+                "mean": 0.36794,
+                "min": 3.6e-05
+              },
+              "block1": {
+                "mean": 0.244895,
+                "min": 5e-06
+              },
+              "block2": {
+                "mean": 0.24694,
+                "min": 0.019819
+              },
+              "block3": {
+                "mean": 0.298991,
+                "min": 0.048839
+              }
+            }
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_exact_match": {
+          "len_baseline": 66,
+          "len_other": 77,
+          "overall_exact_match": 0.0,
+          "per_block_exact_match": {
+            "block0": 0.0,
+            "block1": null,
+            "block2": null,
+            "block3": null
+          }
+        },
+        "block_match_counts": {
+          "compared": 2,
+          "matched": 0,
+          "rate": 0.0
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "folded-batched": {
+            "overall_mean": 0.106418,
+            "overall_min": 0.0,
+            "per_block": {
+              "block0": {
+                "mean": 0.106418,
+                "min": 0.0
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 1
+      }
+    ],
+    "greedy_win_total": {
+      "calls": 2,
+      "rate": 1.0,
+      "wins": 2
+    },
+    "h1_serial_vs_baseline": [
+      {
+        "forward_counts_match": true,
+        "logits": {
+          "allclose_all": true,
+          "bit_equal_fraction_mean": 1.0,
+          "compared_forwards": 31,
+          "live_forwards": 31,
+          "max_abs_diff_overall": 0.0,
+          "per_forward": [
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            }
+          ],
+          "ref_forwards": 31
+        },
+        "prompt_index": 0,
+        "token_match": true,
+        "token_match_rate": 1.0
+      },
+      {
+        "forward_counts_match": true,
+        "logits": {
+          "allclose_all": true,
+          "bit_equal_fraction_mean": 1.0,
+          "compared_forwards": 27,
+          "live_forwards": 27,
+          "max_abs_diff_overall": 0.0,
+          "per_forward": [
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            },
+            {
+              "allclose_rtol1e-2_atol1e-1": true,
+              "bit_equal_fraction": 1.0,
+              "max_abs_diff": 0.0
+            }
+          ],
+          "ref_forwards": 27
+        },
+        "prompt_index": 1,
+        "token_match": true,
+        "token_match_rate": 1.0
+      }
+    ],
+    "merged_block_match": {
+      "folded-batched": {
+        "compared": 4,
+        "matched": 0,
+        "rate": 0.0
+      },
+      "folded-batched-greedy": {
+        "compared": 4,
+        "matched": 4,
+        "rate": 1.0
+      }
+    },
+    "merged_position_match": {
+      "compared": 4,
+      "matched": 4,
+      "rate": 1.0
+    },
+    "reproduction_selfcheck": {
+      "actual": {
+        "prompt0": {
+          "block_exact_match": 0.0,
+          "len_other": 160,
+          "posthoc_mean": 0.289692,
+          "posthoc_min": 5e-06
+        },
+        "prompt1": {
+          "block_exact_match": 0.0,
+          "len_other": 77,
+          "posthoc_mean": 0.106418,
+          "posthoc_min": 0.0
+        }
+      },
+      "expected": {
+        "prompt0": {
+          "block_exact_match": 0.0,
+          "len_other": 160,
+          "posthoc_mean": 0.289692,
+          "posthoc_min": 5e-06
+        },
+        "prompt1": {
+          "block_exact_match": 0.0,
+          "len_other": 77,
+          "posthoc_mean": 0.106418,
+          "posthoc_min": 0.0
+        }
+      },
+      "field_matches": {
+        "prompt0": {
+          "block_exact_match": true,
+          "len_other": true,
+          "posthoc_mean": true,
+          "posthoc_min": true
+        },
+        "prompt1": {
+          "block_exact_match": true,
+          "len_other": true,
+          "posthoc_mean": true,
+          "posthoc_min": true
+        }
+      },
+      "gating": true,
+      "mode": "strict",
+      "pass": true,
+      "strict_equality_pass": true
+    }
+  },
+  "reproduction_anomaly": null,
+  "speedups_p50": {
+    "batched_vs_baseline": 2.381,
+    "batched_vs_serial": 2.4646,
+    "greedy_vs_baseline": 7.0236,
+    "greedy_vs_batched": 2.9498,
+    "serial_vs_baseline": 0.9661
+  }
+}
