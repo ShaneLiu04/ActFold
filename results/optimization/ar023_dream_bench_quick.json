@@ -1,0 +1,234 @@
+{
+  "schema": "ar023_cross_family_bench",
+  "schema_version": 1,
+  "family": "dream",
+  "status": "ok",
+  "modes": {
+    "baseline": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 82552.8638,
+          "std_ms": 65.39,
+          "p50_ms": 82529.4969,
+          "n": 3
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 64
+      }
+    },
+    "folded-serial": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 66977.678,
+          "std_ms": 3344.0969,
+          "p50_ms": 68237.8133,
+          "n": 3
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 64
+      }
+    },
+    "folded-batched": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 58231.7631,
+          "std_ms": 223.517,
+          "p50_ms": 58257.8767,
+          "n": 3
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 64
+      }
+    },
+    "folded-batched-greedy": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 61184.0398,
+          "std_ms": 117.031,
+          "p50_ms": 61178.3214,
+          "n": 3
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 64
+      }
+    }
+  },
+  "quality": {
+    "per_prompt": [
+      {
+        "prompt_index": 0,
+        "prompt_text": "The capital of France is",
+        "decode_length": {
+          "baseline": 64,
+          "folded-serial": 64,
+          "folded-batched": 64,
+          "folded-batched-greedy": 64
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.705214,
+            "overall_min": 4e-06,
+            "window": "[5, 69)"
+          },
+          "folded-serial": {
+            "overall_mean": 0.783816,
+            "overall_min": 1.2e-05,
+            "window": "[5, 69)"
+          },
+          "folded-batched": {
+            "overall_mean": 0.243463,
+            "overall_min": 0.001527,
+            "window": "[5, 69)"
+          },
+          "folded-batched-greedy": {
+            "overall_mean": 0.307585,
+            "overall_min": 0.000301,
+            "window": "[5, 69)"
+          }
+        },
+        "block_exact": {
+          "folded-serial": {
+            "matched": 5,
+            "compared": 64
+          },
+          "folded-batched": {
+            "matched": 3,
+            "compared": 64
+          },
+          "folded-batched-greedy": {
+            "matched": 4,
+            "compared": 64
+          }
+        },
+        "position_match": {
+          "folded-serial": {
+            "matched": 5,
+            "compared": 64,
+            "rate": 0.078125
+          },
+          "folded-batched": {
+            "matched": 3,
+            "compared": 64,
+            "rate": 0.046875
+          },
+          "folded-batched-greedy": {
+            "matched": 4,
+            "compared": 64,
+            "rate": 0.0625
+          }
+        }
+      }
+    ]
+  },
+  "verdicts": {
+    "h1": {
+      "verdict": "refuted",
+      "faces": {
+        "a_gap_shrink_ratio_le_0_5": false,
+        "b_length_recovery": true,
+        "c_block_exact_strict_improvement": true
+      },
+      "strong": {
+        "quality_full_alignment": null,
+        "exact_all_hit": null,
+        "length_equals_baseline": "supported"
+      },
+      "numbers": {
+        "gap": {
+          "folded-batched": -0.461751,
+          "folded-batched-greedy": -0.397629
+        },
+        "ratio": 0.861133,
+        "exact": {
+          "folded-batched": 0.046875,
+          "folded-batched-greedy": 0.0625
+        },
+        "per_prompt_decode_lengths": [
+          {
+            "prompt_index": 0,
+            "len_baseline": 64,
+            "len_folded_batched": 64,
+            "len_aligned": 64,
+            "recovered": true
+          }
+        ],
+        "none_posthoc_mean": false
+      }
+    },
+    "h2": {
+      "verdict": "supported",
+      "numbers": {
+        "speedup_p50_vs_baseline": 1.349,
+        "p50_baseline_ms": 82529.49689992238,
+        "p50_aligned_ms": 61178.32140007522,
+        "aligned_vs_batched_ratio": 1.0501,
+        "rule": "supported iff p50(baseline)/p50(aligned) > 1.0"
+      }
+    },
+    "h4": {
+      "verdict": "supported",
+      "numbers": {
+        "canary_degradation_zero": {
+          "folded-serial": true,
+          "folded-batched": true,
+          "folded-batched-greedy": true
+        },
+        "ledger_within_bound": {
+          "folded-serial": true,
+          "folded-batched": true,
+          "folded-batched-greedy": true
+        },
+        "graph_enabled": false,
+        "graph_note": "graph path off per the probe conclusion: eager folding by construction, no degradation fallback path exists (neutral)",
+        "stable_ratios": {
+          "folded-serial": 0.396595,
+          "folded-batched": 0.339727,
+          "folded-batched-greedy": 0.568841
+        },
+        "stable_ratio_mean": 0.435054
+      }
+    }
+  },
+  "reproduction": {
+    "ok": true
+  },
+  "meta": {
+    "checkpoint_dir": "D:\\ar023_models\\dream",
+    "checkpoint_sha256": null,
+    "dtype": "bf16",
+    "quantization": "none",
+    "transformers_version": "4.53.1",
+    "torch_version": "2.5.1+cu121",
+    "family_constants": {
+      "alg": "maskgit_plus",
+      "eps": 0.001,
+      "num_steps": "1:1 with num_tokens",
+      "num_tokens": 64,
+      "seed": 2026,
+      "reps": 3,
+      "num_candidates": 4,
+      "candidate_top_k": 10,
+      "speculative_steps": 8,
+      "gate_tau": 0.95,
+      "cache_budget_per_layer": 64,
+      "block_grid_measurement": 32,
+      "approximate_folding": "similarity-gated folding (cosine tau=0.95): near-exact reuse by gate"
+    },
+    "graph_enabled": false,
+    "graph_note": "graph path off per the probe conclusion (eager folding by construction)",
+    "cupti_note": "#39 wall-clock discipline: host perf_counter + cuda synchronize; no kernel-launch claims (CUPTI not probed)",
+    "seed": 2026,
+    "reps": 3,
+    "quick": true,
+    "prompts": [
+      "The capital of France is"
+    ],
+    "probe_artifact_ref": "results\\optimization\\ar023_family_probe.json",
+    "cross_rep_deterministic": true,
+    "timestamp": "2026-10-15T19:36:58.777051+00:00"
+  }
+}

@@ -1,0 +1,256 @@
+{
+  "schema_version": 1,
+  "meta": {
+    "probe": "ar023_family_probe",
+    "models_root": "D:\\ar023_models",
+    "repos": {
+      "llada": "GSAI-ML/LLaDA-8B-Base",
+      "dream": "Dream-org/Dream-v0-Base-7B"
+    },
+    "endpoint": "https://huggingface.co"
+  },
+  "families": {
+    "llada": {
+      "download": {
+        "ok": true,
+        "files": [
+          {
+            "name": "README.md",
+            "sha256": "bf6222619f6a12c0e07c44a3771e6af8c107d6c5be991240c644ce8e8563cec6",
+            "bytes": 428
+          },
+          {
+            "name": "config.json",
+            "sha256": "5f99fefe855fdb5100bb6cadb57bdb09fae723ad54811f95c00ecacf29d58a6a",
+            "bytes": 1385
+          },
+          {
+            "name": "configuration_llada.py",
+            "sha256": "c947a64d8b735affa69d5adeb416c83ce607c8925270884e4471ae11068e2bfe",
+            "bytes": 12000
+          },
+          {
+            "name": "generation_config.json",
+            "sha256": "00b3d1ffda2ca0a45633deb52ca4413dda046e7c94e9b05b73ed4a565b0677b3",
+            "bytes": 128
+          },
+          {
+            "name": "model-00001-of-00006.safetensors",
+            "sha256": "4c0652913997c26851c51d5881918a93b2d502c0eeabcf3fe409800441ebc385",
+            "bytes": 2109747184
+          },
+          {
+            "name": "model-00002-of-00006.safetensors",
+            "sha256": "330b95434544dcdac54531ef01a14fd7dede828974d3ca2c440e443a011d0365",
+            "bytes": 2948598128
+          },
+          {
+            "name": "model-00003-of-00006.safetensors",
+            "sha256": "e7847f941f2872c715af1700834056713aba45cfa66223d9e06000b1936e1abf",
+            "bytes": 2986883656
+          },
+          {
+            "name": "model-00004-of-00006.safetensors",
+            "sha256": "9d5d75b011eae74467ec02db8875b582cce7b02eff143dab78b8530af4bf4dd2",
+            "bytes": 2952797224
+          },
+          {
+            "name": "model-00005-of-00006.safetensors",
+            "sha256": "49e9018af8ae4852eefb2ffe7947df1931b7c4c1dcdd3648b36acd5c90eafd3d",
+            "bytes": 2919239128
+          },
+          {
+            "name": "model-00006-of-00006.safetensors",
+            "sha256": "3a2c91cf7aac23ca84f48d4fdabf58ffd050e9f56b9c94b7962a3d3f5c35e3c6",
+            "bytes": 2113931792
+          },
+          {
+            "name": "model.safetensors.index.json",
+            "sha256": "28b4ec27206e42e7ade630450e6ce618bd197acf34d35120e8e86d2bb910a408",
+            "bytes": 24941
+          },
+          {
+            "name": "modeling_llada.py",
+            "sha256": "98bac7e53fef0bb7ca01e3716c11a7f710d183e10dbb9783b88db9dbba2e3766",
+            "bytes": 61443
+          },
+          {
+            "name": "special_tokens_map.json",
+            "sha256": "981e83321bd28bee90ad62ce1bd0baa0fcef3540dd29ca35e2116ec5577fef71",
+            "bytes": 766
+          },
+          {
+            "name": "tokenizer.json",
+            "sha256": "ee1ef8e5f6d9493ac25480b7b7337ff5d2c1b946190afff18d12c86ca738ae00",
+            "bytes": 6098411
+          },
+          {
+            "name": "tokenizer_config.json",
+            "sha256": "6e9f41633217287fcf9a58890efb26e91e905bd6ae2234b534b65e0c36f4dd3c",
+            "bytes": 51165
+          }
+        ]
+      },
+      "load": {
+        "ok": true,
+        "note": "transformers==4.53.1; model_type=llada; vocab=126346"
+      },
+      "bf16": {
+        "ok": true,
+        "vram_mb": 15265.0
+      },
+      "int8": {
+        "available": true,
+        "ok": true,
+        "vram_mb": 10966.0
+      },
+      "smoke": {
+        "ok": true,
+        "tokens": "The capital of France is Paris.\n\nThe capital of Germany is Berlin.\n\nThe capital ",
+        "mask_token_id": 126336,
+        "dtype": "bf16"
+      },
+      "graph": {
+        "ok": false,
+        "error": "RuntimeError: captures_underway.empty() INTERNAL ASSERT FAILED at \"C:\\\\actions-runner\\\\_work\\\\pytorch\\\\pytorch\\\\builder\\\\windows\\\\pytorch\\\\c10\\\\cuda\\\\CUDACachingAllocator.cpp\":2967, please report a bug to PyTorch. "
+      },
+      "prompt": {
+        "ok": true,
+        "note": "right-pad T=21 valid_end=21 2d_mask_accepted shape=(1, 21, 126464); right-pad T=26 valid_end=26 2d_mask_accepted shape=(1, 26, 126464)",
+        "dtype": "bf16"
+      },
+      "conclusions": {
+        "dtype_choice": "bf16",
+        "graph_enabled": false,
+        "degraded": false,
+        "degrade_reason": null
+      }
+    },
+    "dream": {
+      "download": {
+        "ok": true,
+        "files": [
+          {
+            "name": "README.md",
+            "sha256": "59e55fe7586d42db07b98ceb1dd59639be2da2e2ad0c7f1d3b96ae1b84b3cbb5",
+            "bytes": 401
+          },
+          {
+            "name": "added_tokens.json",
+            "sha256": "32ad9d49fafda64e737853737fe3be3e33cce3f719a159ed73f04cbd81a690ce",
+            "bytes": 656
+          },
+          {
+            "name": "config.json",
+            "sha256": "50c00a18e46bbaa7c13fd037289a627aa280daba87e701043dc70669f06c973b",
+            "bytes": 874
+          },
+          {
+            "name": "configuration_dream.py",
+            "sha256": "24d038962ccf16361595494461000ec0c1b043653c7494d7fc835c96f121f0b9",
+            "bytes": 3197
+          },
+          {
+            "name": "generation_config.json",
+            "sha256": "35df4324c17f995225018314ec42fa51030ef0d220e919e2a09777c7a308b003",
+            "bytes": 147
+          },
+          {
+            "name": "generation_utils.py",
+            "sha256": "7f8ad01484898946b3c9c9d5ebc85e5ac726061d0fa7b4a522c4b8110c13a921",
+            "bytes": 22332
+          },
+          {
+            "name": "merges.txt",
+            "sha256": "8831e4f1a044471340f7c0a83d7bd71306a5b867e95fd870f74d0c5308a904d5",
+            "bytes": 1671853
+          },
+          {
+            "name": "model-00001-of-00004.safetensors",
+            "sha256": "e5de28bbee93bdf27aeaa9e8f3655ae1b631be145472e913fce49b2d79d4ca14",
+            "bytes": 4877660776
+          },
+          {
+            "name": "model-00002-of-00004.safetensors",
+            "sha256": "816f7622e7100d8edfed376802179366aad97a7938323e6ba9e831e68ebec5e1",
+            "bytes": 4932751008
+          },
+          {
+            "name": "model-00003-of-00004.safetensors",
+            "sha256": "fd48645ac8655e197a7ba0b0937436afd63dab4c69e1ef56150b2a4e3e7e5d45",
+            "bytes": 4330865200
+          },
+          {
+            "name": "model-00004-of-00004.safetensors",
+            "sha256": "2f74a68ffee4e4a1c0605cf0b1b8c55ee86f41c3bae74e1e5872771307de12f6",
+            "bytes": 1089994880
+          },
+          {
+            "name": "model.safetensors.index.json",
+            "sha256": "998a078123ffc97763690de7f2a677eb89168af5eaf8a5e12e6bc24d18e25bdb",
+            "bytes": 27752
+          },
+          {
+            "name": "modeling_dream.py",
+            "sha256": "3166e789f0d69beb1f4fbdee2317953d1c1c3b9bc21479b109afc5dd059de5b3",
+            "bytes": 36763
+          },
+          {
+            "name": "special_tokens_map.json",
+            "sha256": "fa14641fdc084244b0a530556b1d5bfcb9fa0ed9151a780ffec3b44ba96a0dfe",
+            "bytes": 661
+          },
+          {
+            "name": "tokenization_dream.py",
+            "sha256": "1d7f04104fa673831f48256e3cd42cd0bbd1bddd801b4abea5c74cc47d98bdd2",
+            "bytes": 14028
+          },
+          {
+            "name": "tokenizer_config.json",
+            "sha256": "b0e9c1a6299d8832a1362d6b24f007de8a2acfe0243d8a3a1d1b57aa8250f7ee",
+            "bytes": 7486
+          },
+          {
+            "name": "vocab.json",
+            "sha256": "87a257b04b17642a0688c98cd1df89c398bda4fee532d6f88b38a659ecb4ac8d",
+            "bytes": 3383407
+          }
+        ]
+      },
+      "load": {
+        "ok": true,
+        "note": "transformers==4.53.1; model_type=Dream; vocab=151667"
+      },
+      "bf16": {
+        "ok": true,
+        "vram_mb": 14836.7
+      },
+      "int8": {
+        "available": true,
+        "ok": true,
+        "vram_mb": 12093.0
+      },
+      "smoke": {
+        "ok": true,
+        "tokens": "The capital of France is Paris. The capital of Germany is Berlin. The capital of",
+        "mask_token_id": 151666,
+        "dtype": "bf16"
+      },
+      "graph": {
+        "ok": false,
+        "error": "RuntimeError: The size of tensor a (64) must match the size of tensor b (4) at non-singleton dimension 2"
+      },
+      "prompt": {
+        "ok": true,
+        "note": "left-pad T=21 position_ids_accepted shape=(1, 21, 152064); left-pad T=27 position_ids_accepted shape=(1, 27, 152064)",
+        "dtype": "bf16"
+      },
+      "conclusions": {
+        "dtype_choice": "bf16",
+        "graph_enabled": false,
+        "degraded": false,
+        "degrade_reason": null
+      }
+    }
+  }
+}
