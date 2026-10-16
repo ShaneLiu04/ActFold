@@ -48,9 +48,7 @@ class LlamaLikeModelWithFinalNorm(nn.Module):
     so that skipping the final norm produces systematically biased logits.
     """
 
-    def __init__(
-        self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 2
-    ) -> None:
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 2) -> None:
         super().__init__()
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": vocab_size})()
         self.model = nn.Module()
@@ -270,9 +268,7 @@ def test_manual_path_never_reads_folding_context(
     class _PoisonedContext:
         @staticmethod
         def get(*args: object, **kwargs: object) -> dict[str, object] | None:
-            raise AssertionError(
-                "FOLDING_CONTEXT.get must not be called on the Manual path"
-            )
+            raise AssertionError("FOLDING_CONTEXT.get must not be called on the Manual path")
 
     torch.manual_seed(3)
     reference_model = LlamaLikeModel().to(device)
@@ -363,9 +359,7 @@ def test_t005_manual_split_fallback_without_chain(device: str) -> None:
     model = BertLikeModel().to(device)
     cache = ActivationCache(max_entries_per_layer=16, device=device)
     gate = SimilarityGate(tau=0.95, metric="cosine")
-    mff = ManualFoldedForward(
-        model, cache=cache, gate=gate, split_layers=True, split_min_tokens=64
-    )
+    mff = ManualFoldedForward(model, cache=cache, gate=gate, split_layers=True, split_min_tokens=64)
 
     tokens = torch.randint(0, 100, (1, 4), device=device)
     with torch.no_grad():
@@ -446,6 +440,58 @@ def test_t005_folded_generate_annotation_union() -> None:
     assert any(arg is ManualFoldedForward for arg in get_args(hints["folded_model"]))
 
     init_hints = get_type_hints(FastDLLMAdapter.__init__)
-    assert any(
-        arg is ManualFoldedForward for arg in get_args(init_hints["folded_model"])
+    assert any(arg is ManualFoldedForward for arg in get_args(init_hints["folded_model"]))
+
+
+class _TupleLayer(nn.Module):
+    """LLaDA-style block: returns ``(hidden, None)`` like HF tuple layers."""
+
+    def __init__(self, hidden_dim: int) -> None:
+        super().__init__()
+        self.linear = nn.Linear(hidden_dim, hidden_dim)
+
+    def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, None]:
+        return self.linear(x), None
+
+
+class LlamaLikeTupleModel(nn.Module):
+    """Mock LLaMA layout whose blocks return ``(hidden, None)`` (LLaDA)."""
+
+    def __init__(self, vocab_size: int = 100, hidden_dim: int = 32, num_layers: int = 3) -> None:
+        super().__init__()
+        self.config = type("Config", (), {"model_type": "llama", "vocab_size": vocab_size})()
+        self.model = nn.Module()
+        self.model.embed_tokens = nn.Embedding(vocab_size, hidden_dim)
+        self.model.layers = nn.ModuleList([_TupleLayer(hidden_dim) for _ in range(num_layers)])
+        self.model.lm_head = nn.Linear(hidden_dim, vocab_size, bias=False)
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        x = self.model.embed_tokens(tokens)
+        for layer in self.model.layers:
+            x = layer(x)[0]
+        return self.model.lm_head(x)
+
+
+def test_ut_2335_mff_eager_loop_unwraps_tuple_layer_outputs() -> None:
+    """UT-2335 (AR023/T005 real-LLaDA smoke gap): MFF's eager loop consumes
+    the wrapped layer's ``(hidden, None)`` re-wrap -- the in-place FoldedModel
+    control-flow form (AGENTS #13) -- by taking the first element, so
+    tuple-returning blocks (the real LLaDA remote code) thread through MFF's
+    serial eager path bit-exactly against the raw model forward."""
+    torch.manual_seed(0)
+    model = LlamaLikeTupleModel()
+    tokens = torch.randint(0, 100, (1, 8))
+    expected = model(tokens)
+
+    mff = ManualFoldedForward(
+        model,
+        cache=ActivationCache(max_entries_per_layer=64, device="cpu"),
+        gate=SimilarityGate(tau=0.95, metric="cosine"),
+        scheduler=None,
+        split_layers=False,
     )
+    with torch.no_grad():
+        parent = mff(tokens, branch_id="p", parent_branch_id=None)
+        child = mff(tokens, branch_id="c", parent_branch_id="p")
+    assert torch.equal(parent, expected)
+    assert torch.equal(child, expected)
