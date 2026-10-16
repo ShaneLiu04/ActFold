@@ -300,3 +300,82 @@ and hidden size) donates its **first `T_c` positions**.
    steps): no capture, no warning, no disable; a later same-shape child with
    a complete parent cache still captures.
 
+## 13. Speculative Block Commit and Cross-Family Generalization (AR021–AR023)
+
+Diffusion samplers commit decode progress in *units* — a Fast-dLLM small
+block, a LLaDA block, a Dream super-step window. Instead of running the
+reference loop unit by unit, the sampler may build an `[N, T]` **speculative
+canvas**: N candidate fills of the unit's still-masked positions, verified by
+**one batched folded forward** (the batched-branch contract: all rows share
+one parent cached at batch 1, §9), then committed by a single selection rule.
+
+1. **Deterministic candidate construction** — each random row `j` is filled
+   by a uniform `torch.randint` over the draft top-k index set (`k_eff`
+   entries, gathered from `draft_set`) on a **dedicated CPU generator**
+   seeded with the frozen formula
+   `(S0·1_000_003 + unit_idx·8_191 + sub_idx·131 + j) & 0x7FFF_FFFF`
+   (host integers, reproducible — never Python `hash`); construction reads
+   device logits but never reads back device state. **Greedy anchoring**
+   (AR022) pins row 0 to the greedy hypothesis (the draft top-k ordered-set
+   first entry, the frozen argmax definition) built by pure device indexing —
+   deterministic, zero generator consumption; `num_block_candidates` stays
+   the TOTAL row count (greedy takes slot 0, random rows become `j = 1..N-1`
+   and keep their row number in the seed formula).
+2. **Selection = min-prob, no special cases** — each row is scored by the
+   **minimum token probability over the fill positions only** (the worst
+   position is the row's quality bottleneck) and the argmax row wins. The
+   greedy row competes under the unchanged rule and CAN LOSE — a posterior
+   trap fixture (zero-mixing layer + orthogonal embeddings + seed replay)
+   constructs an all-C canvas where a random row beats it, so selection never
+   special-cases row 0.
+3. **Commit and chain continuation** — the winning row is committed; the
+   unit's remaining remasking iterations are skipped entirely; the folding
+   chain switches `_folding_parent` to the winner's branch id (its
+   activations were published at batch 1), so subsequent units fold against
+   the winner. Stop-token semantics mirror the family reference (a winning
+   row that hits EOS finishes the sequence exactly as the reference would).
+4. **The shared core (AR023)** — `SpeculativeCore`
+   (`actfold/models/speculative_core.py`) is a mixin with **no `__init__`**
+   (the host sampler owns config and counters) carrying `SpecCtx(mask,
+   position)`, `_speculative_commit`, the `(T, prompt_len)`-keyed fold-ctx
+   LRU (cap 32, host metadata, zero device readback), and the read-only
+   `greedy_win_stats` probe. **Family adapters own only canvas/payload
+   semantics**: LLaDA (`LLaDASampler`) uses one speculative unit per block on
+   the right-padded canvas (ctx mask `(arange(T) < valid_end)` tiled
+   `[T, T]`, `position=None` — LLaDA carries no rotary cargo); Dream
+   (`DreamSampler`) uses super-step windows of `speculative_steps` (default
+   8) over the transfer schedule with budget merge `sum[step:step+s]`,
+   `k_eff = min(budget, masked_count)` (≤0 skips the window), and
+   confidence-topk position selection. The logits shift convention follows
+   the family reference defaults (Dream shifts / LLaDA does not / the core
+   is shift-agnostic).
+5. **`position_ids` threading (AR019 template)** — `DiffusionSampler._forward`
+   attaches `position_ids` to the folded branch **only when non-`None`** (no
+   kwarg otherwise — existing folded callers byte-for-byte unchanged), and
+   `ManualFoldedForward.forward` threads it through all four construction
+   faces: eager layer kwargs (signature-filtered), serial/batched graph
+   capture (`position_ids_static`), pool replay (`is` identity validation),
+   and the AR017 adaptive re-capture. On a batch-1 no-pad canvas
+   `compute_position_ids(mask)` is value-identical to the model's internal
+   default, so the N=0 reference loop is byte-untouched.
+6. **Tuple-returning remote blocks** — the real LLaDA remote blocks return
+   `(hidden, ...)` tuples; `FoldedTransformerLayer._pack_output` re-wraps
+   `(hidden, None)` for the in-place-FoldedModel control flow, and MFF's
+   eager layer loop consumes the first element (the `_recompute_all`
+   convention). Fast-dLLM's remote layers return bare tensors, which is why
+   the tuple face surfaced only at AR023's cross-family smoke. The graph
+   static body (`FoldedGraphRunner`'s own layer loop) does NOT unwrap —
+   unwrap it before any tuple-layer graph capture.
+
+Default-off (`num_block_candidates=0`) is byte-identical to the reference
+samplers. Empirical face: on Fast-dLLM-v2-1.5B the greedy-anchored mode
+restored baseline quality (posthoc gap 0.0, decode lengths and merged block
+exact-match fully recovered) at p50 **7.02×** vs baseline (AR022 artifact
+`results/optimization/ar022_speculative_quality_bench.json`, H1–H4 all
+supported); cross-family LLaDA-8B/Dream-7B verdicts are pre-committed
+reps=30 single runs in `results/optimization/ar023_{llada,dream}_bench.json`
+(AR023). The greedy-anchored quality recovery is **family-dependent** —
+see the AR023 artifacts for the per-family hierarchical quality faces
+(Dream's gradual super-step denoising preserves the quality face far better
+than LLaDA's whole-block one-shot commit).
+

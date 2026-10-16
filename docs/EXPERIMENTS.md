@@ -357,6 +357,108 @@ config = FastDLLMSamplerConfig(
 > results should be validated against the official implementation for the
 > target checkpoint.
 
+### Speculative Block Decoding (all diffusion families)
+
+`LLaDASampler` and `DreamSampler` share one speculative mechanism core
+(`actfold.models.speculative_core.SpeculativeCore`, AR023);
+`FastDLLMSampler` keeps its original inline implementation as the
+constant-compatible reference face (identical frozen constants, pinned by
+UT parity — it does not inherit the core). With
+`num_block_candidates > 0` the sampler builds an `[N, T]` candidate
+canvas per decode unit (Fast-dLLM small block / LLaDA block / Dream
+super-step window), verifies it with **one batched folded forward**, and
+commits the winner by the min-prob rule (worst fill position maximized).
+`candidate_include_greedy=True` (AR022) pins row 0 to the greedy hypothesis —
+the anchor that restored baseline quality on Fast-dLLM-v2-1.5B.
+
+| Parameter | Default | Description |
+|---|---|---|
+| ``num_block_candidates`` | 0 | Total candidate rows N (0 = off, byte-identical to the reference sampler) |
+| ``candidate_top_k`` | 10 | Draft top-k pool the random rows sample from |
+| ``candidate_include_greedy`` | False | Pin row 0 to the greedy (argmax) hypothesis |
+| ``speculative_steps`` | 8 | Dream only: super-step window size over the transfer schedule |
+
+```python
+from actfold.models.dream_sampler import DreamSamplerConfig
+
+config = DreamSamplerConfig(
+    num_steps=512,
+    num_tokens=256,
+    num_block_candidates=4,       # speculative canvas [4, T]
+    candidate_top_k=10,
+    candidate_include_greedy=True,  # greedy anchor row 0
+    speculative_steps=8,
+)
+```
+
+Requirements and caveats: the speculative path requires B==1, a
+``branch_ids``-capable ``folded_model`` (`ManualFoldedForward`), and
+``cfg_scale <= 0`` (the code face rejects `cfg_scale > 0`;
+construction- or call-time `ValueError` otherwise — never a silent
+downgrade). The same keys are consumed from YAML
+(``num_block_candidates`` / ``candidate_top_k`` / ``candidate_include_greedy``)
+without the unknown-key warning; see the commented speculative sections in
+``configs/per_model/llada_8b.yaml`` / ``dream_7b.yaml``. The per-candidate
+seed formula is frozen and host-reproducible; see `docs/ALGORITHM.md` §13 for
+the full mechanism and AGENTS.md #43–#45 for the operational contracts.
+
+---
+
+## 7. Cross-Family Probe and Benchmark (AR023)
+
+Two scripts exercise the speculative stack against **real remote-code
+checkpoints** (LLaDA-8B-Base, Dream-v0-Base-7B). Run both from a
+transformers-4.53.1 environment (see `docs/RERUN_CHECKLIST.md` §1 and step
+13 for the full rerun recipe, VRAM expectations, and pre-commitment
+discipline).
+
+### Family probe — `scripts/ar023_family_probe.py`
+
+Per-family viability gate run **before** any formal benchmark: curl download
+manifest + SHA256 verification, transformers 4.53.1 load, bf16 VRAM
+measurement, bitsandbytes int8 Windows feasibility, short-generation smoke,
+CUDA-graph capture headroom, and prompt adaptation (Dream's custom attention
+rejects int64 masks — the probe uses bool masks throughout).
+
+```bash
+python -m scripts.ar023_family_probe --models-root <weights dir> --hf-home <cache dir>
+```
+
+Artifact: ``results/optimization/ar023_family_probe.json``. CUDA faces run
+subprocess-isolated: a graph-face allocator assert can corrupt process-level
+CUDA state, so a degrade in one face never poisons the others. Recorded
+conclusions (Quadro RTX 5000 16GB): both families load in bf16 with
+``degraded=False``; **graph capture is disabled** for both (headroom), so
+the benchmark below records the eager-neutral note.
+
+### Four-mode benchmark — `scripts/ar023_cross_family_bench.py`
+
+Four modes over one shared model instance, prompt set, and seed 2026:
+**baseline** (the family's official recipe, no folded model),
+**folded-serial** (N=0 + one ManualFoldedForward chain), **folded-batched**
+(N=4, top_k=10), and **folded-batched-greedy** (an independently constructed
+identical MFF + `candidate_include_greedy=True` — same shape/seed/prompt A/B
+that constructively zeroes the speed variable).
+
+```bash
+python -m scripts.ar023_cross_family_bench --family llada --models-root <weights dir> --reps 30
+python -m scripts.ar023_cross_family_bench --family dream --models-root <weights dir> --reps 30
+```
+
+Artifacts: ``results/optimization/ar023_llada_bench.json`` /
+``ar023_dream_bench.json`` (formal) and ``..._bench_quick.json``
+(``--quick`` smoke = 1 prompt / reps=3 / 64 tokens — never overwrites the
+formal artifact). Frozen verdict gates: **H1** hierarchical quality
+(aligned-vs-baseline posthoc gap ≤ 0.5 of the batched gap, decode-length
+recovery per prompt, merged block-grid exact-match strictly improving),
+**H2** strict speedup `p50(baseline)/p50(aligned) > 1.0`, **H4**
+canary/ledger full-stack conjunction. The baseline mode is sampled twice per
+prompt as a reproduction self-check — a strict mismatch blocks **all**
+verdicts; a degraded family or any single-mode failure (e.g. OOM) writes an
+honest ``blocked`` artifact with the probe cross-reference and zero
+fabricated numbers. Timing follows the pre-committed single-run discipline
+(#39: host `perf_counter` + `cuda.synchronize`, reps=30, no rerun fishing).
+
 ---
 
 ## 8. Programmatic Real Model Benchmark
@@ -443,6 +545,19 @@ ModelRegistry.register("my_family", MyDiffusionLLM)
 model_name_or_path: "organization/my-model"
 model_family: "my_family"
 ```
+
+4. To give the family's reference sampler the shared speculative mechanism
+   (AR023), subclass both `DiffusionSampler` and `SpeculativeCore` and
+   implement only the canvas/payload semantics — one speculative unit's
+   `_build_unit_forced` region, its `SpecCtx(mask, position)` (rotary cargo
+   only if the family's remote attention requires it), the host
+   `_spec_ctx_for(x, prompt_len)` canvas adapter (the LRU skeleton lives in
+   the core), the counter initialization (`_greedy_wins` /
+   `_greedy_spec_calls`) in the sampler's own `__init__` (the core defines
+   **no** `__init__`), and the entry validations. The commit rule, seed
+   formula, ctx LRU, and `greedy_win_stats` probe come from the core (see
+   `docs/ALGORITHM.md` §13 and `LLaDASampler` / `DreamSampler` for the two
+   worked examples).
 
 ---
 

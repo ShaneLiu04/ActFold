@@ -144,6 +144,36 @@ python demo.py
 #    2.381× 与 AR021 2.3795× 跨工件一致）；greedy_win_rate 1.0（2/2 观测面）；
 #    复现自检 strict PASS（batched sidecar 逐位==AR021 先验，无
 #    reproduction_anomaly）
+#
+# 13) AR023 跨族投机（LLaDA-8B-Base + Dream-v0-Base-7B 真实 checkpoint）
+#     a) 权重下载（探针脚本自带 curl 清单 + SHA256 校验；~30GB 总量，
+#        断点续传 `-C -`，已完成文件自动跳过重下仅重验）：
+# <venv目录>\Scripts\python -m scripts.ar023_family_probe \
+#     --models-root <权重根目录> --hf-home <HF缓存目录>
+#     工件：results/optimization/ar023_family_probe.json
+#     （两族结论 dtype_choice/graph_enabled/degraded；CUDA 五面子进程隔离
+#      ——图面分配器断言会损坏进程级 CUDA 状态，勿与其它 GPU 任务同进程；
+#      Dream 自定义注意力拒 int64 mask，探针已统一 bool mask）
+#     定案结论：两族均 bf16 / degraded=False / graph_enabled=False
+#     （llada bf16 15265MB/int8 10966MB；dream bf16 14836.7MB/int8 12093MB）
+#     b) 四模式跨族基准（预承诺单次纪律，不重跑钓鱼；每族一工件；
+#        全量 reps=30/P=2/128 token，LLaDA 全程 ~4-5h、Dream ~6-8h
+#        （8B bf16 单卡），--quick 冒烟 = 单 prompt/reps=3/64 token
+#        每族 ~10min，写独立 _quick 工件、永不覆写正式工件）：
+# <venv目录>\Scripts\python -m scripts.ar023_cross_family_bench \
+#     --family llada --models-root <权重根目录> --reps 30
+# <venv目录>\Scripts\python -m scripts.ar023_cross_family_bench \
+#     --family dream --models-root <权重根目录> --reps 30
+#     工件：results/optimization/ar023_llada_bench.json /
+#           results/optimization/ar023_dream_bench.json
+#     （H1 分级质量门三硬面 + 0.5 比值（边界含 1e-9 IEEE 噪声 epsilon）+
+#      None-mean 拒判 + gap_bat==0 哨兵；H2 严格 >1.0；H4 canary/ledger 合取
+#      + graph-off 中性注记 + 每模式 profiler 窗口 stable ratio；
+#      baseline 双跑复现自检 strict 失配 ⇒ 全 verdict 置 blocked；
+#      degraded 族/单模式失败（如 OOM）⇒ blocked 工件 + 探针交叉引用，
+#      零伪造数字）
+#     对照数字：（T006 定案后回填——预承诺 reps=30 单次，两族四模式
+#      p50/H1-H4 verdict 以工件为准，勿以 --quick 冒烟数字替代）
 ```
 
 ## 4. 方法学要求（重跑必须满足）
