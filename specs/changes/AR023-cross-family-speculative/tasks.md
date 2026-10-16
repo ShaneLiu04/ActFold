@@ -103,6 +103,13 @@
 - **全量基线**：**1022 passed / 0 failed / 4 skipped**（canonical deselect 口径）——951→968→998→1011→1022 只增不减成立（+9 bench UT-2326~2334、+UT-2311 Dream N=0 position_ids 缺口修复新增、+UT-2335 MFF 元组解包架构面）。
 - **T005 定案 passing**：T006 两族均非 degraded → 均需正式 reps=30 定案基准（预承诺单次定案，墙钟纪律 #39）。
 
+### 2026-10-16 T007 初轮（系统 python 环境定性 + llada 正式基准进行中）
+
+- **环境背景**：AR023 llada 正式基准（reps=30，T006）正在本机 ar019 venv 运行（12:35 起，bf16 LLaDA-8B）——T007 完整执行（全量 pytest/四件套/demo 锚点）须待基准完成并在 ar019 venv 复跑，避免负载噪声污染性能类用例（BS007 教训）+bench 依赖完整口径（前会话 canonical 基线 1022/0/4 即 venv 口径）。
+- **系统 python（C:\Python311）初轮**：1021 passed / 3 failed / 4 skipped（729s）。3 failed 定性：2×`ModuleNotFoundError: lm_eval`（`test_benchmark_runner_real_judges`/`test_lm_eval_judge_prompts_and_score`——系统环境未装 bench 依赖，前会话 1022/0/4 在装全 lm_eval 的 ar019 venv 取得，环境漂移非代码回归）+ 1×性能类单测在 llada 基准 CPU/GPU 竞争负载下失败（同类 BS007 单独重跑 10min 超时不可判——负载噪声，机器空闲+venv 环境后复验）。`.pytest_cache/lastfailed` 另含 2 条陈旧缓存项（UT-1403 已不存在于当前测试集）非本次失败。
+- **AGENTS.md 双规则增补**（用户指令落实）：①Experimental Validation Rule（每个创新 AR 的有效性主张必须经预注册假设/reps≥30/多几何/同环境 A/B/跨工件对照/双指标/诚实负结果/工件溯源的丰富实验协议——AR017-AR023 线标准化为最低标准）；②Gitee Segment-Push Protocol（commit-tree 部分树快进链+双端树验证——T011 推送协议提前固化，永久 commit 分歧为预期不变量）。
+- T007 保持 pending：llada 基准完成 → ar019 venv 全量（期望 1022+/0/4 只增不减）+ pyflakes/mypy/black + demo 三锚点。
+
 
 ## 阶段门控记录
 
