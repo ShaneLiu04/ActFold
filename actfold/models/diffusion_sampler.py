@@ -162,7 +162,12 @@ class DiffusionSampler(ABC):
         non-``None`` (a ``None`` adds no kwarg, so legacy ``FoldedModel``
         instances and existing callers stay byte-for-byte unchanged), and the
         raw-model branch below never sees them (the raw path keeps its
-        ``attention_mask``-only contract).
+        ``attention_mask``-only contract). AR023: ``position_ids`` follows
+        the same attach-only-when-non-``None`` rule on the folded branch
+        (the Dream left-padded fold context threads a
+        ``compute_position_ids`` payload; a ``None`` adds no kwarg so
+        existing folded callers stay byte-for-byte unchanged), while the
+        raw-model branch keeps consuming it directly.
 
         Raises:
             ValueError: If ``forced_divergent`` is supplied and is not a
@@ -185,6 +190,8 @@ class DiffusionSampler(ABC):
                 )
         if folded_model is not None:
             fold_kwargs: dict[str, Any] = {}
+            if position_ids is not None:
+                fold_kwargs["position_ids"] = position_ids
             if position_embeddings is not None:
                 fold_kwargs["position_embeddings"] = position_embeddings
             if branch_ids is not None:

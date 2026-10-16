@@ -33,6 +33,14 @@ load_in_4bit: false
 torch_dtype: null
 device_map: null
 
+# Cross-family speculative super-step verification (AR023). Default OFF —
+# the reference per-step recipe runs unchanged. The operational fields and
+# their validation live on DreamSamplerConfig (speculative_steps: 8 is the
+# sampler default); uncomment to enable:
+# num_block_candidates: 4
+# candidate_top_k: 10
+# candidate_include_greedy: true
+
 # Evaluation backend configuration.
 use_real_eval: true
 eval_backend: "auto"

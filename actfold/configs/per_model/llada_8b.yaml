@@ -33,6 +33,13 @@ load_in_4bit: false
 torch_dtype: null
 device_map: null
 
+# Cross-family speculative block verification (AR023). Default OFF — the
+# reference remasking recipe runs unchanged. The operational fields and
+# their validation live on LLaDASamplerConfig; uncomment to enable:
+# num_block_candidates: 4
+# candidate_top_k: 10
+# candidate_include_greedy: true
+
 # Evaluation backend configuration.
 use_real_eval: true
 eval_backend: "auto"

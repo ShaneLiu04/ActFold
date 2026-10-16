@@ -477,6 +477,7 @@ class ManualFoldedForward(nn.Module):
         self.graph_runner: Any = None
         self._graph_mask: Any = None
         self._graph_pe: Any = None
+        self._graph_position_ids: Any = None
         self._graph_degraded_warned = False
         self._graph_shape_warned = False
         self._graph_budget_warned = False
@@ -490,6 +491,7 @@ class ManualFoldedForward(nn.Module):
         self.graph_runner_batched: Any = None
         self._graph_batched_mask: Any = None
         self._graph_batched_pe: Any = None
+        self._graph_batched_position_ids: Any = None
         self._graph_batched_shape_warned = False
         self._graph_batched_budget_warned = False
         self._graph_batched_capture_failed = False
@@ -590,6 +592,7 @@ class ManualFoldedForward(nn.Module):
         branch_ids: Sequence[str] | None = None,
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> Any:
         """Run a folded forward pass and return logits or hidden states.
 
@@ -630,6 +633,20 @@ class ManualFoldedForward(nn.Module):
                 refresh the content through the runner's static buffer on
                 every replay. ``None`` (the default) attaches no kwarg at
                 all, so existing callers are byte-for-byte unchanged.
+            position_ids: Optional ``position_ids`` tensor (AR023, the
+                AR019 ``position_embeddings`` threading template applied to
+                Dream's left-padded fold context — one
+                ``compute_position_ids`` payload per ``(T, prompt_len)``
+                window). Threaded through every construction face:
+                serial/batched eager (forwarded as a layer kwarg, dropped
+                by ``_recompute_all`` for layers without the parameter),
+                the CUDA-graph capture (baked by reference into the static
+                body), and the adaptive re-capture. The graph path requires
+                the SAME tensor object on every replay after capture
+                (``is`` identity, mirroring the ``position_embeddings``
+                contract); a different object silently falls back to eager.
+                ``None`` (the default) attaches no kwarg at all, so
+                existing callers are byte-for-byte unchanged.
 
         Returns:
             Output of the language modeling head, typically logits
@@ -640,11 +657,13 @@ class ManualFoldedForward(nn.Module):
                 not a 2-tuple of tensors whose seq dimension
                 (``shape[-2]``) matches ``tokens``' sequence length and
                 whose ``cos``/``sin`` head dimensions (``shape[-1]``)
-                agree (host-side metadata only, no device sync); or if
-                ``forced_divergent`` is not ``None`` and is not a boolean
-                tensor whose last dimension matches ``tokens``' sequence
-                length with the serial/batched form above (host-side
-                metadata only).
+                agree; if ``forced_divergent`` is not ``None`` and is not
+                a boolean tensor whose last dimension matches ``tokens``
+                sequence length with the serial/batched form above; or if
+                ``position_ids`` is not ``None`` and is not an integer
+                tensor of shape ``[seq_len]``, ``[1, seq_len]`` or
+                ``[batch, seq_len]`` matching ``tokens`` (host-side
+                metadata only, no device sync).
         """
         if position_embeddings is not None:
             if (
@@ -700,6 +719,32 @@ class ManualFoldedForward(nn.Module):
                     f"shape {expected_forms}; got {tuple(forced_divergent.shape)} "
                     f"for tokens {tuple(tokens.shape)}."
                 )
+        if position_ids is not None:
+            if not isinstance(position_ids, torch.Tensor) or position_ids.dtype not in (
+                torch.int64,
+                torch.int32,
+            ):
+                raise ValueError(
+                    "position_ids must be None or an integer torch.Tensor; "
+                    f"got dtype {getattr(position_ids, 'dtype', None)!r}."
+                )
+            seq_len = int(tokens.shape[-1])
+            batch = int(tokens.shape[0])
+            if position_ids.dim() == 1:
+                form_ok = position_ids.shape[0] == seq_len
+            elif position_ids.dim() == 2:
+                form_ok = position_ids.shape[1] == seq_len and position_ids.shape[0] in (
+                    1,
+                    batch,
+                )
+            else:
+                form_ok = False
+            if not form_ok:
+                raise ValueError(
+                    "position_ids must be None or an integer tensor of shape "
+                    f"[{seq_len}], [1, {seq_len}] or [{batch}, {seq_len}]; got "
+                    f"{tuple(position_ids.shape)} for tokens {tuple(tokens.shape)}."
+                )
         if branch_ids is not None:
             if branch_id is not None:
                 raise ValueError(
@@ -720,6 +765,7 @@ class ManualFoldedForward(nn.Module):
                     step_idx,
                     position_embeddings,
                     forced_divergent,
+                    position_ids,
                 )
                 if graph_out is not None:
                     return graph_out
@@ -735,6 +781,7 @@ class ManualFoldedForward(nn.Module):
                 step_idx,
                 position_embeddings,
                 forced_divergent,
+                position_ids,
             )
             if graph_out is not None:
                 return graph_out
@@ -755,6 +802,12 @@ class ManualFoldedForward(nn.Module):
         forced_kwargs: dict[str, Any] = (
             {"forced_divergent": forced_divergent} if forced_divergent is not None else {}
         )
+        # AR023: same rule for the position payload (the Dream fold
+        # context); ``None`` adds no kwarg so existing eager callers stay
+        # byte-for-byte unchanged.
+        pos_ids_kwargs: dict[str, Any] = (
+            {"position_ids": position_ids} if position_ids is not None else {}
+        )
         for wrapped in self._wrapped_layers:
             x = wrapped(
                 x,
@@ -765,7 +818,15 @@ class ManualFoldedForward(nn.Module):
                 branch_ids=branch_ids,
                 **pe_kwargs,
                 **forced_kwargs,
+                **pos_ids_kwargs,
             )
+            # Tuple-returning layers (e.g. the real LLaDA remote blocks): the
+            # wrapped layer re-wraps its output as ``(hidden, None)`` for the
+            # in-place FoldedModel control flow (AGENTS #13); MFF's own eager
+            # loop consumes the first element -- the same convention
+            # ``_recompute_all`` applies to the original layer outputs.
+            if isinstance(x, tuple):
+                x = x[0]
 
         # Apply the final normalization (e.g. LLaMA ``model.norm``) before the
         # head. Skipping it silently biased logits vs. the raw model forward.
@@ -852,6 +913,7 @@ class ManualFoldedForward(nn.Module):
         runner: Any,
         attention_mask: Any,
         position_embeddings: Any | None,
+        position_ids: torch.Tensor | None = None,
     ) -> None:
         """Insert a captured serial runner into the pool (LRU + stats).
 
@@ -879,6 +941,7 @@ class ManualFoldedForward(nn.Module):
         self.graph_runner = runner
         self._graph_mask = attention_mask
         self._graph_pe = position_embeddings
+        self._graph_position_ids = position_ids
 
     def _graph_forward_or_none(
         self,
@@ -889,6 +952,7 @@ class ManualFoldedForward(nn.Module):
         step_idx: int,
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> Any:
         """Try the CUDA graph fast path; return logits or ``None`` for eager.
 
@@ -995,6 +1059,9 @@ class ManualFoldedForward(nn.Module):
             if position_embeddings is not None and not position_embeddings[0].is_cuda:
                 self._degradation_fallback_count += 1
                 return None
+            if position_ids is not None and not position_ids.is_cuda:
+                self._degradation_fallback_count += 1
+                return None
             if forced_divergent is not None and not forced_divergent.is_cuda:
                 self._degradation_fallback_count += 1
                 return None
@@ -1012,6 +1079,7 @@ class ManualFoldedForward(nn.Module):
                 attention_mask_static=attention_mask,
                 position_embeddings_static=position_embeddings,
                 forced_divergent_static=forced_divergent,
+                position_ids_static=position_ids,
             )
             try:
                 new_runner.capture(
@@ -1028,11 +1096,14 @@ class ManualFoldedForward(nn.Module):
             runner = new_runner
             fresh_capture = True
             if pool_on:
-                self._install_serial_runner(key, runner, attention_mask, position_embeddings)
+                self._install_serial_runner(
+                    key, runner, attention_mask, position_embeddings, position_ids
+                )
             else:
                 self.graph_runner = new_runner
                 self._graph_mask = attention_mask
                 self._graph_pe = position_embeddings
+                self._graph_position_ids = position_ids
         else:
             if pool_on:
                 # Mask identity is guaranteed by the pool key; the rotary
@@ -1042,8 +1113,13 @@ class ManualFoldedForward(nn.Module):
                 if position_embeddings is not getattr(runner, "_position_embeddings_static", None):
                     self._degradation_fallback_count += 1
                     return None
+                if position_ids is not getattr(runner, "_position_ids_static", None):
+                    self._degradation_fallback_count += 1
+                    return None
             elif (
-                attention_mask is not self._graph_mask or position_embeddings is not self._graph_pe
+                attention_mask is not self._graph_mask
+                or position_embeddings is not self._graph_pe
+                or position_ids is not self._graph_position_ids
             ):
                 # The captured graph bakes the attention mask and the rotary
                 # embeddings in; a different object must not silently reuse
@@ -1076,6 +1152,7 @@ class ManualFoldedForward(nn.Module):
             self.graph_runner = runner
             self._graph_mask = attention_mask
             self._graph_pe = position_embeddings
+            self._graph_position_ids = position_ids
         if runner.budget_exceeded:
             self._degradation_fallback_count += 1
             if not self._graph_budget_warned:
@@ -1135,6 +1212,7 @@ class ManualFoldedForward(nn.Module):
         runner: Any,
         attention_mask: Any,
         position_embeddings: Any | None,
+        position_ids: torch.Tensor | None = None,
     ) -> None:
         """Insert a captured batched runner into the pool (LRU + stats).
 
@@ -1158,6 +1236,7 @@ class ManualFoldedForward(nn.Module):
         self.graph_runner_batched = runner
         self._graph_batched_mask = attention_mask
         self._graph_batched_pe = position_embeddings
+        self._graph_batched_position_ids = position_ids
 
     def _graph_forward_batched_or_none(
         self,
@@ -1168,6 +1247,7 @@ class ManualFoldedForward(nn.Module):
         step_idx: int,
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> Any:
         """Try the batched CUDA graph fast path; return logits or ``None``.
 
@@ -1259,6 +1339,9 @@ class ManualFoldedForward(nn.Module):
             if position_embeddings is not None and not position_embeddings[0].is_cuda:
                 self._degradation_fallback_count += 1
                 return None
+            if position_ids is not None and not position_ids.is_cuda:
+                self._degradation_fallback_count += 1
+                return None
             if forced_divergent is not None and not forced_divergent.is_cuda:
                 self._degradation_fallback_count += 1
                 return None
@@ -1276,6 +1359,7 @@ class ManualFoldedForward(nn.Module):
                 attention_mask_static=attention_mask,
                 position_embeddings_static=position_embeddings,
                 forced_divergent_static=forced_divergent,
+                position_ids_static=position_ids,
             )
             try:
                 new_runner.capture(
@@ -1292,19 +1376,26 @@ class ManualFoldedForward(nn.Module):
             runner = new_runner
             fresh_capture = True
             if pool_on:
-                self._install_batched_runner(key, runner, attention_mask, position_embeddings)
+                self._install_batched_runner(
+                    key, runner, attention_mask, position_embeddings, position_ids
+                )
             else:
                 self.graph_runner_batched = new_runner
                 self._graph_batched_mask = attention_mask
                 self._graph_batched_pe = position_embeddings
+                self._graph_batched_position_ids = position_ids
         else:
             if pool_on:
                 if position_embeddings is not getattr(runner, "_position_embeddings_static", None):
                     self._degradation_fallback_count += 1
                     return None
+                if position_ids is not getattr(runner, "_position_ids_static", None):
+                    self._degradation_fallback_count += 1
+                    return None
             elif (
                 attention_mask is not self._graph_batched_mask
                 or position_embeddings is not self._graph_batched_pe
+                or position_ids is not self._graph_batched_position_ids
             ):
                 # The captured graph bakes the attention mask and the rotary
                 # embeddings in; a different object must not silently reuse
@@ -1343,6 +1434,7 @@ class ManualFoldedForward(nn.Module):
             self.graph_runner_batched = runner
             self._graph_batched_mask = attention_mask
             self._graph_batched_pe = position_embeddings
+            self._graph_batched_position_ids = position_ids
         if runner.budget_exceeded:
             self._degradation_fallback_count += 1
             if not self._graph_batched_budget_warned:
@@ -1366,6 +1458,7 @@ class ManualFoldedForward(nn.Module):
                 exceeded=True,
                 position_embeddings=position_embeddings,
                 forced_divergent=forced_divergent,
+                position_ids=position_ids,
             )
             return None
         self._publish_graph_children(runner, tokens, branch_ids, parent_branch_id, step_idx)
@@ -1381,6 +1474,7 @@ class ManualFoldedForward(nn.Module):
             exceeded=False,
             position_embeddings=position_embeddings,
             forced_divergent=forced_divergent,
+            position_ids=position_ids,
         )
         return logits.clone()
 
@@ -1524,6 +1618,7 @@ class ManualFoldedForward(nn.Module):
         exceeded: bool,
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> None:
         """Run the adaptive-capacity policy hook (AR017; no-op when off).
 
@@ -1563,6 +1658,7 @@ class ManualFoldedForward(nn.Module):
                 attention_mask,
                 position_embeddings=position_embeddings,
                 forced_divergent=forced_divergent,
+                position_ids=position_ids,
             )
         elif action.kind == "retired":
             if not self._graph_adaptive_retire_warned:
@@ -1584,6 +1680,7 @@ class ManualFoldedForward(nn.Module):
         attention_mask: Any,
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
+        position_ids: torch.Tensor | None = None,
     ) -> None:
         """Re-capture the batched runner at a new capacity (AR017).
 
@@ -1627,6 +1724,7 @@ class ManualFoldedForward(nn.Module):
             attention_mask_static=attention_mask,
             position_embeddings_static=position_embeddings,
             forced_divergent_static=forced_divergent,
+            position_ids_static=position_ids,
         )
         try:
             new_runner.capture(
@@ -1650,11 +1748,14 @@ class ManualFoldedForward(nn.Module):
             return
         if self.graph_runner_pool_size > 0:
             key = (tuple(tokens.shape), attention_mask)
-            self._install_batched_runner(key, new_runner, attention_mask, position_embeddings)
+            self._install_batched_runner(
+                key, new_runner, attention_mask, position_embeddings, position_ids
+            )
         else:
             self.graph_runner_batched = new_runner
             self._graph_batched_mask = attention_mask
             self._graph_batched_pe = position_embeddings
+            self._graph_batched_position_ids = position_ids
         policy = self._graph_adaptive_policy
         if policy is not None:
             policy.note_recaptured()

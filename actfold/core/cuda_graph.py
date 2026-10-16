@@ -71,6 +71,12 @@ class FoldedGraphRunner:
             position scheme (``arange(T)``, no KV cache) makes the values
             shape-fixed so a single reference serves every replay. Pass
             ``None`` when the wrapped layers need no rotary embeddings.
+        position_ids_static: Optional ``position_ids`` tensor baked BY
+            REFERENCE into every capture/replay (AR023, mirroring the AR019
+            ``position_embeddings_static`` contract); the Dream family pins
+            one ``compute_position_ids`` payload per ``(T, prompt_len)``
+            fold context, so a single reference serves every replay. Pass
+            ``None`` when the wrapped layers need no explicit positions.
     """
 
     def __init__(
@@ -86,6 +92,7 @@ class FoldedGraphRunner:
         attention_mask_static: torch.Tensor | None,
         position_embeddings_static: tuple[torch.Tensor, torch.Tensor] | None = None,
         forced_divergent_static: torch.Tensor | None = None,
+        position_ids_static: torch.Tensor | None = None,
     ) -> None:
         if not 0.0 < capacity_ratio <= 1.0:
             raise ValueError(f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}")
@@ -101,6 +108,7 @@ class FoldedGraphRunner:
         self._capacity_ratio = float(capacity_ratio)
         self._attention_mask_static = attention_mask_static
         self._position_embeddings_static = position_embeddings_static
+        self._position_ids_static = position_ids_static
         self._forced_divergent_static = (
             forced_divergent_static.detach().clone()
             if forced_divergent_static is not None
@@ -459,18 +467,21 @@ class FoldedGraphRunner:
                     "num_divergent": 0,
                 }
             try:
+                # AR019/AR023: attach the baked rotary tuple / position_ids
+                # as layer kwargs ONLY when supplied (a ``None`` value must
+                # not shadow a layer's own rotary/position computation);
+                # ``_recompute_all`` filters each kwarg against the original
+                # layer's signature.
+                extra_kwargs: dict[str, Any] = {}
                 if self._position_embeddings_static is not None:
-                    # AR019: attach the baked rotary tuple as a kwarg ONLY
-                    # when supplied (a ``None`` value must not shadow a
-                    # layer's own rotary computation); ``_recompute_all``
-                    # filters it against each original layer's signature.
-                    child_out = layer._recompute_all(
-                        x,
-                        self._attention_mask_static,
-                        position_embeddings=self._position_embeddings_static,
-                    )
-                else:
-                    child_out = layer._recompute_all(x, self._attention_mask_static)
+                    extra_kwargs["position_embeddings"] = self._position_embeddings_static
+                if self._position_ids_static is not None:
+                    extra_kwargs["position_ids"] = self._position_ids_static
+                child_out = layer._recompute_all(
+                    x,
+                    self._attention_mask_static,
+                    **extra_kwargs,
+                )
             finally:
                 if use_split:
                     layer._split_state = None  # type: ignore[union-attr]

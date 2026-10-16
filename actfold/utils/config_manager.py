@@ -111,6 +111,13 @@ class ActFoldConfig:
     # field exists so load_config consumes the key programmatically without
     # the unknown-key UserWarning (AGENTS #5).
     candidate_include_greedy: bool = False
+    # AR023: YAML consumption faces for the cross-family speculative block
+    # verification knobs (LLaDA/Dream family sampler configs). Same
+    # consumption-only pattern as candidate_include_greedy above: the
+    # operational fields and their validation live on the family sampler
+    # dataclasses (LLaDASamplerConfig / DreamSamplerConfig).
+    num_block_candidates: int = 0
+    candidate_top_k: int = 10
     max_new_tokens: int = 256
 
     def __post_init__(self) -> None:
