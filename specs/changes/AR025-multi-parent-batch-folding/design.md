@@ -5,7 +5,7 @@
 | AR 编号 | AR025 |
 | 关联 srs | ./srs.md rev 2 |
 | 日期 | 2026-10-16（rev 1）/ 2026-10-17（rev 2 修复） |
-| 状态 | rev 3（design 门控第 2 轮 **PASS**（ses_eb84f414fffefXCz2O1eIE44k6）：7 项修复全 VERIFIED+代码锚点实测全命中；Minor×4+Nit×4 当轮修入：DD2 伪代码残句/H1 CUDA M-shape 残余风险注记+归因字段/跨工件对照 AR023 同表补映射/PlantUML 构造性强制步骤/§6.1 胜者延续/合成面确定性注记/tasks 门控留档。历史：rev 2=第 1 轮 FAIL 修复 7 项） |
+| 状态 | rev 4（rev 3=design 门控第 2 轮 **PASS**（ses_eb84f414fffefXCz2O1eIE44k6）：7 项修复全 VERIFIED+代码锚点实测全命中；Minor×4+Nit×4 当轮修入：DD2 伪代码残句/H1 CUDA M-shape 残余风险注记+归因字段/跨工件对照 AR023 同表补映射/PlantUML 构造性强制步骤/§6.1 胜者延续/合成面确定性注记/tasks 门控留档。历史：rev 2=第 1 轮 FAIL 修复 7 项。**rev 4=T003 实现期 DD2 erratum（append-only 前缀捐赠，见 DD2 尾注）+ DD8a 真实面接线增补（T006 实现前定案，见 DD8 之后）——DD8a 门控 **PASS WITH CONDITIONS**（ses_eb75aa130ffeOVCYAtYBaDeYxf）：C1-C6 六项代码断言全 VERIFIED（对已提交 HEAD）/DD8 冻结判定式零改动/FR5 备选形态原文确认 in-scope；Major F1（W2 折叠链状态清单不全：`_folding_parent`/`_folding_counter` 实例级——单实例+per-chain 状态+双实例禁令）+Minor F2（合并闭包 kwargs 翻译）/F3（temperature==0 前置条件）/F4-F5（C2 措辞+Dream ctx 来源注记）+Nit N6/N7 **全部当轮修入 DD8a**——T006 实现解锁**） |
 
 > 章节说明：本 design 为六章式压缩版（0 总览→1 DD 决策〔内嵌功能点
 > 标注 FR〕→6.1 UT 矩阵→7 PlantUML→8 复用映射；§2-§5 需求/详设
@@ -256,6 +256,108 @@ AR023 T006 完成后）：
   （`ar023_llada_bench.json`/`ar023_dream_bench.json` 合批
   基线行并列——T008 README 表执行，基准脚本写入 cross_ref
   节引用 AR023 工件路径）。
+
+### DD8a 真实面接线增补（rev 4，T006 实现前定案）
+
+**缺口声明**：OQ2/rev 3 将 FR5 定案为 `folded_generate_batched`
+（生成循环形态——合成基准与 UT-2420..2424 已覆盖）；但 FR7 真实面
+要求"用户视角总收益"（A/B 净差=两 prompt 解码完成的端到端），其
+载体是**族采样器投机路径**（AR023 SpeculativeCore 面），即 srs
+FR5 的"批量投机服务入口"备选形态——rev 3 未细化，本增补定案。
+
+**结构约束（经已提交代码核实，C1-C6）**：
+
+- **C1**：`_speculative_commit` 每链画布 B==1 硬约束（#41
+  `[T,T]` mask 结构限制）——**合批只发生在候选验证 forward**
+  （`[N,T]`→`[2N,T]` 候选堆叠）；画布状态、草稿串行 forward
+  （`[1,T]`）、候选构造、评分/commit 规则全部 per-chain 零合并；
+- **C2**：族 fold ctx 键 `(T, prompt_len)`——**两链 prompt token
+  长度必须相等**（bench 定长 pad/截断，两 prompt 同长是合批
+  合法性前提）；等长 ⇒ 同调度 ⇒ 同 mask 值（LLaDA `valid_end`
+  同；Dream 无 pad ⇒ all-ones mask+arange position_ids 同）⇒
+  合批调用携带单一 2D mask + 单一 position 载荷即可（族形态
+  各异：LLaDA `position=None` 无 rotary cargo，Dream 为
+  `position_ids`——值等同即足；对象恒等 pin 仅图回放需要——
+  图面本 AR 冻结，Out-of-Scope）。Dream 侧实现注记：其 ctx
+  内容取自 `initialize` 设置的实例 `_attention_mask` 而非键
+  本身——联合循环须先完成两画布 initialize 再查 ctx，避免
+  "键 ⇒ 内容"依赖初始化顺序；
+- **C3**：候选构造 frozen seed 公式 per-chain 计数器
+  （`unit_idx`/`sub_idx` 链内自计数）与 `forced_divergent`
+  per-chain 构造零改动——A/B 两侧逐字节同构造（H1 构造性前提）；
+- **C4**：合批调用形态（DD1-DD7 机制面，已实现）：
+  `forward_fn(joint_cands [2N,T], branch_id=None,
+  branch_ids=[链1 cand ids..., 链2 cand ids...],
+  parent_branch_ids=[p1]*N + [p2]*N,
+  forced_divergent=两链 unit_forced stack)`——行序=链序×候选序
+  （DD7 约定沿用）；
+- **C5**：提前结束（某链 EOS/画布完成）⇒ 该链从合批摘除，余链
+  退化单链 `[N,T]`（DD7 单链提前结束语义同构——退出合批不阻塞
+  不终止）；
+- **C6**：H1 构造性依据：同权重/同候选构造（C3）/同父缓存
+  （各链草稿 forward 各自发布）/per-row 折叠行等价（T002 机制
+  parity+T003 前缀捐赠 erratum 已钉）——A vs B 每链 token 相等；
+  CUDA M-shape 残余风险沿 DD8 H1 注记（`h1_blocked_attribution`
+  归因字段，blocked 即诚实结论）。
+
+**接线三案**：
+
+- **W1 线程 hub**（两线程各跑 `sample()`，forward 闭包在 barrier
+  处合并请求）：**否决**——GIL 交错/错误路径死锁（一链异常挂
+  barrier）/确定性风险；
+- **W2 lockstep 联合循环 `sample_joint`（定案）**：族采样器新入口
+  `sample_joint(ids_list: list[Tensor], folded_model=...)`——
+  单线程共享块调度循环、per-chain 画布/finished/history 状态；
+  每 unit：两链草稿串行 forward（各自 `[1,T]`）→ 两链候选构造
+  （现行 frozen 公式）→ **一次** `[2N,T]` 合批验证 forward（C4）→
+  各链独立 min-prob 评分/commit/折叠链延续（现规则零改动；
+  `greedy_win_stats` 实例级记账——联合循环单实例驱动两链，
+  计数聚合，报告面语义不变）；C5 提前结束摘除；返回两链
+  输出（`SampleOutput` 列表，用户视角=两 prompt 解码完成）；
+  开关 off 时逐链 `sample()` 语义分发（DD7 回退模式同构）。
+  **折叠链状态清单（门控 F1 必修项）**：`_folding_parent`/
+  `_folding_counter` 为**实例级**链状态（`_next_folding_branch`
+  生成新 id、`_speculative_commit` 尾部写
+  `self._folding_parent = cand_branch_ids[j_star]`）——联合循环
+  必须**单实例驱动 + 显式 per-chain 折叠链状态**（链各自的
+  `_folding_parent` 与链内下一 draft id 指针），否则链 2 的
+  下个 draft 会错误挂到链 1 的胜者分支上，破坏 C6"同父缓存"
+  前提与 H1；反向禁令：**禁止双实例各跑一链**——`_folding_counter`
+  单实例化正是 branch id 全局唯一的来源（`llada_spec_b0_1`
+  之类的 id 命名含实例内计数），双实例会在共享缓存中 id 碰撞；
+  **前置条件（门控 F3）**：投机候选构造的确定性仅对
+  `temperature==0`（greedy 路径）成立——`sample_tokens` 在
+  temperature>0 时消费全局 RNG，交错联合循环 vs 背靠背
+  `sample()` 构造性发散；`sample_joint` 须在入口对
+  temperature>0 显式 `ValueError`（镜像 `sample()` 对
+  `cfg_scale>0` 的拒绝面），`stochastic_transfer` 同理须关；
+- **W3 core 配对 hook**（隐式合并）：**否决**——隐式耦合；单线程
+  下两链 `sample()` 的 commit 不交错，hook 无自然屏障点。
+
+**实现落点与复用**：`SpeculativeCore` 最小扩展——`_speculative_commit`
+内部按 **forward 接缝两段拆分**（门控 N7：含 forward 调用的单一
+helper 无法产出一次 `[2N,T]` 合批——必须拆为"候选构造"与
+"评分+commit"两段，接缝间的验证 forward 由联合循环提供合并版
+闭包）；合并闭包**kwargs 翻译**（门控 F2）：`_speculative_commit`
+冻结调用形态恒传单数 `parent_branch_id=draft_branch_id`，而 MFF
+面 `parent_branch_id` 与 `parent_branch_ids` 互斥（同传
+`ValueError`）——合并闭包须消费并覆写该单数 kwarg 为
+`parent_branch_ids=[p1]*N+[p2]*N` 后放行；`llada_sampler.py`/
+`dream_sampler.py` 各加 `sample_joint`（循环骨架复制自各自
+`sample()` 投机分支，画布状态与折叠链状态 per-chain，见 W2
+F1 清单）。**B 侧零新代码**（现行 `sample()` 逐 prompt 两次，
+开关 off，AR023 对齐模式配置原样）。碰撞注记：`llada_sampler.py`/
+`speculative_core.py`（及关联 `tests/test_llada_speculative.py`）
+现为 AR024 并行会话在飞（`dream_sampler.py` 当面干净——仍按在飞
+对待，实现统一待 AR024 落地后开工）。
+
+**UT 面（T006 前置机制守卫，合成族模型）**：`sample_joint`（on）vs
+逐链 `sample`（off）每链 token 逐位相等 + `write_op_count` 合批侧
+严格小；提前结束混合用例（链 1 早停后链 2 独立完成）；开关 off
+`sample_joint` 逐链语义等价。真实 reps=30 前的机制锚点（真实面
+沿 DD8 判定式原文，H1/H2/交付线/H4/canary 零改动；计时对象=两
+prompt 解码总墙钟：A=`sample_joint` 一次调用，B=`sample()` 背靠背
+两次——与 AR023 模式间测量同构；cross_ref 引用 AR023 工件路径）。
 
 ### DD9 模块影响与文件计划
 
