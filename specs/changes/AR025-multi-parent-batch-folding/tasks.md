@@ -15,7 +15,7 @@
 | T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | passing | UT-2401..UT-2415 全绿（16/16）；spy 计数面即 mutation-kill 探针（UT-2407 counts==[1]*L/UT-2410 counts==[0]*L/UT-2413 顶层 drop） |
 | T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | passing | UT-2416..UT-2424 全绿（9/9）+ UT-2427 谓词泛化；`_forward_batched_multi` 前缀捐赠修正（见进度记录） |
 | T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | passing | UT-2425/UT-2426 绿；known-key 过滤随 dataclass 字段自动生效；注释段落点 dream/fast_dllm 两 yaml（llada_8b.yaml 为 AR024 并行会话在飞文件，注释段随其提交后补） |
-| T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | pending | 判定式冻结入脚本 |
+| T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | passing | `scripts/ar025_multi_parent_bench.py` --mode synth：判定式 S1/S2/S3 冻结入脚本（DD8 原文）；8 点网格×双构造（nonsplit 逐位/split allclose 1e-6）；`--quick` 单点冒烟 CPU 过（S1/S2 supported，ops A/B/C=4/40/40，ratio 0.9，独立 _quick 工件）；正式 8 点面随 GPU 空闲执行（与 T006 同窗，"先不做实验"边界）；--mode real 为 T006 交付（诚实脚手架，parser.error 零伪数字） |
 | T006 | 真实 checkpoint 基准：LLaDA/Dream 双链并行投机合批 vs 分批 A/B（reps=30 预承诺单次定案，ar019 venv；AR023 T006 基准完成后执行）；工件 `ar025_multi_parent_bench.json` | T005 | pending | 待 GPU 空闲 |
 | T007 | 质量门：全量 pytest（1022/0/4 起只增不减，ar019 venv canonical 口径）+ pyflakes/mypy/black + demo 三锚点不动确认 | T003, T004 | pending | |
 | T008 | 文档五件：README 全量中文重写（AGENTS 强制规则）+ AGENTS 新条目（多 parent 契约）+ GUIDE 新部分 + CHANGELOG + RERUN 新步骤（数字工件溯源） | T006, T007 | pending | |
@@ -218,6 +218,39 @@
   AR024 并行会话在飞文件（llada_sampler/speculative_core/
   llada_8b.yaml/test_llada_granularity/ar024_granularity_bench/
   AR024 tasks.md）不碰。
+
+### 2026-10-17 T005 合成基准脚本完成（零实验先行，冒烟除外）
+
+- `scripts/ar025_multi_parent_bench.py`（DD8 名）：`--mode synth`
+  三方 A/B/C——A=合批（开关 on，一次 `[ΣN,T]` per-row
+  `parent_branch_ids`+put_batch 发布）/B=分批（开关 off，每链一次
+  `[N,T]` 单父批量+逐行 put，pre-AR025 现状）/C=串行（逐候选，
+  账本 report-only 上下文）；8 点网格（链 {2,4}×N {4,8}×T
+  {256,1024}）×双构造（nonsplit+split——真实面 pin
+  split_layers=False，split 1-ULP 风险面归本面 allclose(1e-6)
+  分档完整覆盖，G12 两面互补定案）。
+- 判定式冻结入脚本（先于数据）：S1 逐点 A vs B 对拍（nonsplit
+  `torch.equal`/split `torch.allclose(rtol=atol=1e-6)`，任一 FAIL
+  ⇒ 全 verdict blocked）；S2 `ops(A)<ops(B)` 严格（write_op_count
+  #42 语义，相等=零收益 blocked 从严）；S3 缩减比 report-only。
+  确定性单发无计时（计时统计=真实面 T006 专有）；默认 CPU（#41
+  逐位措辞 CPU 限定；CUDA 载 M-shape 数值边界风险注记入 meta，
+  blocked 即诚实结论方向从严不过松）；seed 冻结算式（1000·chains
+  +10·N+T//256+5·split，永不 Python hash）。
+- 合成模型：AR025 测试夹具族（cumsum 前缀稳定扫描+
+  post_attention_layernorm→mlp 可探测链+embedding/layers/head
+  自动发现布局）；中位单 token 替换构造（前缀逐位同父+cumsum
+  下行传播分歧=确定性混合 mask，循环零 RNG）；三侧同 seed 同权重
+  独立 cache/gate（互不可见）。
+- `--quick` 冒烟（CPU 单点 (2,4,256) 双构造）：S1 双构造过
+  （bitwise/allclose）、S2 过、ops A/B/C=4/40/40（A=每层一次
+  put_batch 4 层=4；B=C=8 行×(层0 记 2+他层各 1)=40——账本
+  区分发布粒度，B/C 同为逐行面）、S3 ratio 0.9；独立
+  `_quick` 工件（AR023 先例，正式 8 点面随 GPU 空闲与 T006
+  同窗执行）。
+- `--mode real` 诚实脚手架：parser.error 指向 T006（需 AR023
+  T006 工件；reps=30 预承诺单次），零伪数字。
+- lint：black（重排）/isort/pyflakes 过。
 
 
 ## 阶段门控记录
