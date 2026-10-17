@@ -75,27 +75,17 @@ class AdaptiveCapacityConfig:
 
     def __post_init__(self) -> None:
         if self.grow_factor < 1.0:
-            raise ValueError(
-                f"grow_factor must be >= 1.0, got {self.grow_factor}"
-            )
+            raise ValueError(f"grow_factor must be >= 1.0, got {self.grow_factor}")
         if not 0.0 < self.shrink_threshold < 1.0:
-            raise ValueError(
-                "shrink_threshold must be in (0, 1), got "
-                f"{self.shrink_threshold}"
-            )
+            raise ValueError("shrink_threshold must be in (0, 1), got " f"{self.shrink_threshold}")
         if self.shrink_patience < 1:
-            raise ValueError(
-                f"shrink_patience must be >= 1, got {self.shrink_patience}"
-            )
+            raise ValueError(f"shrink_patience must be >= 1, got {self.shrink_patience}")
         if self.min_recapture_interval < 1:
             raise ValueError(
-                "min_recapture_interval must be >= 1, got "
-                f"{self.min_recapture_interval}"
+                "min_recapture_interval must be >= 1, got " f"{self.min_recapture_interval}"
             )
         if self.max_recaptures < 1:
-            raise ValueError(
-                f"max_recaptures must be >= 1, got {self.max_recaptures}"
-            )
+            raise ValueError(f"max_recaptures must be >= 1, got {self.max_recaptures}")
 
 
 @dataclass(frozen=True)
@@ -175,9 +165,7 @@ class AdaptiveCapacityPolicy:
         self._pending = None
         if self._recapture_count >= self.config.max_recaptures:
             self._retired = True
-            self.events.append(
-                {"observe": self._observe_count, "kind": "retired"}
-            )
+            self.events.append({"observe": self._observe_count, "kind": "retired"})
             return AdaptiveAction("retired")
         if exceeded:
             target = min(

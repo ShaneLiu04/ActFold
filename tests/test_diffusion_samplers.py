@@ -608,9 +608,7 @@ def test_t018_llada_sync_count_batch_independent(monkeypatch: pytest.MonkeyPatch
     counts = _install_sync_counter(monkeypatch)
     model = T018DeterministicModel()
     prompt = torch.tensor([[2, 5, 7, 11]])
-    config = LLaDASamplerConfig(
-        num_steps=8, num_tokens=6, block_size=3, temperature=0.0, seed=7
-    )
+    config = LLaDASamplerConfig(num_steps=8, num_tokens=6, block_size=3, temperature=0.0, seed=7)
     sampler = LLaDASampler(model, config=config)
 
     out_b1 = sampler.sample(prompt)
@@ -637,9 +635,7 @@ def test_t018_llada_early_stop() -> None:
     mask tokens anywhere.
     """
     model = T018DeterministicModel()
-    config = LLaDASamplerConfig(
-        num_steps=8, num_tokens=0, block_size=1, temperature=0.0, seed=3
-    )
+    config = LLaDASamplerConfig(num_steps=8, num_tokens=0, block_size=1, temperature=0.0, seed=3)
     sampler = LLaDASampler(model, config=config)
     prompt = torch.tensor([[2, 5, 7, 11]])
 

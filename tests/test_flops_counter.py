@@ -160,15 +160,11 @@ def test_count_flops_moe_dense_mixed_layers() -> None:
     moe_num_layers=0 is bit-identical to pure dense; moe_num_layers ==
     num_layers is full MoE (identical to the default L_moe).
     """
-    mixed = count_diffusion_llm_flops(
-        **_moe_kwargs(moe_num_layers=2, ffn_intermediate_dim=384)
-    )
+    mixed = count_diffusion_llm_flops(**_moe_kwargs(moe_num_layers=2, ffn_intermediate_dim=384))
     moe_part = 2 * 3 * 256 * 128 * 2 * 2 * 64
     dense_part = 2 * 3 * 384 * 128 * 2 * 64
     assert mixed.ffn_tflops == (moe_part + dense_part) * 2 / 1e12
-    zero_moe = count_diffusion_llm_flops(
-        **_moe_kwargs(moe_num_layers=0, ffn_intermediate_dim=384)
-    )
+    zero_moe = count_diffusion_llm_flops(**_moe_kwargs(moe_num_layers=0, ffn_intermediate_dim=384))
     dense_ref = count_diffusion_llm_flops(**_dense_kwargs(ffn_intermediate_dim=384))
     assert zero_moe == dense_ref
     full_moe = count_diffusion_llm_flops(**_moe_kwargs(moe_num_layers=4))

@@ -217,9 +217,7 @@ class _LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": _VOCAB})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(_VOCAB, _HIDDEN)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)])
         self.model.norm = nn.LayerNorm(_HIDDEN)
         self.lm_head = nn.Linear(_HIDDEN, _VOCAB, bias=False)
 
@@ -364,8 +362,7 @@ def _publish_tensor_spy(runner: Any) -> Iterator[dict[str, int]]:
         "cpu": 0,
     }
     original = {
-        name: getattr(torch.Tensor, name)
-        for name in ("sum", "clone", "item", "tolist", "cpu")
+        name: getattr(torch.Tensor, name) for name in ("sum", "clone", "item", "tolist", "cpu")
     }
 
     def _sum(self: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
@@ -485,9 +482,7 @@ def _assert_activation_equivalent(
             batch_store = batch_layer[key]
             assert set(loop_store) == set(batch_store)
             for name in loop_store:
-                assert torch.equal(
-                    loop_store[name][:count], batch_store[name][:count]
-                ), (
+                assert torch.equal(loop_store[name][:count], batch_store[name][:count]), (
                     f"buffer mismatch for {(key[0], key[1], layer_idx, name)} "
                     f"within the first {count} rows"
                 )
@@ -511,25 +506,17 @@ def _assert_activation_fetch_face(
         )
         if not contains_a:
             with pytest.raises(KeyError):
-                loop_cache.fetch(
-                    branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-                )
+                loop_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
             with pytest.raises(KeyError):
-                batch_cache.fetch(
-                    branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-                )
+                batch_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
             continue
-        face_a = loop_cache.fetch(
-            branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-        )
-        face_b = batch_cache.fetch(
-            branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-        )
+        face_a = loop_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
+        face_b = batch_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
         assert set(face_a) == set(face_b)
         for name in face_a:
-            assert torch.equal(face_a[name], face_b[name]), (
-                f"fetch mismatch for {(branch_id, step_idx, layer_idx, name)}"
-            )
+            assert torch.equal(
+                face_a[name], face_b[name]
+            ), f"fetch mismatch for {(branch_id, step_idx, layer_idx, name)}"
 
 
 def _assert_vectorized_equivalent(
@@ -557,9 +544,7 @@ def _assert_vectorized_equivalent(
             batch_store = batch_branch[layer_idx]
             assert set(loop_store) == set(batch_store)
             for name in loop_store:
-                assert torch.equal(
-                    loop_store[name][:count], batch_store[name][:count]
-                ), (
+                assert torch.equal(loop_store[name][:count], batch_store[name][:count]), (
                     f"buffer mismatch for {(key[0], key[1], layer_idx, name)} "
                     f"within the first {count} rows"
                 )
@@ -586,9 +571,9 @@ def _assert_vectorized_fetch_face(
         face_b = batch_cache.get_all(branch_id, layer_idx, step_idx)
         assert set(face_a) == set(face_b)
         for name in face_a:
-            assert torch.equal(face_a[name], face_b[name]), (
-                f"fetch mismatch for {(branch_id, step_idx, layer_idx, name)}"
-            )
+            assert torch.equal(
+                face_a[name], face_b[name]
+            ), f"fetch mismatch for {(branch_id, step_idx, layer_idx, name)}"
 
 
 def _assert_chunked_equivalent(
@@ -601,8 +586,7 @@ def _assert_chunked_equivalent(
         keys_a = list(loop_cache._caches[layer_idx].keys())
         keys_b = list(batch_cache._caches[layer_idx].keys())
         assert keys_a == keys_b, (
-            f"layer {layer_idx}: chunk key order differs "
-            f"(loop={keys_a} batch={keys_b})"
+            f"layer {layer_idx}: chunk key order differs " f"(loop={keys_a} batch={keys_b})"
         )
         for key in keys_a:
             chunk_a = loop_cache._caches[layer_idx][key]
@@ -612,9 +596,9 @@ def _assert_chunked_equivalent(
             assert chunk_a.num_valid == chunk_b.num_valid
             assert set(chunk_a.data) == set(chunk_b.data)
             for name in chunk_a.data:
-                assert torch.equal(chunk_a.data[name], chunk_b.data[name]), (
-                    f"chunk data mismatch for {(key, name)}"
-                )
+                assert torch.equal(
+                    chunk_a.data[name], chunk_b.data[name]
+                ), f"chunk data mismatch for {(key, name)}"
     assert loop_cache.num_entries() == batch_cache.num_entries()
     assert loop_cache.num_tokens() == batch_cache.num_tokens()
     for layer_idx in set(loop_cache._caches):
@@ -638,20 +622,12 @@ def _assert_chunked_fetch_face(
         assert contains_a == contains_b
         if not contains_a:
             with pytest.raises(KeyError):
-                loop_cache.fetch(
-                    branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-                )
+                loop_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
             with pytest.raises(KeyError):
-                batch_cache.fetch(
-                    branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-                )
+                batch_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
             continue
-        face_a = loop_cache.fetch(
-            branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-        )
-        face_b = batch_cache.fetch(
-            branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-        )
+        face_a = loop_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
+        face_b = batch_cache.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
         assert set(face_a) == set(face_b)
         for name in face_a:
             assert torch.equal(face_a[name], face_b[name])
@@ -685,9 +661,9 @@ def _assert_activation_state_unchanged(
             store = odict[key]
             assert list(store.keys()) == list(store_snapshot.keys())
             for name, tensor in store_snapshot.items():
-                assert torch.equal(store[name], tensor), (
-                    f"buffer {(key, layer_idx, name)} must be byte-identical"
-                )
+                assert torch.equal(
+                    store[name], tensor
+                ), f"buffer {(key, layer_idx, name)} must be byte-identical"
 
 
 def _snapshot_vectorized_state(cache: VectorizedActivationCache) -> dict[str, Any]:
@@ -715,9 +691,9 @@ def _assert_vectorized_state_unchanged(
             store = branch[layer_idx]
             assert list(store.keys()) == list(store_snapshot.keys())
             for name, tensor in store_snapshot.items():
-                assert torch.equal(store[name], tensor), (
-                    f"buffer {(key, layer_idx, name)} must be byte-identical"
-                )
+                assert torch.equal(
+                    store[name], tensor
+                ), f"buffer {(key, layer_idx, name)} must be byte-identical"
 
 
 def _snapshot_chunked_state(cache: ChunkedActivationCache) -> dict[str, Any]:
@@ -755,9 +731,9 @@ def _assert_chunked_state_unchanged(
             assert chunk.num_valid == num_valid
             assert list(chunk.data.keys()) == list(data_snapshot.keys())
             for name, tensor in data_snapshot.items():
-                assert torch.equal(chunk.data[name], tensor), (
-                    f"chunk {(key, name)} must be byte-identical"
-                )
+                assert torch.equal(
+                    chunk.data[name], tensor
+                ), f"chunk {(key, name)} must be byte-identical"
 
 
 def _snapshot_cache_state(cache_kind: str, cache: Any) -> dict[str, Any]:
@@ -860,8 +836,7 @@ def _random_spec(
         seq = rng.choice([1, 2, 3, 5, 7, 9])
         names = ["a"] if rng.random() < 0.5 else ["a", "b"]
         activations = {
-            name: torch.randn(batch, seq, 4, device=tensor_device, dtype=dtype)
-            for name in names
+            name: torch.randn(batch, seq, 4, device=tensor_device, dtype=dtype) for name in names
         }
         spec.append((branch_id, layer_idx, activations, step_idx))
     spec.append(spec[0])
@@ -987,13 +962,9 @@ def test_ut2003_fixed_scenario_equivalence(device: str) -> None:
     ``.contiguous()`` results by reference).
     """
     spec = _fixed_spec_2003(device)
-    loop_cache = ChunkedActivationCache(
-        max_entries_per_layer=8, chunk_size=4, device=device
-    )
+    loop_cache = ChunkedActivationCache(max_entries_per_layer=8, chunk_size=4, device=device)
     _run_loop(loop_cache, _cloned_spec(spec))
-    batch_cache = ChunkedActivationCache(
-        max_entries_per_layer=8, chunk_size=4, device=device
-    )
+    batch_cache = ChunkedActivationCache(max_entries_per_layer=8, chunk_size=4, device=device)
     _run_batch(batch_cache, spec)
     _assert_chunked_equivalent(loop_cache, batch_cache)
     _assert_chunked_fetch_face(loop_cache, batch_cache)
@@ -1003,13 +974,9 @@ def test_ut2003_fixed_scenario_equivalence(device: str) -> None:
 def test_ut2003_randomized_property_equivalence(device: str) -> None:
     """UT-2003: seeded randomized chunked property test (chunk_size=4 budget)."""
     spec = _random_spec(device, seed=2003)
-    loop_cache = ChunkedActivationCache(
-        max_entries_per_layer=8, chunk_size=4, device=device
-    )
+    loop_cache = ChunkedActivationCache(max_entries_per_layer=8, chunk_size=4, device=device)
     _run_loop(loop_cache, _cloned_spec(spec))
-    batch_cache = ChunkedActivationCache(
-        max_entries_per_layer=8, chunk_size=4, device=device
-    )
+    batch_cache = ChunkedActivationCache(max_entries_per_layer=8, chunk_size=4, device=device)
     _run_batch(batch_cache, spec)
     _assert_chunked_equivalent(loop_cache, batch_cache)
     _assert_chunked_fetch_face(loop_cache, batch_cache)
@@ -1020,9 +987,7 @@ def test_ut2003_randomized_property_equivalence(device: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _invalid_entry(
-    kind: str, device: str
-) -> tuple[str, int, dict[str, torch.Tensor], int]:
+def _invalid_entry(kind: str, device: str) -> tuple[str, int, dict[str, torch.Tensor], int]:
     """Build one invalid entry of the given kind (design §4.2.2(2))."""
     if kind == "empty":
         return ("bad", 0, {}, 0)
@@ -1066,8 +1031,7 @@ def test_ut2004_atomicity_zero_writes(
     cache.put("pre0", 0, {"a": torch.randn(1, 4, 8, device=device)})
     cache.put("pre1", 1, {"a": torch.randn(1, 5, 8, device=device)}, step_idx=1)
     valid: _Spec = [
-        (f"atom{i}", i % 3, {"a": torch.randn(1, 4, 8, device=device)}, i % 2)
-        for i in range(7)
+        (f"atom{i}", i % 3, {"a": torch.randn(1, 4, 8, device=device)}, i % 2) for i in range(7)
     ]
     index = {"first": 0, "middle": 3, "last": 7}[position]
     spec = list(valid)
@@ -1077,8 +1041,7 @@ def test_ut2004_atomicity_zero_writes(
         _run_batch(cache, spec)
     if invalid_kind == "empty" and position == "middle":
         assert str(index) in str(excinfo.value), (
-            f"the ValueError message must carry the entry index {index}; "
-            f"got: {excinfo.value}"
+            f"the ValueError message must carry the entry index {index}; " f"got: {excinfo.value}"
         )
     _assert_cache_state_unchanged(cache_kind, cache, snapshot)
 
@@ -1235,9 +1198,7 @@ class _IncapableCacheWrapper:
         layer_idx: int,
         step_idx: int = 0,
     ) -> dict[str, torch.Tensor]:
-        return self.inner.fetch(
-            branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx
-        )
+        return self.inner.fetch(branch_id=branch_id, layer_idx=layer_idx, step_idx=step_idx)
 
     def fetch_masked(
         self,
@@ -1324,23 +1285,18 @@ def test_ut2006_protocol_and_isinstance() -> None:
         VectorizedActivationCache(max_entries_per_layer=16, device="cpu"),
     ]
     for cache in caches:
-        assert isinstance(cache, BatchedPutCapable), (
-            f"{type(cache).__name__} must satisfy BatchedPutCapable"
-        )
+        assert isinstance(
+            cache, BatchedPutCapable
+        ), f"{type(cache).__name__} must satisfy BatchedPutCapable"
     assert not isinstance(
-        _IncapableCacheWrapper(
-            ActivationCache(max_entries_per_layer=16, device="cpu")
-        ),
+        _IncapableCacheWrapper(ActivationCache(max_entries_per_layer=16, device="cpu")),
         BatchedPutCapable,
     )
     assert not isinstance(object(), BatchedPutCapable)
 
     for cache in caches:
         assert cache.put_batch([]) is None
-        assert (
-            cache.put_batch([CachePutEntry("solo", 0, {"a": torch.randn(1, 2, 4)})])
-            is None
-        )
+        assert cache.put_batch([CachePutEntry("solo", 0, {"a": torch.randn(1, 2, 4)})]) is None
         assert cache.contains("solo", 0)
 
 
@@ -1395,17 +1351,14 @@ def test_ut2006_publish_dispatch_batched_payload() -> None:
         ffn = entry.activations["ffn_out"]
         static_row = runner.child_buf[layer_idx][row : row + 1]
         assert torch.equal(ffn, static_row), (
-            f"ffn_out payload must equal the child_buf row for "
-            f"{(entry.branch_id, layer_idx)}"
+            f"ffn_out payload must equal the child_buf row for " f"{(entry.branch_id, layer_idx)}"
         )
-        assert ffn.data_ptr() != static_row.data_ptr(), (
-            "ffn_out must be a snapshot row view, not a static-buffer alias"
-        )
+        assert (
+            ffn.data_ptr() != static_row.data_ptr()
+        ), "ffn_out must be a snapshot row view, not a static-buffer alias"
         if layer_idx == 0:
             assert set(entry.activations) == {"ffn_out", "embedding"}
-            assert torch.equal(
-                entry.activations["embedding"], embedding_rows[row : row + 1]
-            )
+            assert torch.equal(entry.activations["embedding"], embedding_rows[row : row + 1])
         else:
             assert set(entry.activations) == {"ffn_out"}
     assert len(seen) == _NUM_LAYERS * _NUM_CANDIDATES
@@ -1454,9 +1407,7 @@ def test_ut2006_publish_incapable_fallback_loop() -> None:
     for row, branch_id in enumerate(branch_ids):
         for layer_idx in range(_NUM_LAYERS):
             stored = inner.fetch(branch_id=branch_id, layer_idx=layer_idx)
-            assert torch.equal(
-                stored["ffn_out"], runner.child_buf[layer_idx][row : row + 1]
-            )
+            assert torch.equal(stored["ffn_out"], runner.child_buf[layer_idx][row : row + 1])
 
 
 @_cuda
@@ -1479,8 +1430,7 @@ def test_ut2006_probe_each_publish_and_cache_swap() -> None:
     _serial(mff, parent, branch_id="2006swp")
     _batched(mff, stacked, _ids("2006s1"), "2006swp")
     assert len(spy_a.batch_calls) == 1, (
-        "the first publish must dispatch to spy_a.put_batch "
-        "(batched branch missing)"
+        "the first publish must dispatch to spy_a.put_batch " "(batched branch missing)"
     )
 
     spy_b = _SpyCapableCache(_CACHE_BUDGET, device)
@@ -1497,18 +1447,18 @@ def test_ut2006_probe_each_publish_and_cache_swap() -> None:
     _serial(mff, parent, branch_id="2006swp")
     wrapper.put_calls.clear()
     _batched(mff, stacked, _ids("2006s3"), "2006swp")
-    assert len(wrapper.put_calls) == _NUM_LAYERS * _NUM_CANDIDATES, (
-        "the incapable wrapper must fall back to the per-entry loop"
-    )
+    assert (
+        len(wrapper.put_calls) == _NUM_LAYERS * _NUM_CANDIDATES
+    ), "the incapable wrapper must fall back to the per-entry loop"
     assert len(spy_b.batch_calls) == 1
 
     spy_c = _SpyCapableCache(_CACHE_BUDGET, device)
     mff.cache = spy_c
     _serial(mff, parent, branch_id="2006swp")
     _batched(mff, stacked, _ids("2006s4"), "2006swp")
-    assert len(spy_c.batch_calls) == 1, (
-        "switching back to a capable cache must restore the batched branch"
-    )
+    assert (
+        len(spy_c.batch_calls) == 1
+    ), "switching back to a capable cache must restore the batched branch"
 
 
 @_cuda
@@ -1539,9 +1489,9 @@ def test_ut2006_profiler_face_unchanged(monkeypatch: pytest.MonkeyPatch) -> None
     mff_batch = _make_mff(model, device, cache=spy, use_cuda_graph=True)
     _serial(mff_batch, parent, branch_id="2006pp")
     _batched(mff_batch, stacked, _ids("2006pa"), "2006pp")
-    assert len(spy.batch_calls) == 1, (
-        "the batched publish must dispatch to put_batch (branch missing)"
-    )
+    assert (
+        len(spy.batch_calls) == 1
+    ), "the batched publish must dispatch to put_batch (branch missing)"
     batch_face = list(calls)
     calls.clear()
 
@@ -1573,8 +1523,7 @@ def test_ut2006_profiler_face_unchanged(monkeypatch: pytest.MonkeyPatch) -> None
         assert call_b["tau"] == call_l["tau"]
         assert call_b["metric"] == call_l["metric"]
         assert call_b["stable_sum"].item() == call_l["stable_sum"].item(), (
-            f"stable_sum mismatch at layer {call_b['layer_idx']} "
-            f"for {call_b['branch_id']}"
+            f"stable_sum mismatch at layer {call_b['layer_idx']} " f"for {call_b['branch_id']}"
         )
 
 
@@ -1628,18 +1577,16 @@ def test_ut2007_loop_put_ledger() -> None:
     vec.put("v", 0, {"a": torch.randn(1, 3, 4), "b": torch.randn(1, 3, 4)})
     assert vec.write_op_count == 2
 
-    chunked = ChunkedActivationCache(
-        max_entries_per_layer=64, chunk_size=4, device="cpu"
-    )
+    chunked = ChunkedActivationCache(max_entries_per_layer=64, chunk_size=4, device="cpu")
     assert chunked.write_op_count == 0
     chunked.put("c", 0, {"a": torch.randn(1, 10, 4)})
-    assert chunked.write_op_count == 0, (
-        "batch-1 contiguous chunk slices store by reference (zero ops)"
-    )
+    assert (
+        chunked.write_op_count == 0
+    ), "batch-1 contiguous chunk slices store by reference (zero ops)"
     chunked.put("c", 1, {"a": torch.randn(2, 10, 4)})
-    assert chunked.write_op_count == 3, (
-        "batch-2 chunk slices materialize one tensor per chunk (3 chunks)"
-    )
+    assert (
+        chunked.write_op_count == 3
+    ), "batch-2 chunk slices materialize one tensor per chunk (3 chunks)"
 
 
 def test_ut2007_put_batch_direct_ledger() -> None:
@@ -1653,17 +1600,16 @@ def test_ut2007_put_batch_direct_ledger() -> None:
     ``put_batch`` do not exist yet (ImportError / AttributeError).
     """
     spec: _Spec = [
-        (f"b{i}", 0, {"a": torch.randn(1, 3, 4), "b2": torch.randn(1, 3, 4)}, 0)
-        for i in range(4)
+        (f"b{i}", 0, {"a": torch.randn(1, 3, 4), "b2": torch.randn(1, 3, 4)}, 0) for i in range(4)
     ]
     loop_cache = ActivationCache(max_entries_per_layer=64, device="cpu")
     _run_loop(loop_cache, spec)
     assert loop_cache.write_op_count == 8
     batch_cache = ActivationCache(max_entries_per_layer=64, device="cpu")
     _run_batch(batch_cache, spec)
-    assert batch_cache.write_op_count == 1, (
-        "a uniform batch of distinct destinations is one foreach group"
-    )
+    assert (
+        batch_cache.write_op_count == 1
+    ), "a uniform batch of distinct destinations is one foreach group"
     assert loop_cache.write_op_count != batch_cache.write_op_count
 
     mixed: _Spec = [
@@ -1818,8 +1764,7 @@ def test_ut2008_debug_path_per_row_record(monkeypatch: pytest.MonkeyPatch) -> No
     finally:
         GLOBAL_STABILITY_PROFILER.debug_enabled = False
     assert len(spy.batch_calls) == 1, (
-        "the debug publish must still dispatch to put_batch "
-        "(batched branch missing)"
+        "the debug publish must still dispatch to put_batch " "(batched branch missing)"
     )
     assert len(record_calls) == _NUM_LAYERS * _NUM_CANDIDATES, (
         f"debug_enabled must keep the per-row record face "
@@ -1866,9 +1811,9 @@ def test_ut2009_foreach_downgrade_equivalence_and_ledger(
     _run_batch(downgraded, spec)
     _assert_activation_equivalent(loop_cache, downgraded)
     _assert_activation_fetch_face(loop_cache, downgraded)
-    assert downgraded.write_op_count == 6, (
-        "the per-pair downgrade must count one write per (entry, name) pair"
-    )
+    assert (
+        downgraded.write_op_count == 6
+    ), "the per-pair downgrade must count one write per (entry, name) pair"
 
 
 @_cuda
@@ -1890,7 +1835,7 @@ def test_ut2009_publish_downgrade_dispatch(monkeypatch: pytest.MonkeyPatch) -> N
     mff = _make_mff(model, device, cache=spy, use_cuda_graph=True)
     _serial(mff, parent, branch_id="2009p")
     _batched(mff, stacked, _ids("2009a"), "2009p")
-    assert len(spy.batch_calls) == 1, (
-        "the publish dispatch must not depend on the foreach availability flag"
-    )
+    assert (
+        len(spy.batch_calls) == 1
+    ), "the publish dispatch must not depend on the foreach availability flag"
     assert len(spy.batch_calls[0]) == _NUM_LAYERS * _NUM_CANDIDATES

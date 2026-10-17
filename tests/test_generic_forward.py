@@ -318,9 +318,7 @@ class _PeakMemoryStub(nn.Module):
             num_hidden_layers=_MEM_LAYERS,
             num_attention_heads=2,
         )
-        self.register_buffer(
-            "buf", torch.randn(_MEM_BATCH, _MEM_SEQ, _MEM_HIDDEN, device=device)
-        )
+        self.register_buffer("buf", torch.randn(_MEM_BATCH, _MEM_SEQ, _MEM_HIDDEN, device=device))
 
     def forward(
         self,
@@ -330,9 +328,7 @@ class _PeakMemoryStub(nn.Module):
     ) -> SimpleNamespace:
         result: dict[str, Any] = {"last_hidden_state": self.buf}
         if kwargs.get("output_hidden_states"):
-            result["hidden_states"] = tuple(
-                self.buf.clone() for _ in range(_MEM_LAYERS)
-            )
+            result["hidden_states"] = tuple(self.buf.clone() for _ in range(_MEM_LAYERS))
         return SimpleNamespace(**result)
 
 

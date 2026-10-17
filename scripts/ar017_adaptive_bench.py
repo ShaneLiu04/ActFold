@@ -85,8 +85,7 @@ _PATH_ORDER = (
     "graph_adaptive",
 )
 _PATH_LABELS = tuple(
-    (label, name)
-    for label, name in zip(("baseline", "fixed", "adaptive"), _PATH_ORDER)
+    (label, name) for label, name in zip(("baseline", "fixed", "adaptive"), _PATH_ORDER)
 )
 
 
@@ -247,15 +246,10 @@ def _cuda_profiler_supported() -> bool:
     try:
         x = torch.ones(4, device="cuda")
         torch.cuda.synchronize()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA]
-        ) as prof:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
             x = x + 1
             torch.cuda.synchronize()
-        return any(
-            evt.device_type == torch.profiler.DeviceType.CUDA
-            for evt in prof.key_averages()
-        )
+        return any(evt.device_type == torch.profiler.DeviceType.CUDA for evt in prof.key_averages())
     except Exception:  # noqa: BLE001 - probe must never raise
         return False
 
@@ -297,9 +291,7 @@ def _run_config(
 ) -> dict[str, Any]:
     """Benchmark one (H, L, N) config on the three interleaved paths."""
     torch.manual_seed(_SEED + hidden_dim + num_candidates)
-    model = _Decoder(
-        vocab_size=_VOCAB, hidden_dim=hidden_dim, num_layers=num_layers
-    ).to("cuda")
+    model = _Decoder(vocab_size=_VOCAB, hidden_dim=hidden_dim, num_layers=num_layers).to("cuda")
     model.eval()
 
     seq_len = _SEQ_LEN
@@ -316,9 +308,7 @@ def _run_config(
         mff(parent_tokens, branch_id="parent")
 
     step_fns: dict[str, Callable[[], Any]] = {
-        "baseline_eager": lambda: [
-            model(candidates[i : i + 1]) for i in range(num_candidates)
-        ],
+        "baseline_eager": lambda: [model(candidates[i : i + 1]) for i in range(num_candidates)],
         "graph_fixed": lambda: mffs["graph_fixed"](
             candidates,
             branch_id=None,
@@ -350,14 +340,10 @@ def _run_config(
                     traj_runner = mffs["graph_adaptive"].graph_runner_batched
                     if traj_runner is not None:
                         capacity_trajectory.append(int(traj_runner.capacity))
-                        traj_divergences = cast(
-                            Any, traj_runner
-                        ).last_layer_divergences
+                        traj_divergences = cast(Any, traj_runner).last_layer_divergences
                         if traj_divergences:
                             divergence_samples.append(max(traj_divergences))
-    timings = {
-        name: stats_from_samples(samples[name][warmup:]) for name in _PATH_ORDER
-    }
+    timings = {name: stats_from_samples(samples[name][warmup:]) for name in _PATH_ORDER}
 
     # Correctness sidecar: one extra call per path, logits collected.
     logits: dict[str, torch.Tensor] = {}
@@ -393,20 +379,15 @@ def _run_config(
         "graph_fixed": fixed_runner is not None
         and tuple(fixed_runner.tokens_static.shape) == (num_candidates, seq_len),
         "graph_adaptive": adaptive_runner is not None
-        and tuple(adaptive_runner.tokens_static.shape)
-        == (num_candidates, seq_len),
+        and tuple(adaptive_runner.tokens_static.shape) == (num_candidates, seq_len),
     }
     policy = mffs["graph_adaptive"].graph_adaptive_policy
     divergences = (
-        cast(Any, adaptive_runner).last_layer_divergences
-        if adaptive_runner is not None
-        else None
+        cast(Any, adaptive_runner).last_layer_divergences if adaptive_runner is not None else None
     )
     max_divergence = max(divergences) if divergences else None
     final_capacity = (
-        int(cast(Any, adaptive_runner).capacity)
-        if adaptive_runner is not None
-        else None
+        int(cast(Any, adaptive_runner).capacity) if adaptive_runner is not None else None
     )
     fixed_capacity = int(_CAPACITY_RATIO * num_tokens)
     recapture_events = (
@@ -415,13 +396,9 @@ def _run_config(
         else []
     )
     budget_exceeded_last = (
-        bool(cast(Any, adaptive_runner).budget_exceeded)
-        if adaptive_runner is not None
-        else None
+        bool(cast(Any, adaptive_runner).budget_exceeded) if adaptive_runner is not None else None
     )
-    adaptive_validated = (
-        (not budget_exceeded_last) if budget_exceeded_last is not None else None
-    )
+    adaptive_validated = (not budget_exceeded_last) if budget_exceeded_last is not None else None
 
     h4_supported = bool(
         final_capacity is not None
@@ -475,11 +452,7 @@ def _run_config(
             "final_capacity": final_capacity,
             "last_layer_divergences": divergences,
             "observed_max_layer_divergence": {
-                "p50": (
-                    statistics.median(divergence_samples)
-                    if divergence_samples
-                    else None
-                ),
+                "p50": (statistics.median(divergence_samples) if divergence_samples else None),
                 "min": min(divergence_samples) if divergence_samples else None,
                 "max": max(divergence_samples) if divergence_samples else None,
                 "n": len(divergence_samples),
@@ -490,12 +463,8 @@ def _run_config(
             "recapture_events": recapture_events,
             "capacity_tracks_demand": h4_supported,
         },
-        "h1_adaptive_vs_fixed": _verdict(
-            timings["graph_adaptive"], timings["graph_fixed"]
-        ),
-        "h2_adaptive_vs_baseline": _verdict(
-            timings["graph_adaptive"], timings["baseline_eager"]
-        ),
+        "h1_adaptive_vs_fixed": _verdict(timings["graph_adaptive"], timings["graph_fixed"]),
+        "h2_adaptive_vs_baseline": _verdict(timings["graph_adaptive"], timings["baseline_eager"]),
         "h4_capacity_tracking": "supported" if h4_supported else "refuted",
     }
 
@@ -510,9 +479,7 @@ def run_bench(warmup: int = 5, reps: int = 10, quick: bool = False) -> dict[str,
         raise RuntimeError("run_bench requires a CUDA device")
 
     configs: list[tuple[int, int, int]] = [
-        (hidden, layers, n)
-        for hidden, layers in _GEOMETRIES
-        for n in _NUM_CANDIDATES
+        (hidden, layers, n) for hidden, layers in _GEOMETRIES for n in _NUM_CANDIDATES
     ]
     if quick:
         configs = [(1024, 16, 4)]
@@ -547,8 +514,7 @@ def run_bench(warmup: int = 5, reps: int = 10, quick: bool = False) -> dict[str,
     h3 = (
         "supported"
         if all(
-            r["logits_parity_argmax_exact"]
-            and r["adaptive_vs_fixed_allclose_1e-4"]
+            r["logits_parity_argmax_exact"] and r["adaptive_vs_fixed_allclose_1e-4"]
             for r in config_records
         )
         else "refuted"
@@ -590,9 +556,7 @@ def run_bench(warmup: int = 5, reps: int = 10, quick: bool = False) -> dict[str,
                 "patience 3 + throttle interval 2); timed steady state "
                 "reflects the adapted capacity"
             ),
-            "interleaving": (
-                "round-robin per repetition: " + " -> ".join(_PATH_ORDER)
-            ),
+            "interleaving": ("round-robin per repetition: " + " -> ".join(_PATH_ORDER)),
             "timing_method": (
                 "time.perf_counter around torch.cuda.synchronize() boundaries "
                 "(host-side prefill/readback/publish included; CUDA-event "

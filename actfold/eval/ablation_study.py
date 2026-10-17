@@ -184,9 +184,7 @@ class AblationStudy:
             child = self.draft_generator.generate(parent, num_branches=1, seed=seed)[0]
 
             raw = self._underlying_module()
-            cache = ActivationCache(
-                max_entries_per_layer=max_entries_per_layer, device=self.device
-            )
+            cache = ActivationCache(max_entries_per_layer=max_entries_per_layer, device=self.device)
             gate = SimilarityGate(tau=tau, metric="cosine")
             scheduler = FoldingScheduler(
                 base_tau=tau,
@@ -228,9 +226,7 @@ class AblationStudy:
 
             savings = sum(per_layer.values()) * per_layer_reusable
             actfold_tflops = max(0.0, baseline_total - savings)
-            stable_ratio = (
-                sum(per_layer.values()) / len(per_layer) if per_layer else 0.0
-            )
+            stable_ratio = sum(per_layer.values()) / len(per_layer) if per_layer else 0.0
             reduction = 100.0 * savings / baseline_total if baseline_total > 0 else 0.0
             return FoldedMeasurement(
                 stable_ratio=float(stable_ratio),

@@ -128,9 +128,7 @@ class DraftGenerator:
         """
         return torch.tensor(
             [
-                self._sample_from_topk(
-                    logits_source[batch_idx, pos], generator=generator
-                )
+                self._sample_from_topk(logits_source[batch_idx, pos], generator=generator)
                 for pos in positions
             ],
             dtype=dtype,

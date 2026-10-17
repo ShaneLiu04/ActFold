@@ -23,11 +23,11 @@ the monkeypatch teardown restores the original binding (design D5).
 
 from __future__ import annotations
 
+import warnings
 from typing import Any, Callable
 
 import pytest
 import torch
-import warnings
 
 from actfold.core import fused_ops
 from actfold.core.fused_ops import _HAS_TRITON, merge_stable_divergent

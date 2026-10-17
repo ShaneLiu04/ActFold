@@ -77,9 +77,7 @@ class VectorizedActivationCache:
             oldest_key = next(iter(self._buffers))
             del self._buffers[oldest_key]
             branch_id, step_idx = oldest_key
-            for count_key in [
-                k for k in self._counts if k[0] == branch_id and k[1] == step_idx
-            ]:
+            for count_key in [k for k in self._counts if k[0] == branch_id and k[1] == step_idx]:
                 del self._counts[count_key]
 
     # ------------------------------------------------------------------
@@ -177,9 +175,7 @@ class VectorizedActivationCache:
         validated = validate_entries(entries)
         if not validated:
             return
-        pending: dict[
-            tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]
-        ] = {}
+        pending: dict[tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]] = {}
         seen: set[tuple[Any, int, int, str]] = set()
         for entry in validated:
             branch_id = entry.branch_id
@@ -195,14 +191,10 @@ class VectorizedActivationCache:
                 if name not in store:
                     capacity = min(self.max_entries, max(seq_len, 1))
                     shape = (capacity, batch_size) + tuple(tensor.shape[2:])
-                    store[name] = torch.empty(
-                        shape, dtype=tensor.dtype, device=tensor.device
-                    )
+                    store[name] = torch.empty(shape, dtype=tensor.dtype, device=tensor.device)
                 buffer = store[name]
                 if seq_len > buffer.shape[0] and buffer.shape[0] < self.max_entries:
-                    new_capacity = min(
-                        self.max_entries, max(seq_len, buffer.shape[0] * 2)
-                    )
+                    new_capacity = min(self.max_entries, max(seq_len, buffer.shape[0] * 2))
                     grown = torch.empty(
                         (new_capacity,) + tuple(buffer.shape[1:]),
                         dtype=buffer.dtype,
@@ -367,9 +359,7 @@ class VectorizedActivationCache:
         start = max(0, total - capacity)
 
         if start == 0:
-            return {
-                name: buffer[:total].transpose(0, 1) for name, buffer in layer_store.items()
-            }
+            return {name: buffer[:total].transpose(0, 1) for name, buffer in layer_store.items()}
         # Ring layout: gather the surviving rows (still no host sync).
         rows = torch.arange(start, total, device=sample.device) % capacity
         return {

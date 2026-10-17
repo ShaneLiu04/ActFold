@@ -75,18 +75,13 @@ from scripts._hf_env import add_hf_env_arguments, apply_hf_env
 apply_hf_env()
 
 import torch  # noqa: E402
-from transformers import (  # noqa: E402
-    AutoModelForCausalLM,
-    AutoTokenizer,
-)
+from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 
 from actfold.core import ActivationCache, SimilarityGate  # noqa: E402
 from actfold.core.adaptive_capacity import AdaptiveCapacityConfig  # noqa: E402
 from actfold.core.fused_ops import _TRITON_FAILED_KEYS  # noqa: E402
 from actfold.models.architecture_utils import ManualFoldedForward  # noqa: E402
-from actfold.profiler.stability_profiler import (  # noqa: E402
-    GLOBAL_STABILITY_PROFILER,
-)
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER  # noqa: E402
 from scripts.algo_experiments import TimingStats, stats_from_samples  # noqa: E402
 
 DEFAULT_OUTPUT_PATH = Path("results/optimization/ar019_real_e2e_bench.json")
@@ -111,8 +106,7 @@ _PATH_ORDER = (
     "graph_adaptive",
 )
 _PATH_LABELS = tuple(
-    (label, name)
-    for label, name in zip(("baseline", "fixed", "adaptive"), _PATH_ORDER)
+    (label, name) for label, name in zip(("baseline", "fixed", "adaptive"), _PATH_ORDER)
 )
 
 _PROMPT_TEXT = (
@@ -146,9 +140,7 @@ def _load_model(model_path: Path) -> tuple[Any, Any, dict[str, Any]]:
         str(model_path), trust_remote_code=True, torch_dtype=torch.bfloat16
     )
     model = model.cuda().eval()
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(model_path), trust_remote_code=True
-    )
+    tokenizer = AutoTokenizer.from_pretrained(str(model_path), trust_remote_code=True)
     weights = model_path / "model.safetensors"
     meta = {
         "model_path": str(model_path),
@@ -205,9 +197,7 @@ def _make_workload(
     parent_ids = torch.cat(
         [
             ids,
-            torch.full(
-                (1, BLOCK), MASK_ID, device=ids.device, dtype=ids.dtype
-            ),
+            torch.full((1, BLOCK), MASK_ID, device=ids.device, dtype=ids.dtype),
         ],
         dim=1,
     )
@@ -282,15 +272,10 @@ def _cuda_profiler_supported() -> bool:
     try:
         x = torch.ones(4, device="cuda")
         torch.cuda.synchronize()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA]
-        ) as prof:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
             x = x + 1
             torch.cuda.synchronize()
-        return any(
-            evt.device_type == torch.profiler.DeviceType.CUDA
-            for evt in prof.key_averages()
-        )
+        return any(evt.device_type == torch.profiler.DeviceType.CUDA for evt in prof.key_averages())
     except Exception:  # noqa: BLE001 - probe must never raise
         return False
 
@@ -337,9 +322,7 @@ def _run_config(
     k_prompt = seq_len - BLOCK
 
     mask, pe = _build_context(model, seq_len)
-    parent_ids, cands = _make_workload(
-        model, tokenizer, seq_len, num_candidates
-    )
+    parent_ids, cands = _make_workload(model, tokenizer, seq_len, num_candidates)
 
     # Baseline reference logits (untimed): the raw model's own eval forward
     # builds the same block-causal mask and rotary, so both sides share one
@@ -366,9 +349,7 @@ def _run_config(
     fixed_ids = [f"f{i}" for i in range(num_candidates)]
     adaptive_ids = [f"a{i}" for i in range(num_candidates)]
     step_fns: dict[str, Callable[[], Any]] = {
-        "baseline_eager": lambda: [
-            model(cands[i : i + 1]) for i in range(num_candidates)
-        ],
+        "baseline_eager": lambda: [model(cands[i : i + 1]) for i in range(num_candidates)],
         "graph_fixed": lambda: mffs["graph_fixed"](
             cands,
             branch_id=None,
@@ -421,9 +402,7 @@ def _run_config(
                 if name == "graph_adaptive":
                     if runner is not None:
                         capacity_trajectory.append(int(runner.capacity))
-    timings = {
-        name: stats_from_samples(samples[name][warmup:]) for name in _PATH_ORDER
-    }
+    timings = {name: stats_from_samples(samples[name][warmup:]) for name in _PATH_ORDER}
 
     # Parity sidecar (untimed): one extra call per graph path against the
     # baseline reference. The profiler is reset first so the per-(layer,
@@ -443,9 +422,7 @@ def _run_config(
                 o = out[row : row + 1].float()
                 b = base_children[row : row + 1].float()
                 maxdiff = max(maxdiff, float((o - b).abs().max().item()))
-                close = close and bool(
-                    torch.allclose(o, b, rtol=1e-2, atol=1e-1)
-                )
+                close = close and bool(torch.allclose(o, b, rtol=1e-2, atol=1e-1))
                 del o, b
             agreement = _argmax_agreement(out, base_children)
             parity[name] = {
@@ -477,8 +454,7 @@ def _run_config(
         "graph_fixed": fixed_runner is not None
         and tuple(fixed_runner.tokens_static.shape) == (num_candidates, seq_len),
         "graph_adaptive": adaptive_runner is not None
-        and tuple(adaptive_runner.tokens_static.shape)
-        == (num_candidates, seq_len),
+        and tuple(adaptive_runner.tokens_static.shape) == (num_candidates, seq_len),
     }
     policy = mffs["graph_adaptive"].graph_adaptive_policy
     recapture_events = (
@@ -487,9 +463,7 @@ def _run_config(
         else []
     )
     final_capacity = (
-        int(cast(Any, adaptive_runner).capacity)
-        if adaptive_runner is not None
-        else None
+        int(cast(Any, adaptive_runner).capacity) if adaptive_runner is not None else None
     )
     fixed_capacity = (
         int(cast(Any, fixed_runner).capacity)
@@ -501,9 +475,7 @@ def _run_config(
     # post-warmup window (no new adaptation events once the steady state
     # is reached).
     steady_trajectory = capacity_trajectory[warmup:]
-    trajectory_converged = bool(
-        steady_trajectory and len(set(steady_trajectory)) == 1
-    )
+    trajectory_converged = bool(steady_trajectory and len(set(steady_trajectory)) == 1)
     # The warmup/timed split aligns with ``samples``: the adaptive path
     # runs once per round, so flag ``i`` belongs to round ``i``; the timed
     # steady state is rounds >= warmup.
@@ -545,9 +517,7 @@ def _run_config(
         "timings_ms": {name: timings[name].as_dict() for name in _PATH_ORDER},
         "speedups_p50": {k: round(v, 4) for k, v in speedups.items()},
         "graph_captured": graph_captured,
-        "budget_violations": {
-            name: sum(flags) for name, flags in budget_violation_flags.items()
-        },
+        "budget_violations": {name: sum(flags) for name, flags in budget_violation_flags.items()},
         "pe_identity_mismatches": pe_identity_mismatches,
         "parity": parity,
         "stable_ratios": stable_ratios,
@@ -557,9 +527,7 @@ def _run_config(
             "final_capacity": final_capacity,
             "observed_max_divergence": observed_max_divergence,
             "divergence_p50": (
-                statistics.median(divergence_samples)
-                if divergence_samples
-                else None
+                statistics.median(divergence_samples) if divergence_samples else None
             ),
             "capacity_trajectory": capacity_trajectory,
             "trajectory_converged": trajectory_converged,
@@ -568,14 +536,11 @@ def _run_config(
             "steady_state_violations": steady_violations,
         },
         "peak_vram_mb": round(torch.cuda.max_memory_allocated() / 1024**2, 1),
-        "h1_adaptive_vs_baseline": _verdict(
-            timings["graph_adaptive"], timings["baseline_eager"]
-        ),
+        "h1_adaptive_vs_baseline": _verdict(timings["graph_adaptive"], timings["baseline_eager"]),
         "h2_parity": (
             "supported"
             if all(
-                p["argmax_agreement"] == 1.0
-                and p["allclose_rtol1e-2_atol1e-1"]
+                p["argmax_agreement"] == 1.0 and p["allclose_rtol1e-2_atol1e-1"]
                 for p in parity.values()
             )
             else "refuted"
@@ -623,9 +588,7 @@ def run_bench(
     config_records = []
     for seq_len, num_candidates in configs:
         GLOBAL_STABILITY_PROFILER.reset()
-        record = _run_config(
-            model, tokenizer, seq_len, num_candidates, warmup, reps
-        )
+        record = _run_config(model, tokenizer, seq_len, num_candidates, warmup, reps)
         config_records.append(record)
         print(
             f"T={seq_len} N={num_candidates}: "
@@ -700,9 +663,7 @@ def run_bench(
                 "(shrink patience 3 + throttle interval 2); the timed steady "
                 "state reflects the adapted capacity"
             ),
-            "interleaving": "round-robin per repetition: " + " -> ".join(
-                _PATH_ORDER
-            ),
+            "interleaving": "round-robin per repetition: " + " -> ".join(_PATH_ORDER),
             "timing_method": (
                 "time.perf_counter around torch.cuda.synchronize() "
                 "boundaries (host-side prefill/readback/publish included; "
@@ -752,9 +713,7 @@ def write_results(data: dict[str, Any], path: str | Path) -> Path:
     """Write the benchmark record as JSON, creating parent directories."""
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    out.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 

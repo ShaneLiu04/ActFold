@@ -459,9 +459,7 @@ def test_ex601_engine_propagates_malformed_logits_value_error() -> None:
     model, _, engine = _make_fixed_logits_engine()
 
     parent = Branch(branch_id="root", parent_id=None, tokens=torch.tensor([[1, 2, 3]]))
-    child = Branch(
-        branch_id="child", parent_id="root", tokens=torch.tensor([[1, 0, 3]])
-    )
+    child = Branch(branch_id="child", parent_id="root", tokens=torch.tensor([[1, 0, 3]]))
     # Rank-2 logits: no per-position vocab axis.
     model.logits = torch.zeros(1, 8)
 
@@ -478,9 +476,7 @@ def test_ex602_engine_propagates_batch_mismatch_value_error() -> None:
     """
     model, _, engine = _make_fixed_logits_engine()
 
-    parent = Branch(
-        branch_id="root", parent_id=None, tokens=torch.tensor([[1, 2, 3], [4, 5, 6]])
-    )
+    parent = Branch(branch_id="root", parent_id=None, tokens=torch.tensor([[1, 2, 3], [4, 5, 6]]))
     child = Branch(branch_id="child", parent_id="root", tokens=torch.tensor([[1, 0, 3]]))
     _set_argmax(model, torch.tensor([[1, 2, 3], [4, 5, 6]]), vocab_size=8)
 

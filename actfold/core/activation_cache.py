@@ -51,7 +51,9 @@ class ActivationCache:
         # put_batch/put state-equivalence face by design.
         self.write_op_count: int = 0
 
-    def _ensure_layer(self, layer_idx: int) -> OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]:
+    def _ensure_layer(
+        self, layer_idx: int
+    ) -> OrderedDict[tuple[Any, int], dict[str, torch.Tensor]]:
         """Create the ordered group map for a layer if it does not exist."""
         if layer_idx not in self._layers:
             self._layers[layer_idx] = OrderedDict()
@@ -208,9 +210,7 @@ class ActivationCache:
         validated = validate_entries(entries)
         if not validated:
             return
-        pending: dict[
-            tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]
-        ] = {}
+        pending: dict[tuple[Any, int, int, str], tuple[torch.Tensor, torch.Tensor]] = {}
         seen: set[tuple[Any, int, int, str]] = set()
         for entry in validated:
             branch_id = entry.branch_id
@@ -234,14 +234,10 @@ class ActivationCache:
                 if name not in store:
                     capacity = min(self.max_entries, max(seq_len, 1))
                     shape = (capacity, batch_size) + tuple(tensor.shape[2:])
-                    store[name] = torch.empty(
-                        shape, dtype=tensor.dtype, device=tensor.device
-                    )
+                    store[name] = torch.empty(shape, dtype=tensor.dtype, device=tensor.device)
                 buffer = store[name]
                 if seq_len > buffer.shape[0] and buffer.shape[0] < self.max_entries:
-                    new_capacity = min(
-                        self.max_entries, max(seq_len, buffer.shape[0] * 2)
-                    )
+                    new_capacity = min(self.max_entries, max(seq_len, buffer.shape[0] * 2))
                     grown = torch.empty(
                         (new_capacity,) + tuple(buffer.shape[1:]),
                         dtype=buffer.dtype,
@@ -417,14 +413,11 @@ class ActivationCache:
         start = max(0, total - capacity)
 
         if start == 0:
-            return {
-                name: buffer[:total].transpose(0, 1) for name, buffer in store.items()
-            }
+            return {name: buffer[:total].transpose(0, 1) for name, buffer in store.items()}
         # Ring layout: gather the surviving rows (still no host sync).
         rows = torch.arange(start, total, device=sample.device) % capacity
         return {
-            name: buffer.index_select(0, rows).transpose(0, 1)
-            for name, buffer in store.items()
+            name: buffer.index_select(0, rows).transpose(0, 1) for name, buffer in store.items()
         }
 
     def fetch_masked(

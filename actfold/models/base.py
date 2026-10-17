@@ -189,9 +189,7 @@ class DiffusionLLM(ABC, nn.Module):
     @property
     def ffn_intermediate_dim(self) -> int | None:
         """FFN intermediate dimension from the HF config (``None`` if unknown)."""
-        return cast(
-            "int | None", _extract_ffn_geometry(self.config)["ffn_intermediate_dim"]
-        )
+        return cast("int | None", _extract_ffn_geometry(self.config)["ffn_intermediate_dim"])
 
     @property
     def ffn_type(self) -> str:
@@ -201,9 +199,7 @@ class DiffusionLLM(ABC, nn.Module):
     @property
     def moe_num_experts(self) -> int | None:
         """Total routed experts from the HF config (``None`` for dense models)."""
-        return cast(
-            "int | None", _extract_ffn_geometry(self.config)["moe_num_experts"]
-        )
+        return cast("int | None", _extract_ffn_geometry(self.config)["moe_num_experts"])
 
     @property
     def moe_top_k(self) -> int | None:
@@ -213,9 +209,7 @@ class DiffusionLLM(ABC, nn.Module):
     @property
     def moe_intermediate_dim(self) -> int | None:
         """Expert FFN intermediate dimension (``None`` if unknown)."""
-        return cast(
-            "int | None", _extract_ffn_geometry(self.config)["moe_intermediate_dim"]
-        )
+        return cast("int | None", _extract_ffn_geometry(self.config)["moe_intermediate_dim"])
 
     @property
     def moe_shared_expert(self) -> bool:
@@ -225,9 +219,7 @@ class DiffusionLLM(ABC, nn.Module):
     @property
     def moe_num_layers(self) -> int | None:
         """Number of MoE layers (total minus dense prefix, ``None`` if unknown)."""
-        return cast(
-            "int | None", _extract_ffn_geometry(self.config)["moe_num_layers"]
-        )
+        return cast("int | None", _extract_ffn_geometry(self.config)["moe_num_layers"])
 
     def get_device(self) -> torch.device:
         """Return the device of the underlying model."""

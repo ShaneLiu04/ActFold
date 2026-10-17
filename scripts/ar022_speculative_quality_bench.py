@@ -87,10 +87,7 @@ apply_hf_env()
 import torch  # noqa: E402
 
 import scripts.ar021_generation_loop_bench as _ar021  # noqa: E402
-from actfold.models.fast_dllm_sampler import (  # noqa: E402
-    FastDLLMSampler,
-    FastDLLMSamplerConfig,
-)
+from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerConfig  # noqa: E402
 from scripts.algo_experiments import stats_from_samples  # noqa: E402
 from scripts.ar021_generation_loop_bench import (  # noqa: E402
     BLOCK,
@@ -118,10 +115,10 @@ from scripts.ar021_generation_loop_bench import (  # noqa: E402
     _prepare_prompts,
     _resolve_model_path,
     _sampler_config,
+    _serialize_windows,
     _snapshot_pool,
     _token_agreement,
     _window_forwards,
-    _serialize_windows,
     write_results,
 )
 

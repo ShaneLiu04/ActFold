@@ -70,10 +70,7 @@ import torch.nn as nn
 from actfold.core import ActivationCache, SimilarityGate
 from actfold.core.chunked_cache import ChunkedActivationCache
 from actfold.models.architecture_utils import ManualFoldedForward, detect_architecture
-from actfold.profiler.stability_profiler import (
-    GLOBAL_STABILITY_PROFILER,
-    StabilityProfiler,
-)
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER, StabilityProfiler
 
 _cuda = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 
@@ -148,9 +145,7 @@ class _LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": _VOCAB})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(_VOCAB, _HIDDEN)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)])
         self.model.norm = nn.LayerNorm(_HIDDEN)
         self.lm_head = nn.Linear(_HIDDEN, _VOCAB, bias=False)
 
@@ -331,8 +326,7 @@ def _publish_tensor_spy(runner: Any) -> Iterator[dict[str, int]]:
         "cpu": 0,
     }
     original = {
-        name: getattr(torch.Tensor, name)
-        for name in ("sum", "clone", "item", "tolist", "cpu")
+        name: getattr(torch.Tensor, name) for name in ("sum", "clone", "item", "tolist", "cpu")
     }
 
     def _sum(self: torch.Tensor, *args: Any, **kwargs: Any) -> torch.Tensor:
@@ -689,13 +683,13 @@ def test_ut1703_snapshot_publish_bit_exact() -> None:
         for layer_idx in range(_NUM_LAYERS):
             published = mff.cache.fetch(branch_id=branch_id, layer_idx=layer_idx)
             reference = reference_cache.fetch(branch_id=branch_id, layer_idx=layer_idx)
-            assert torch.equal(published["ffn_out"], reference["ffn_out"]), (
-                f"ffn_out mismatch for {branch_id} layer {layer_idx}"
-            )
+            assert torch.equal(
+                published["ffn_out"], reference["ffn_out"]
+            ), f"ffn_out mismatch for {branch_id} layer {layer_idx}"
             if layer_idx == 0:
-                assert torch.equal(published["embedding"], reference["embedding"]), (
-                    f"embedding mismatch for {branch_id}"
-                )
+                assert torch.equal(
+                    published["embedding"], reference["embedding"]
+                ), f"embedding mismatch for {branch_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -723,8 +717,7 @@ def test_ut1704_single_child_buf_clone(monkeypatch: pytest.MonkeyPatch) -> None:
     _batched(mff, stacked, _ids("1704-a"), "1704-p")
     assert len(windows) == 1
     assert windows[0]["clone_child"] == 1, (
-        f"exactly one whole-child_buf clone per publish; "
-        f"observed {windows[0]['clone_child']}"
+        f"exactly one whole-child_buf clone per publish; " f"observed {windows[0]['clone_child']}"
     )
     assert windows[0]["clone_total"] == 1, (
         f"no per-row intermediate clones in the window; "
@@ -795,9 +788,9 @@ def test_ut1705_by_reference_cache_anti_alias() -> None:
         runner.child_buf.add_(123.0)
     for key, entry in ref_cache.store.items():
         for name, tensor in entry.items():
-            assert torch.equal(tensor, snapshot[key][name]), (
-                f"mutating child_buf must not touch by-reference entry {key}"
-            )
+            assert torch.equal(
+                tensor, snapshot[key][name]
+            ), f"mutating child_buf must not touch by-reference entry {key}"
 
     second_ids = _ids("1705-b")
     _batched(mff, stacked, second_ids, "1705-p")

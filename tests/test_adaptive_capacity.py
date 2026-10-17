@@ -147,9 +147,7 @@ class _LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": _VOCAB})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(_VOCAB, _HIDDEN)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)])
         self.model.norm = nn.LayerNorm(_HIDDEN)
         self.lm_head = nn.Linear(_HIDDEN, _VOCAB, bias=False)
 
@@ -316,11 +314,7 @@ def _batched_eager_reference(
 
 def _user_warning_messages(record: Any) -> list[str]:
     """Return the messages of every UserWarning in a catch_warnings log."""
-    return [
-        str(entry.message)
-        for entry in record
-        if issubclass(entry.category, UserWarning)
-    ]
+    return [str(entry.message) for entry in record if issubclass(entry.category, UserWarning)]
 
 
 def _make_runner(
@@ -720,9 +714,7 @@ def test_ut1603_growth_end_to_end() -> None:
     policy = mff.graph_adaptive_policy
     assert policy is not None
     grow_events = [
-        e
-        for e in policy.events
-        if e.get("kind") == "recapture" and e.get("trigger") == "grow"
+        e for e in policy.events if e.get("kind") == "recapture" and e.get("trigger") == "grow"
     ]
     assert len(grow_events) == 1
     assert grow_events[0]["target"] == 15
@@ -1160,17 +1152,13 @@ def test_ut1608_serial_zero_interference() -> None:
     assert torch.allclose(out_b2, ref_low, atol=1e-4, rtol=1e-4)
     assert torch.allclose(out_b3, ref_full, atol=1e-4, rtol=1e-4)
 
-    out_s1 = _serial(
-        mff, stacked[0:1], branch_id="1608-s0", parent_branch_id="1608-p"
-    )
+    out_s1 = _serial(mff, stacked[0:1], branch_id="1608-s0", parent_branch_id="1608-p")
     runner_s = mff.graph_runner
     assert runner_s is not None
     assert runner_s is not mff.graph_runner_batched
     serial_capacity = runner_s.capacity
 
-    out_s2 = _serial(
-        mff, stacked[1:2], branch_id="1608-s1", parent_branch_id="1608-p"
-    )
+    out_s2 = _serial(mff, stacked[1:2], branch_id="1608-s1", parent_branch_id="1608-p")
     assert mff.graph_runner is runner_s
     assert mff.graph_runner.capacity == serial_capacity
 

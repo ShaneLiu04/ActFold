@@ -70,15 +70,15 @@ from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from scripts.algo_experiments import TimingStats, stats_from_samples
 from scripts.ar017_adaptive_bench import (
     _CAPACITY_RATIO,
+    _GEOMETRIES,
+    _NUM_CANDIDATES,
     _PATH_LABELS,
     _PATH_ORDER,
     _SEED,
     _SEQ_LEN,
-    _Decoder,
-    _GEOMETRIES,
-    _NUM_CANDIDATES,
     _argmax_agreement,
     _cuda_profiler_supported,
+    _Decoder,
     _gpu_driver_version,
     _make_candidates,
     _make_mff,
@@ -198,9 +198,7 @@ def _phase_decomposition(
             t4 = time.perf_counter()
             if runner.budget_exceeded:
                 raise RuntimeError("budget exceeded during decomposition")
-            mff._publish_graph_children(
-                runner, candidates, branch_ids, parent_branch_id, step_idx
-            )
+            mff._publish_graph_children(runner, candidates, branch_ids, parent_branch_id, step_idx)
             torch.cuda.synchronize()
             t5 = time.perf_counter()
             runner._logits_buf.clone()
@@ -253,12 +251,7 @@ def _profiler_consistency(
             entry = stats[-num_layers + layer_idx]
             if entry.layer_idx != layer_idx:
                 return False
-            recomputed = (
-                float(
-                    cast(Any, runner).mask_buf[layer_idx][row].sum().item()
-                )
-                / seq_len
-            )
+            recomputed = float(cast(Any, runner).mask_buf[layer_idx][row].sum().item()) / seq_len
             if abs(entry.stable_ratio - recomputed) > 1e-6:
                 return False
     return True
@@ -274,9 +267,7 @@ def _run_config(
 ) -> dict[str, Any]:
     """Benchmark one (H, L, N) config: three paths + decomposition + H1-H4."""
     torch.manual_seed(_SEED + hidden_dim + num_candidates)
-    model = _Decoder(
-        vocab_size=1000, hidden_dim=hidden_dim, num_layers=num_layers
-    ).to("cuda")
+    model = _Decoder(vocab_size=1000, hidden_dim=hidden_dim, num_layers=num_layers).to("cuda")
     model.eval()
 
     seq_len = _SEQ_LEN
@@ -293,9 +284,7 @@ def _run_config(
         mff(parent_tokens, branch_id="parent")
 
     step_fns: dict[str, Callable[[], Any]] = {
-        "baseline_eager": lambda: [
-            model(candidates[i : i + 1]) for i in range(num_candidates)
-        ],
+        "baseline_eager": lambda: [model(candidates[i : i + 1]) for i in range(num_candidates)],
         "graph_fixed": lambda: mffs["graph_fixed"](
             candidates,
             branch_id=None,
@@ -348,13 +337,10 @@ def _run_config(
     adaptive_runner = mffs["graph_adaptive"].graph_runner_batched
     graph_captured = {
         "graph_fixed": mffs["graph_fixed"].graph_runner_batched is not None
-        and tuple(
-            mffs["graph_fixed"].graph_runner_batched.tokens_static.shape
-        )
+        and tuple(mffs["graph_fixed"].graph_runner_batched.tokens_static.shape)
         == (num_candidates, seq_len),
         "graph_adaptive": adaptive_runner is not None
-        and tuple(adaptive_runner.tokens_static.shape)
-        == (num_candidates, seq_len),
+        and tuple(adaptive_runner.tokens_static.shape) == (num_candidates, seq_len),
     }
 
     # Profiler consistency (H4, untimed, outside the timed window).
@@ -407,9 +393,7 @@ def _run_config(
     h3 = (
         "supported"
         if probe_share is not None and publish_share < probe_share
-        else "refuted"
-        if probe_share is not None
-        else "no_reference"
+        else "refuted" if probe_share is not None else "no_reference"
     )
     h4 = "supported" if (parity and adaptive_close and profiler_ok) else "refuted"
 
@@ -447,9 +431,7 @@ def _run_config(
                 else None
             ),
             "graph_adaptive": (
-                bool(not adaptive_runner.budget_exceeded)
-                if adaptive_runner is not None
-                else None
+                bool(not adaptive_runner.budget_exceeded) if adaptive_runner is not None else None
             ),
         },
         "logits_parity_argmax_exact": parity,
@@ -497,9 +479,7 @@ def run_bench(warmup: int = 5, reps: int = 30, quick: bool = False) -> dict[str,
         raise RuntimeError("run_bench requires a CUDA device")
 
     configs: list[tuple[int, int, int]] = [
-        (hidden, layers, n)
-        for hidden, layers in _GEOMETRIES
-        for n in _NUM_CANDIDATES
+        (hidden, layers, n) for hidden, layers in _GEOMETRIES for n in _NUM_CANDIDATES
     ]
     if quick:
         configs = [(256, 8, 4)]
@@ -510,9 +490,7 @@ def run_bench(warmup: int = 5, reps: int = 30, quick: bool = False) -> dict[str,
     config_records = []
     for hidden_dim, num_layers, num_candidates in configs:
         GLOBAL_STABILITY_PROFILER.reset()
-        record = _run_config(
-            hidden_dim, num_layers, num_candidates, warmup, reps, anchor
-        )
+        record = _run_config(hidden_dim, num_layers, num_candidates, warmup, reps, anchor)
         config_records.append(record)
         decomp = record["phase_decomposition"]
         print(
@@ -574,9 +552,7 @@ def run_bench(warmup: int = 5, reps: int = 30, quick: bool = False) -> dict[str,
                 "patience 3 + throttle interval 2); timed steady state "
                 "reflects the adapted capacity and the AR018 publish"
             ),
-            "interleaving": (
-                "round-robin per repetition: " + " -> ".join(_PATH_ORDER)
-            ),
+            "interleaving": ("round-robin per repetition: " + " -> ".join(_PATH_ORDER)),
             "timing_method": (
                 "time.perf_counter around torch.cuda.synchronize() boundaries "
                 "(host-side prefill/readback/publish included; CUDA-event "

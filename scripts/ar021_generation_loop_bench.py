@@ -94,18 +94,11 @@ from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: E402
 
 from actfold.core import ActivationCache, SimilarityGate  # noqa: E402
 from actfold.core.adaptive_capacity import AdaptiveCapacityConfig  # noqa: E402
-from actfold.models.architecture_utils import (  # noqa: E402
-    ManualFoldedForward,
-)
+from actfold.models.architecture_utils import ManualFoldedForward  # noqa: E402
 from actfold.models.base import DiffusionLLM  # noqa: E402
-from actfold.models.fast_dllm_sampler import (  # noqa: E402
-    FastDLLMSampler,
-    FastDLLMSamplerConfig,
-)
+from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerConfig  # noqa: E402
 from actfold.models.sampling_utils import right_shift_logits  # noqa: E402
-from actfold.profiler.stability_profiler import (  # noqa: E402
-    GLOBAL_STABILITY_PROFILER,
-)
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER  # noqa: E402
 from scripts.algo_experiments import stats_from_samples  # noqa: E402
 
 DEFAULT_OUTPUT_PATH = Path("results/optimization/ar021_generation_loop_bench.json")

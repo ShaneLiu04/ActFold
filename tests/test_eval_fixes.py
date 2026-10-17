@@ -374,6 +374,7 @@ def test_benchmark_runner_passes_max_new_tokens_to_both_adapters() -> None:
 # ---------------------------------------------------------------------------
 # AR002 srs 3.7: per-task max_new_tokens default table
 
+
 def _make_code_adapter(adapter_cls: type[BaseEvalAdapter], **kwargs: Any) -> BaseEvalAdapter:
     """Build an LMEval/EvalPlus adapter with mocked deps for length resolution."""
     model = FastDLLMAdapter(

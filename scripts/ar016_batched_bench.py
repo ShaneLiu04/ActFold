@@ -70,10 +70,7 @@ _PATH_ORDER = (
     "folded_batched_graph",
 )
 _PATH_LABELS = tuple(
-    (label, name)
-    for label, name in zip(
-        ("baseline", "serial", "batch", "graph"), _PATH_ORDER
-    )
+    (label, name) for label, name in zip(("baseline", "serial", "batch", "graph"), _PATH_ORDER)
 )
 _FULL_CONFIGS: tuple[tuple[int, int], ...] = (
     (2, 128),
@@ -219,15 +216,10 @@ def _cuda_profiler_supported() -> bool:
     try:
         x = torch.ones(4, device="cuda")
         torch.cuda.synchronize()
-        with torch.profiler.profile(
-            activities=[torch.profiler.ProfilerActivity.CUDA]
-        ) as prof:
+        with torch.profiler.profile(activities=[torch.profiler.ProfilerActivity.CUDA]) as prof:
             x = x + 1
             torch.cuda.synchronize()
-        return any(
-            evt.device_type == torch.profiler.DeviceType.CUDA
-            for evt in prof.key_averages()
-        )
+        return any(evt.device_type == torch.profiler.DeviceType.CUDA for evt in prof.key_averages())
     except Exception:  # noqa: BLE001 - probe must never raise
         return False
 
@@ -260,9 +252,7 @@ def _build_step_fns(
         mff(parent_tokens, branch_id="parent")
 
     step_fns: dict[str, Callable[[], Any]] = {
-        "baseline_eager": lambda: [
-            model(candidates[i : i + 1]) for i in range(num_candidates)
-        ],
+        "baseline_eager": lambda: [model(candidates[i : i + 1]) for i in range(num_candidates)],
         "folded_serial_eager": lambda: [
             mffs["folded_serial_eager"](
                 candidates[i : i + 1],
@@ -369,23 +359,16 @@ def _run_config(
     # The runner materializes during the first (warmup) call, so probe it
     # only after the timing loop.
     runner = mffs["folded_batched_graph"].graph_runner_batched
-    graph_captured = runner is not None and tuple(
-        runner.tokens_static.shape
-    ) == (num_candidates, seq_len)
-    graph_validated = bool(
-        runner is not None and not cast(Any, runner).budget_exceeded
+    graph_captured = runner is not None and tuple(runner.tokens_static.shape) == (
+        num_candidates,
+        seq_len,
     )
+    graph_validated = bool(runner is not None and not cast(Any, runner).budget_exceeded)
 
     stable_ratios = {
-        "folded_serial_eager": _mean_stable_ratio(
-            [f"s{i}" for i in range(num_candidates)]
-        ),
-        "folded_batched_eager": _mean_stable_ratio(
-            [f"b{i}" for i in range(num_candidates)]
-        ),
-        "folded_batched_graph": _mean_stable_ratio(
-            [f"g{i}" for i in range(num_candidates)]
-        ),
+        "folded_serial_eager": _mean_stable_ratio([f"s{i}" for i in range(num_candidates)]),
+        "folded_batched_eager": _mean_stable_ratio([f"b{i}" for i in range(num_candidates)]),
+        "folded_batched_graph": _mean_stable_ratio([f"g{i}" for i in range(num_candidates)]),
     }
 
     h1 = _verdict(timings["folded_batched_eager"], timings["folded_serial_eager"])
@@ -455,11 +438,7 @@ def run_bench(warmup: int = 3, reps: int = 10, quick: bool = False) -> dict[str,
 
     h1 = _overall([r["h1_batched_vs_serial"] for r in config_records])
     h2 = _overall([r["h2_graph_vs_batched_eager"] for r in config_records])
-    h3 = (
-        "supported"
-        if all(r["logits_parity_argmax_exact"] for r in config_records)
-        else "refuted"
-    )
+    h3 = "supported" if all(r["logits_parity_argmax_exact"] for r in config_records) else "refuted"
     p1_7 = _overall([r["p1_7_graph_vs_baseline"]["verdict"] for r in config_records])
 
     return {
@@ -477,9 +456,7 @@ def run_bench(warmup: int = 3, reps: int = 10, quick: bool = False) -> dict[str,
             "capacity_ratio": _CAPACITY_RATIO,
             "warmup": warmup,
             "reps": reps,
-            "interleaving": (
-                "round-robin per repetition: " + " -> ".join(_PATH_ORDER)
-            ),
+            "interleaving": ("round-robin per repetition: " + " -> ".join(_PATH_ORDER)),
             "timing_method": (
                 "time.perf_counter around torch.cuda.synchronize() boundaries "
                 "(host-side prefill/readback/publish included; CUDA-event "
@@ -494,8 +471,7 @@ def run_bench(warmup: int = 3, reps: int = 10, quick: bool = False) -> dict[str,
                 else "counts recordable via torch.profiler (CUPTI); wall-clock "
                 "remains the primary metric"
             ),
-            "command": "python -m scripts.ar016_batched_bench"
-            + (" --quick" if quick else ""),
+            "command": "python -m scripts.ar016_batched_bench" + (" --quick" if quick else ""),
         },
         "hypotheses_declared": {
             "H1": "batched eager significantly faster than folded serial (~Nx)",

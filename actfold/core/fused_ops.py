@@ -174,9 +174,7 @@ def _hidden_bucket(hidden_dim: int) -> int:
     return 1 << max(hidden_dim - 1, 0).bit_length()
 
 
-def _record_triton_failure(
-    key: tuple[str, str, int], kernel_desc: str, exc: Exception
-) -> None:
+def _record_triton_failure(key: tuple[str, str, int], kernel_desc: str, exc: Exception) -> None:
     """Record a failed Triton launch key once, with a diagnostic warning.
 
     The warning fires only for the first failure of each
@@ -637,9 +635,7 @@ def fused_gate_mask_count(
         ValueError: If shapes/dtypes/devices are inconsistent.
     """
     if h_child.dim() != 3:
-        raise ValueError(
-            f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}"
-        )
+        raise ValueError(f"h_child must be [batch, seq, hidden], got shape {tuple(h_child.shape)}")
     if h_child.shape != h_parent.shape:
         raise ValueError(
             f"h_child shape {tuple(h_child.shape)} must match h_parent shape "

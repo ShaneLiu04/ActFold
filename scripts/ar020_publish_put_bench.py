@@ -84,6 +84,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Sequence, cast
 
+import torch  # noqa: E402
+
+from actfold.core import ActivationCache, SimilarityGate  # noqa: E402
+from actfold.core.adaptive_capacity import AdaptiveCapacityConfig  # noqa: E402
+from actfold.core.batched_write import _FOREACH_AVAILABLE  # noqa: E402
+from actfold.core.cache_protocol import CachePutEntry  # noqa: E402
+from actfold.models.architecture_utils import ManualFoldedForward  # noqa: E402
+from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER  # noqa: E402
+from scripts._hf_env import add_hf_env_arguments  # noqa: E402
+from scripts.algo_experiments import stats_from_samples  # noqa: E402
 from scripts.ar019_real_e2e_bench import (  # noqa: E402  (import order!)
     _CONFIGS,
     BLOCK,
@@ -103,18 +113,6 @@ from scripts.ar019_real_e2e_bench import (  # noqa: E402  (import order!)
     _resolve_model_path,
     _timed_ms,
 )
-
-import torch  # noqa: E402
-from actfold.core import ActivationCache, SimilarityGate  # noqa: E402
-from actfold.core.adaptive_capacity import AdaptiveCapacityConfig  # noqa: E402
-from actfold.core.batched_write import _FOREACH_AVAILABLE  # noqa: E402
-from actfold.core.cache_protocol import CachePutEntry  # noqa: E402
-from actfold.models.architecture_utils import ManualFoldedForward  # noqa: E402
-from actfold.profiler.stability_profiler import (  # noqa: E402
-    GLOBAL_STABILITY_PROFILER,
-)
-from scripts._hf_env import add_hf_env_arguments  # noqa: E402
-from scripts.algo_experiments import stats_from_samples  # noqa: E402
 
 DEFAULT_OUTPUT_PATH = Path("results/optimization/ar020_publish_put_bench.json")
 DEFAULT_MODEL_ENV = "FASTDLLM_MODEL_PATH"
@@ -212,9 +210,7 @@ class _BatchCache:
         return getattr(self._inner, name)
 
 
-def _make_mff_with_cache(
-    model: Any, cache: Any, adaptive: bool
-) -> ManualFoldedForward:
+def _make_mff_with_cache(model: Any, cache: Any, adaptive: bool) -> ManualFoldedForward:
     """Build a graph-capture folded stack around a caller-supplied cache."""
     gate = SimilarityGate(tau=TAU, metric="cosine", eps=EPS)
     return ManualFoldedForward(
@@ -230,8 +226,7 @@ def _make_mff_with_cache(
     )
 
 
-def _h2_verdict(loop_p50: float, loop_std: float,
-                batch_p50: float, batch_std: float) -> str:
+def _h2_verdict(loop_p50: float, loop_std: float, batch_p50: float, batch_std: float) -> str:
     """Frozen H2 rule (sigma = max of the two stds, srs 3.3)."""
     sigma = max(loop_std, batch_std)
     if loop_p50 - batch_p50 > 2 * sigma:
@@ -262,18 +257,18 @@ def _bench_put_micro(
     destination patterns on both variants.
     """
     src = torch.randn(
-        num_layers, num_candidates, seq_len, hidden,
-        device="cuda", dtype=torch.bfloat16,
+        num_layers,
+        num_candidates,
+        seq_len,
+        hidden,
+        device="cuda",
+        dtype=torch.bfloat16,
     )
-    emb = torch.randn(
-        num_candidates, seq_len, hidden, device="cuda", dtype=torch.bfloat16
-    )
+    emb = torch.randn(num_candidates, seq_len, hidden, device="cuda", dtype=torch.bfloat16)
     entries: list[CachePutEntry] = []
     for layer_idx in range(num_layers):
         for row in range(num_candidates):
-            acts: dict[str, torch.Tensor] = {
-                "ffn_out": src[layer_idx][row : row + 1]
-            }
+            acts: dict[str, torch.Tensor] = {"ffn_out": src[layer_idx][row : row + 1]}
             if layer_idx == 0:
                 acts["embedding"] = emb[row : row + 1]
             entries.append(
@@ -284,15 +279,15 @@ def _bench_put_micro(
                     step_idx=0,
                 )
             )
-    loop_cache = ActivationCache(max_entries_per_layer=CACHE_BUDGET,
-                                 device="cuda")
-    batch_cache = ActivationCache(max_entries_per_layer=CACHE_BUDGET,
-                                  device="cuda")
+    loop_cache = ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")
+    batch_cache = ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")
 
     def run_loop() -> None:
         for entry in entries:
             loop_cache.put(
-                entry.branch_id, entry.layer_idx, entry.activations,
+                entry.branch_id,
+                entry.layer_idx,
+                entry.activations,
                 entry.step_idx,
             )
 
@@ -314,10 +309,7 @@ def _bench_put_micro(
             ledger[name].append(caches[name].write_op_count - before)
 
     result = {
-        "timings_ms": {
-            k: stats_from_samples(v[warmup:]).as_dict()
-            for k, v in samples.items()
-        },
+        "timings_ms": {k: stats_from_samples(v[warmup:]).as_dict() for k, v in samples.items()},
         "write_ops_p50": {
             "loop": int(statistics.median(ledger["loop"][warmup:])),
             "batch": int(statistics.median(ledger["batch"][warmup:])),
@@ -357,32 +349,36 @@ def _bench_publish_window(
     profiler records). The two variants publish to the same branch ids
     every rep -- steady-state in-place overwrites on both sides.
     """
-    loop_w = _NoBatchCache(
-        ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")
-    )
-    batch_w = _BatchCache(
-        ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")
-    )
+    loop_w = _NoBatchCache(ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda"))
+    batch_w = _BatchCache(ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda"))
     mff = _make_mff_with_cache(model, loop_w, adaptive=False)
     pub_ids = [f"pub{i}" for i in range(num_candidates)]
 
     with torch.no_grad():
         # Parent prefill + capture + one loop publish (steady-state setup).
-        mff(parent_ids, branch_id="parent",
-            attention_mask=mask, position_embeddings=pe)
-        mff(cands, branch_id=None, branch_ids=pub_ids,
+        mff(parent_ids, branch_id="parent", attention_mask=mask, position_embeddings=pe)
+        mff(
+            cands,
+            branch_id=None,
+            branch_ids=pub_ids,
             parent_branch_id="parent",
-            attention_mask=mask, position_embeddings=pe)
+            attention_mask=mask,
+            position_embeddings=pe,
+        )
         # Swap to the batch wrapper: the property setter re-propagates the
         # cache to the wrapped layers and the runner, the parent is
         # re-serialized into the new inner cache, and the next child call
         # replays + publishes through put_batch (steady-state setup).
         mff.cache = batch_w
-        mff(parent_ids, branch_id="parent",
-            attention_mask=mask, position_embeddings=pe)
-        mff(cands, branch_id=None, branch_ids=pub_ids,
+        mff(parent_ids, branch_id="parent", attention_mask=mask, position_embeddings=pe)
+        mff(
+            cands,
+            branch_id=None,
+            branch_ids=pub_ids,
             parent_branch_id="parent",
-            attention_mask=mask, position_embeddings=pe)
+            attention_mask=mask,
+            position_embeddings=pe,
+        )
         runner = mff.graph_runner_batched
         if runner is None:
             raise RuntimeError(
@@ -397,14 +393,10 @@ def _bench_publish_window(
         chk_batch = [f"chk_b{i}" for i in range(num_candidates)]
         mff.cache = loop_w
         runner.replay(cands, "parent", chk_loop[0])
-        mff._publish_graph_children(
-            runner, cands, chk_loop, "parent", 0
-        )
+        mff._publish_graph_children(runner, cands, chk_loop, "parent", 0)
         mff.cache = batch_w
         runner.replay(cands, "parent", chk_batch[0])
-        mff._publish_graph_children(
-            runner, cands, chk_batch, "parent", 0
-        )
+        mff._publish_graph_children(runner, cands, chk_batch, "parent", 0)
         checked = 0
         bit_equal = True
         for row in range(num_candidates):
@@ -441,9 +433,7 @@ def _bench_publish_window(
                 inner = wrappers[name]._inner
                 before = inner.write_op_count
                 elapsed = _timed_ms(
-                    lambda: mff._publish_graph_children(
-                        runner, cands, pub_ids, "parent", 0
-                    )
+                    lambda: mff._publish_graph_children(runner, cands, pub_ids, "parent", 0)
                 )
                 samples[name].append(elapsed)
                 ledger[name].append(inner.write_op_count - before)
@@ -458,19 +448,13 @@ def _bench_publish_window(
             "batch": batch_stats.as_dict(),
         },
         "write_ops_p50": {"loop": loop_ops, "batch": batch_ops},
-        "budget_exceeded_replays": sum(
-            sum(flags) for flags in budget_flags.values()
-        ),
+        "budget_exceeded_replays": sum(sum(flags) for flags in budget_flags.values()),
         "batch_put_batch_calls": batch_w.put_batch_calls,
         "loop_put_calls": loop_w.put_calls,
         "sigma_ms": max(loop_stats.std, batch_stats.std),
-        "h2_verdict": _h2_verdict(
-            loop_stats.p50, loop_stats.std, batch_stats.p50, batch_stats.std
-        ),
+        "h2_verdict": _h2_verdict(loop_stats.p50, loop_stats.std, batch_stats.p50, batch_stats.std),
         "h4_verdict": (
-            "supported"
-            if batch_ops <= C_CONSTANT * (num_layers + num_candidates)
-            else "refuted"
+            "supported" if batch_ops <= C_CONSTANT * (num_layers + num_candidates) else "refuted"
         ),
         "correctness_gate": correctness_gate,
         "note": "one untimed replay repopulates the static child buffer "
@@ -511,20 +495,12 @@ def _bench_end_to_end(
         "graph_fixed": _make_mff(model, adaptive=False),
         "adaptive_loop": _make_mff_with_cache(
             model,
-            _NoBatchCache(
-                ActivationCache(
-                    max_entries_per_layer=CACHE_BUDGET, device="cuda"
-                )
-            ),
+            _NoBatchCache(ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")),
             adaptive=True,
         ),
         "adaptive_batch": _make_mff_with_cache(
             model,
-            _BatchCache(
-                ActivationCache(
-                    max_entries_per_layer=CACHE_BUDGET, device="cuda"
-                )
-            ),
+            _BatchCache(ActivationCache(max_entries_per_layer=CACHE_BUDGET, device="cuda")),
             adaptive=True,
         ),
     }
@@ -540,27 +516,33 @@ def _bench_end_to_end(
     }
     with torch.no_grad():
         for key, mff in mffs.items():
-            mff(parent_ids, branch_id=parents[key],
-                attention_mask=mask, position_embeddings=pe)
+            mff(parent_ids, branch_id=parents[key], attention_mask=mask, position_embeddings=pe)
 
     step_fns: dict[str, Callable[[], Any]] = {
-        "baseline_eager": lambda: [
-            model(cands[i : i + 1]) for i in range(num_candidates)
-        ],
+        "baseline_eager": lambda: [model(cands[i : i + 1]) for i in range(num_candidates)],
         "graph_fixed": lambda: mffs["graph_fixed"](
-            cands, branch_id=None, branch_ids=ids["graph_fixed"],
+            cands,
+            branch_id=None,
+            branch_ids=ids["graph_fixed"],
             parent_branch_id=parents["graph_fixed"],
-            attention_mask=mask, position_embeddings=pe,
+            attention_mask=mask,
+            position_embeddings=pe,
         ),
         "adaptive_loop": lambda: mffs["adaptive_loop"](
-            cands, branch_id=None, branch_ids=ids["adaptive_loop"],
+            cands,
+            branch_id=None,
+            branch_ids=ids["adaptive_loop"],
             parent_branch_id=parents["adaptive_loop"],
-            attention_mask=mask, position_embeddings=pe,
+            attention_mask=mask,
+            position_embeddings=pe,
         ),
         "adaptive_batch": lambda: mffs["adaptive_batch"](
-            cands, branch_id=None, branch_ids=ids["adaptive_batch"],
+            cands,
+            branch_id=None,
+            branch_ids=ids["adaptive_batch"],
             parent_branch_id=parents["adaptive_batch"],
-            attention_mask=mask, position_embeddings=pe,
+            attention_mask=mask,
+            position_embeddings=pe,
         ),
     }
     order = (
@@ -570,12 +552,8 @@ def _bench_end_to_end(
         "adaptive_batch",
     )
     samples: dict[str, list[float]] = {name: [] for name in order}
-    budget_flags: dict[str, list[bool]] = {
-        name: [] for name in order if name != "baseline_eager"
-    }
-    pe_mismatches: dict[str, int] = {
-        name: 0 for name in order if name != "baseline_eager"
-    }
+    budget_flags: dict[str, list[bool]] = {name: [] for name in order if name != "baseline_eager"}
+    pe_mismatches: dict[str, int] = {name: 0 for name in order if name != "baseline_eager"}
     with torch.no_grad():
         for _ in range(warmup + reps):
             for name in order:
@@ -584,18 +562,12 @@ def _bench_end_to_end(
                     continue
                 mff = mffs[name]
                 runner = mff.graph_runner_batched
-                exceeded = (
-                    bool(runner.budget_exceeded)
-                    if runner is not None
-                    else False
-                )
+                exceeded = bool(runner.budget_exceeded) if runner is not None else False
                 budget_flags[name].append(exceeded)
                 if cast(Any, mff)._graph_batched_pe is not pe:
                     pe_mismatches[name] += 1
 
-    timings = {
-        name: stats_from_samples(samples[name][warmup:]) for name in order
-    }
+    timings = {name: stats_from_samples(samples[name][warmup:]) for name in order}
     ab_wrapper = cast(Any, mffs["adaptive_batch"].cache)
     al_wrapper = cast(Any, mffs["adaptive_loop"].cache)
     expected_steps = warmup + reps
@@ -618,18 +590,12 @@ def _bench_end_to_end(
         policy = cast(Any, mffs[key]).graph_adaptive_policy
         if policy is None:
             return 0
-        return sum(
-            1 for e in policy.events if e.get("kind") == "recapture"
-        )
+        return sum(1 for e in policy.events if e.get("kind") == "recapture")
 
     speedups = {
-        "adaptive_batch_vs_loop": (
-            al.p50 / ab.p50 if ab.p50 > 0 else float("inf")
-        ),
+        "adaptive_batch_vs_loop": (al.p50 / ab.p50 if ab.p50 > 0 else float("inf")),
         "adaptive_loop_vs_baseline": (
-            timings["baseline_eager"].p50 / al.p50
-            if al.p50 > 0
-            else float("inf")
+            timings["baseline_eager"].p50 / al.p50 if al.p50 > 0 else float("inf")
         ),
         "fixed_vs_baseline": (
             timings["baseline_eager"].p50 / timings["graph_fixed"].p50
@@ -640,9 +606,7 @@ def _bench_end_to_end(
     result = {
         "timings_ms": {name: timings[name].as_dict() for name in order},
         "speedups_p50": {k: round(v, 4) for k, v in speedups.items()},
-        "budget_violations": {
-            name: sum(flags) for name, flags in budget_flags.items()
-        },
+        "budget_violations": {name: sum(flags) for name, flags in budget_flags.items()},
         "pe_identity_mismatches": pe_mismatches,
         "adaptive_state": {
             "adaptive_loop": {
@@ -665,9 +629,7 @@ def _bench_end_to_end(
         "h3_components": {
             "sigma_ms": sigma,
             "regressed_beyond_2sigma": bool(ab.p50 > al.p50 + 2 * sigma),
-            "strictly_improved_beyond_2sigma": bool(
-                al.p50 - ab.p50 > 2 * sigma
-            ),
+            "strictly_improved_beyond_2sigma": bool(al.p50 - ab.p50 > 2 * sigma),
         },
         "note": "round-robin per rep: baseline -> fixed -> adaptive(loop) "
         "-> adaptive(batch); the two adaptive paths differ only in the "
@@ -698,13 +660,9 @@ def _run_config(
     hidden = int(model.config.hidden_size)
 
     mask, pe = _build_context(model, seq_len)
-    parent_ids, cands = _make_workload(
-        model, tokenizer, seq_len, num_candidates
-    )
+    parent_ids, cands = _make_workload(model, tokenizer, seq_len, num_candidates)
 
-    put_micro = _bench_put_micro(
-        num_layers, hidden, seq_len, num_candidates, warmup, reps
-    )
+    put_micro = _bench_put_micro(num_layers, hidden, seq_len, num_candidates, warmup, reps)
     print(
         f"T={seq_len} N={num_candidates} put-micro: "
         f"loop p50={put_micro['timings_ms']['loop']['p50']:.3f}ms "
@@ -714,8 +672,16 @@ def _run_config(
     )
 
     publish = _bench_publish_window(
-        model, seq_len, num_candidates, warmup, reps,
-        mask, pe, parent_ids, cands, num_layers,
+        model,
+        seq_len,
+        num_candidates,
+        warmup,
+        reps,
+        mask,
+        pe,
+        parent_ids,
+        cands,
+        num_layers,
     )
     print(
         f"T={seq_len} N={num_candidates} publish: "
@@ -727,15 +693,20 @@ def _run_config(
     )
 
     end_to_end = _bench_end_to_end(
-        model, seq_len, num_candidates, warmup, reps,
-        mask, pe, parent_ids, cands,
+        model,
+        seq_len,
+        num_candidates,
+        warmup,
+        reps,
+        mask,
+        pe,
+        parent_ids,
+        cands,
     )
     timings = end_to_end["timings_ms"]
     print(
         f"T={seq_len} N={num_candidates} e2e: "
-        + " | ".join(
-            f"{name} p50={timings[name]['p50']:.3f}ms" for name in timings
-        )
+        + " | ".join(f"{name} p50={timings[name]['p50']:.3f}ms" for name in timings)
         + f" | no_fallback={end_to_end['batch_canary']['batch_no_fallback']}"
     )
 
@@ -749,9 +720,7 @@ def _run_config(
         "publish_window": publish,
         "correctness_gate": publish["correctness_gate"],
         "end_to_end": end_to_end,
-        "peak_vram_mb": round(
-            torch.cuda.max_memory_allocated() / 1024**2, 1
-        ),
+        "peak_vram_mb": round(torch.cuda.max_memory_allocated() / 1024**2, 1),
     }
 
 
@@ -782,9 +751,7 @@ def run_bench(
     records: list[dict[str, Any]] = []
     for seq_len, num_candidates in configs:
         try:
-            record = _run_config(
-                model, tokenizer, seq_len, num_candidates, warmup, reps
-            )
+            record = _run_config(model, tokenizer, seq_len, num_candidates, warmup, reps)
         except Exception as exc:  # noqa: BLE001 - record, never fabricate
             record = {
                 "seq_len": seq_len,
@@ -799,38 +766,21 @@ def run_bench(
 
     ok = [r for r in records if "error" not in r]
     if not ok:
-        raise RuntimeError(
-            "every config failed; nothing to verdict (see per-config errors)"
-        )
+        raise RuntimeError("every config failed; nothing to verdict (see per-config errors)")
 
     # H1: UT face (provenance) + every config's real-model publish gate.
-    h1 = (
-        "supported"
-        if all(r["correctness_gate"]["bit_equal"] for r in ok)
-        else "refuted"
-    )
+    h1 = "supported" if all(r["correctness_gate"]["bit_equal"] for r in ok) else "refuted"
     # H2 / H4: most conservative aggregation over per-config verdicts.
     h2 = _overall([r["publish_window"]["h2_verdict"] for r in ok])
     h4 = _overall([r["publish_window"]["h4_verdict"] for r in ok])
     # H3: no-fallback everywhere + no regression anywhere + strict
     # improvement on the frozen minimal config (srs 3.3).
-    min_records = [
-        r
-        for r in ok
-        if (r["seq_len"], r["num_candidates"]) == MIN_CONFIG
-    ]
-    regressed_any = any(
-        r["end_to_end"]["h3_components"]["regressed_beyond_2sigma"]
-        for r in ok
-    )
-    no_fallback_all = all(
-        r["end_to_end"]["batch_canary"]["batch_no_fallback"] for r in ok
-    )
+    min_records = [r for r in ok if (r["seq_len"], r["num_candidates"]) == MIN_CONFIG]
+    regressed_any = any(r["end_to_end"]["h3_components"]["regressed_beyond_2sigma"] for r in ok)
+    no_fallback_all = all(r["end_to_end"]["batch_canary"]["batch_no_fallback"] for r in ok)
     min_strict = bool(
         min_records
-        and min_records[0]["end_to_end"]["h3_components"][
-            "strictly_improved_beyond_2sigma"
-        ]
+        and min_records[0]["end_to_end"]["h3_components"]["strictly_improved_beyond_2sigma"]
     )
     if regressed_any:
         h3 = "refuted"
@@ -934,13 +884,11 @@ def run_bench(
             "(sigma = max of the two stds)",
             "H3": "end-to-end adaptive: batch never falls back and the "
             "minimal config (256, 4) strictly improves beyond 2*sigma",
-            "H4": "host-call ledger: batch write_op_count <= 2*(L+N) "
-            "(vs the loop's L*N+N)",
+            "H4": "host-call ledger: batch write_op_count <= 2*(L+N) " "(vs the loop's L*N+N)",
         },
         "hypotheses_verdicts": {"H1": h1, "H2": h2, "H3": h3, "H4": h4},
         "failed_configs": [
-            {"seq_len": r["seq_len"], "num_candidates": r["num_candidates"],
-             "error": r["error"]}
+            {"seq_len": r["seq_len"], "num_candidates": r["num_candidates"], "error": r["error"]}
             for r in records
             if "error" in r
         ],
@@ -952,9 +900,7 @@ def write_results(data: dict[str, Any], path: str | Path) -> Path:
     """Write the benchmark record as JSON, creating parent directories."""
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(
-        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    out.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return out
 
 
@@ -971,10 +917,8 @@ def main() -> None:
         default=None,
         help=f"Local checkpoint directory (env fallback: {DEFAULT_MODEL_ENV}).",
     )
-    parser.add_argument("--reps", type=int, default=30,
-                        help="Timed reps per config")
-    parser.add_argument("--warmup", type=int, default=8,
-                        help="Warmup reps per config")
+    parser.add_argument("--reps", type=int, default=30, help="Timed reps per config")
+    parser.add_argument("--warmup", type=int, default=8, help="Warmup reps per config")
     parser.add_argument(
         "--quick",
         action="store_true",

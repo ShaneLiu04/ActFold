@@ -188,9 +188,7 @@ def get_num_transfer_tokens(
     # Remaining masked-token counts per row; float64 mirrors the official
     # Python-float arithmetic (round half-to-even) exactly.
     remaining = mask_index.sum(dim=1).to(torch.float64)  # [B]
-    num_transfer_tokens = torch.zeros(
-        batch, steps, device=mask_index.device, dtype=torch.int64
-    )
+    num_transfer_tokens = torch.zeros(batch, steps, device=mask_index.device, dtype=torch.int64)
 
     # Per-step reverse transfer probabilities as host floats, identical to the
     # official per-row loop: step j uses s = (steps-1-j)/steps, t = (steps-j)/steps.

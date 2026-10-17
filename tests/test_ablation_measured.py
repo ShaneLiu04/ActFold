@@ -116,9 +116,7 @@ def _make_study(
 def test_default_draft_generator_is_suffix_append() -> None:
     """A study built without a draft generator defaults to suffix_append."""
     raw = _make_model()
-    adapter = FastDLLMAdapter(
-        raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100
-    )
+    adapter = FastDLLMAdapter(raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100)
     study = AblationStudy(
         model=adapter,
         baseline=None,
@@ -138,9 +136,7 @@ def test_it511_ablation_with_model_draft_generator() -> None:
     model_draft children just like the suffix_append default.
     """
     raw = _make_model(num_layers=4)
-    adapter = FastDLLMAdapter(
-        raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100
-    )
+    adapter = FastDLLMAdapter(raw, num_layers=4, hidden_dim=64, num_heads=1, vocab_size=100)
     draft_model = _make_model(num_layers=1)  # independent tiny draft model
     generator = DraftGenerator(
         vocab_size=100,

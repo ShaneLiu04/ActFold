@@ -76,9 +76,7 @@ def test_attention_t2_term_optional() -> None:
     assert base.attention_tflops == pytest.approx(4 * L * H * H * T / 1e12)
 
     with_t2 = _call(include_attention_t2=True)
-    assert with_t2.attention_tflops == pytest.approx(
-        (4 * L * H * H * T + 2 * L * T * T * H) / 1e12
-    )
+    assert with_t2.attention_tflops == pytest.approx((4 * L * H * H * T + 2 * L * T * T * H) / 1e12)
 
     with_reuse = _call(include_attention_t2=True, reuse_ratio=0.5)
     assert with_reuse.attention_tflops == pytest.approx(
@@ -97,8 +95,9 @@ def test_nonpositive_intermediate_dim_raises() -> None:
 
 
 def test_total_sums_components() -> None:
-    flops = _call(ffn_type="swiglu", ffn_intermediate_dim=432, reuse_ratio=0.3,
-                  include_attention_t2=True)
+    flops = _call(
+        ffn_type="swiglu", ffn_intermediate_dim=432, reuse_ratio=0.3, include_attention_t2=True
+    )
     assert flops.total_tflops == pytest.approx(
         flops.attention_tflops + flops.ffn_tflops + flops.embedding_tflops
     )

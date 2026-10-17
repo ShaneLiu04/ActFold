@@ -177,9 +177,7 @@ def test_ring_eviction_keeps_recent_branch_steps() -> None:
 @pytest.mark.parametrize("max_branch_steps", [0, None])
 def test_ring_eviction_disabled_when_zero_or_none(max_branch_steps: int | None) -> None:
     """``max_branch_steps`` of 0 or None disables (branch, step) eviction."""
-    cache = VectorizedActivationCache(
-        max_entries_per_layer=16, max_branch_steps=max_branch_steps
-    )
+    cache = VectorizedActivationCache(max_entries_per_layer=16, max_branch_steps=max_branch_steps)
     mask = torch.ones(1, 4, dtype=torch.bool)
     for step in range(5):
         cache.put(f"b{step}", 0, _make_activations(1, 4, 8), step_idx=step)
@@ -370,10 +368,7 @@ def test_t016_fetch_flat_complete_coverage() -> None:
         assert flat_buffer.shape == (capacity * batch, hidden)
         # View contract: shares storage with the internal contiguous buffer.
         assert flat_buffer.data_ptr() == internal.data_ptr()
-        assert (
-            flat_buffer.untyped_storage().data_ptr()
-            == internal.untyped_storage().data_ptr()
-        )
+        assert flat_buffer.untyped_storage().data_ptr() == internal.untyped_storage().data_ptr()
         assert flat_rows.dtype == torch.int64
         assert flat_rows.shape == (batch * seq,)
         assert torch.equal(flat_rows, expected_rows)

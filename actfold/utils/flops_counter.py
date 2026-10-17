@@ -246,17 +246,12 @@ def count_diffusion_llm_flops(
             raise ValueError(f"moe_num_experts must be positive, got {moe_num_experts}")
         if moe_num_experts is not None and moe_top_k > moe_num_experts:
             raise ValueError(
-                f"moe_top_k ({moe_top_k}) must not exceed moe_num_experts "
-                f"({moe_num_experts})"
+                f"moe_top_k ({moe_top_k}) must not exceed moe_num_experts " f"({moe_num_experts})"
             )
         if moe_intermediate_dim is not None and moe_intermediate_dim <= 0:
-            raise ValueError(
-                f"moe_intermediate_dim must be positive, got {moe_intermediate_dim}"
-            )
+            raise ValueError(f"moe_intermediate_dim must be positive, got {moe_intermediate_dim}")
         if moe_num_layers is not None and not 0 <= moe_num_layers <= num_layers:
-            raise ValueError(
-                f"moe_num_layers ({moe_num_layers}) must be in [0, {num_layers}]"
-            )
+            raise ValueError(f"moe_num_layers ({moe_num_layers}) must be in [0, {num_layers}]")
 
     effective_seq_len = seq_len * (1.0 - reuse_ratio)
 
@@ -270,9 +265,7 @@ def count_diffusion_llm_flops(
     n_matmul = 3 if ffn_type == "swiglu" else 2
     dense_intermediate = hidden_dim * 4 if ffn_intermediate_dim is None else ffn_intermediate_dim
     if moe_top_k is None:
-        ffn_flops = (
-            2 * n_matmul * dense_intermediate * hidden_dim * num_layers * effective_seq_len
-        )
+        ffn_flops = 2 * n_matmul * dense_intermediate * hidden_dim * num_layers * effective_seq_len
     else:
         # MoE accounting (AR005): top_k routed experts +/- one shared expert
         # per token, applied to the MoE layer subset; the remaining layers

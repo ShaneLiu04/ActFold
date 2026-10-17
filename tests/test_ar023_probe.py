@@ -553,10 +553,7 @@ def test_ut_2325_wrap_cuda_faces_replaces_only_gpu_faces() -> None:
     """wrap_cuda_faces_with_subprocess keeps download/load callables by identity
     and replaces exactly the five CUDA faces with subprocess-backed ones; calling
     a wrapped CUDA face routes through the injected runner."""
-    from scripts.ar023_family_probe import (
-        FACE_RESULT_SENTINEL,
-        wrap_cuda_faces_with_subprocess,
-    )
+    from scripts.ar023_family_probe import FACE_RESULT_SENTINEL, wrap_cuda_faces_with_subprocess
 
     faces = {name: (lambda n=name: {"ok": True, "face": n}) for name in _ALL_FACES}
     payload = {"ok": True, "via": "worker"}

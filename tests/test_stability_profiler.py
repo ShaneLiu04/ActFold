@@ -143,9 +143,7 @@ def test_get_profile_materializes_once_per_branch() -> None:
         torch.zeros((1, 4), dtype=torch.bool),
     ]
     for layer_idx, mask in enumerate(masks):
-        profiler.record(
-            "b", "p", layer_idx=layer_idx, step_idx=0, stable_mask=mask, tau=0.95
-        )
+        profiler.record("b", "p", layer_idx=layer_idx, step_idx=0, stable_mask=mask, tau=0.95)
 
     calls = {"item": 0}
     original_item = torch.Tensor.item

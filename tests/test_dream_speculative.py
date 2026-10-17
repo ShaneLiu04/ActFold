@@ -1000,9 +1000,9 @@ def test_ut2311_folded_reference_position_ids_threading(device: str) -> None:
     serial_calls = [c for c in mff.calls if c["kwargs"].get("branch_ids") is None]
     assert serial_calls, "the reference loop makes folded serial calls"
     for call in serial_calls:
-        assert call["kwargs"].get("position_ids") is not None, (
-            "the folded reference path threads the position payload"
-        )
+        assert (
+            call["kwargs"].get("position_ids") is not None
+        ), "the folded reference path threads the position payload"
         assert torch.equal(call["kwargs"]["position_ids"], expected_pos)
     assert bool((out.sequences[0] != _MASK_ID).all())
 

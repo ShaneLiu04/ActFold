@@ -84,4 +84,3 @@ class BranchTree:
                 parent.children.remove(branch_id)
         for child_id in list(node.children):
             self.prune(child_id)
-

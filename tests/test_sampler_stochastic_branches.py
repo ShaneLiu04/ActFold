@@ -17,14 +17,10 @@ import pytest
 import torch
 import torch.nn.functional as F
 
+from actfold.models import llada_sampler as _llada_module
 from actfold.models.dream_sampler import DreamSampler, DreamSamplerConfig
 from actfold.models.llada_sampler import LLaDASampler, LLaDASamplerConfig
-from actfold.models.sampling_utils import (
-    add_gumbel_noise,
-    get_num_transfer_tokens,
-    sample_tokens,
-)
-from actfold.models import llada_sampler as _llada_module
+from actfold.models.sampling_utils import add_gumbel_noise, get_num_transfer_tokens, sample_tokens
 from tests.test_diffusion_samplers import T018DeterministicModel
 
 _REAL_BINOMIAL = torch.distributions.Binomial
@@ -89,9 +85,7 @@ def _spy_torch_multinomial(
     monkeypatch.setattr(torch, "multinomial", wrapper)
 
 
-def _spy_binomial(
-    monkeypatch: pytest.MonkeyPatch, calls: list[tuple[torch.Tensor, float]]
-) -> None:
+def _spy_binomial(monkeypatch: pytest.MonkeyPatch, calls: list[tuple[torch.Tensor, float]]) -> None:
     """Proxy torch.distributions.Binomial: record construction, forward sample().
 
     Construction does not consume RNG and ``.sample()`` is forwarded to the

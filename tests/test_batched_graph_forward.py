@@ -124,9 +124,7 @@ class _LlamaLikeModel(nn.Module):
         self.config = type("Config", (), {"model_type": "llama", "vocab_size": _VOCAB})()
         self.model = nn.Module()
         self.model.embed_tokens = nn.Embedding(_VOCAB, _HIDDEN)
-        self.model.layers = nn.ModuleList(
-            [_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)]
-        )
+        self.model.layers = nn.ModuleList([_LlamaLikeLayer(_HIDDEN) for _ in range(_NUM_LAYERS)])
         self.model.norm = nn.LayerNorm(_HIDDEN)
         self.lm_head = nn.Linear(_HIDDEN, _VOCAB, bias=False)
 
@@ -284,11 +282,7 @@ def _batched_eager_reference(
 
 def _user_warning_messages(record: Any) -> list[str]:
     """Return the messages of every UserWarning in a catch_warnings log."""
-    return [
-        str(entry.message)
-        for entry in record
-        if issubclass(entry.category, UserWarning)
-    ]
+    return [str(entry.message) for entry in record if issubclass(entry.category, UserWarning)]
 
 
 # ---------------------------------------------------------------------------
@@ -347,12 +341,10 @@ def test_ut1501_batched_capture_replay_parity(
 
     for i in range(_NUM_CANDIDATES):
         for layer_idx in range(_NUM_LAYERS):
-            ffn_graph = mff.cache.fetch(
-                branch_id=replay_ids[i], layer_idx=layer_idx
-            )["ffn_out"]
-            ffn_eager = mff_eager.cache.fetch(
-                branch_id=eager_ids[i], layer_idx=layer_idx
-            )["ffn_out"]
+            ffn_graph = mff.cache.fetch(branch_id=replay_ids[i], layer_idx=layer_idx)["ffn_out"]
+            ffn_eager = mff_eager.cache.fetch(branch_id=eager_ids[i], layer_idx=layer_idx)[
+                "ffn_out"
+            ]
             assert torch.allclose(ffn_graph, ffn_eager, atol=1e-4, rtol=1e-4)
         profile_graph = GLOBAL_STABILITY_PROFILER.get_profile(replay_ids[i])
         profile_eager = GLOBAL_STABILITY_PROFILER.get_profile(eager_ids[i])
@@ -403,9 +395,7 @@ def test_ut1502_per_branch_publish_completeness() -> None:
                 if layer_idx == 0:
                     assert "embedding" in entry, f"{bid} lacks the layer-0 embedding"
                     assert tuple(entry["embedding"].shape) == (1, _SEQ, _HIDDEN)
-                    assert torch.allclose(
-                        entry["embedding"], embedding_rows[i : i + 1], atol=1e-6
-                    )
+                    assert torch.allclose(entry["embedding"], embedding_rows[i : i + 1], atol=1e-6)
 
 
 # ---------------------------------------------------------------------------
@@ -463,9 +453,7 @@ def test_ut1503_serial_batched_runner_isolation() -> None:
     assert torch.equal(out_b3.argmax(dim=-1), logits_eager.argmax(dim=-1))
 
     for i in range(_NUM_CANDIDATES):
-        out_si = _serial(
-            mff, stacked[i : i + 1], branch_id=f"1503-x{i}", parent_branch_id="1503-p"
-        )
+        out_si = _serial(mff, stacked[i : i + 1], branch_id=f"1503-x{i}", parent_branch_id="1503-p")
         assert torch.allclose(out_b3[i : i + 1], out_si, atol=1e-4, rtol=1e-4)
 
 
@@ -670,35 +658,25 @@ def test_ut1506_precondition_matrix() -> None:
     mask_b = torch.zeros(1, _SEQ, device=device)
     mff_eager_e = _make_mff(model, device)
     _serial(mff_eager_e, parent, branch_id="1506-eep", attention_mask=mask_a)
-    ref_ea = _batched(
-        mff_eager_e, stacked, _ids("1506-eea"), "1506-eep", attention_mask=mask_a
-    )
-    ref_eb = _batched(
-        mff_eager_e, stacked, _ids("1506-eeb"), "1506-eep", attention_mask=mask_b
-    )
+    ref_ea = _batched(mff_eager_e, stacked, _ids("1506-eea"), "1506-eep", attention_mask=mask_a)
+    ref_eb = _batched(mff_eager_e, stacked, _ids("1506-eeb"), "1506-eep", attention_mask=mask_b)
     mff_e = _make_mff(model, device, use_cuda_graph=True)
     _serial(mff_e, parent, branch_id="1506-pe", attention_mask=mask_a)
     with warnings.catch_warnings(record=True) as record_capture:
         warnings.simplefilter("always")
-        out_capture = _batched(
-            mff_e, stacked, _ids("1506-be"), "1506-pe", attention_mask=mask_a
-        )
+        out_capture = _batched(mff_e, stacked, _ids("1506-be"), "1506-pe", attention_mask=mask_a)
     assert torch.allclose(out_capture, ref_ea, atol=1e-4, rtol=1e-4)
     assert len(_user_warning_messages(record_capture)) == 0
     assert mff_e.graph_runner_batched is not None
     runner_e = mff_e.graph_runner_batched
     with warnings.catch_warnings(record=True) as record_mask_b:
         warnings.simplefilter("always")
-        out_mask_b = _batched(
-            mff_e, stacked, _ids("1506-bm"), "1506-pe", attention_mask=mask_b
-        )
+        out_mask_b = _batched(mff_e, stacked, _ids("1506-bm"), "1506-pe", attention_mask=mask_b)
     assert len(_user_warning_messages(record_mask_b)) == 0
     assert torch.allclose(out_mask_b, ref_eb, atol=1e-6, rtol=1e-6)
     assert not torch.allclose(out_mask_b, ref_ea)
     assert mff_e.graph_runner_batched is runner_e
-    out_pinned = _batched(
-        mff_e, stacked, _ids("1506-bg"), "1506-pe", attention_mask=mask_a
-    )
+    out_pinned = _batched(mff_e, stacked, _ids("1506-bg"), "1506-pe", attention_mask=mask_a)
     assert torch.allclose(out_pinned, ref_ea, atol=1e-4, rtol=1e-4)
 
     # (f) Parent cached at batch 2: silent rejection + eager #41 error.
@@ -773,9 +751,7 @@ def test_ut1507_batched_capture_failure_permanent_disable(
     assert capture_calls["count"] == 1, "EX-002: a failed capture is never retried"
     assert torch.allclose(out2, ref, atol=1e-4, rtol=1e-4)
 
-    out_serial = _serial(
-        mff, stacked[0:1], branch_id="1507-s0", parent_branch_id="1507-p"
-    )
+    out_serial = _serial(mff, stacked[0:1], branch_id="1507-s0", parent_branch_id="1507-p")
     assert mff.graph_runner is not None
     assert mff._graph_capture_failed is False
     assert capture_calls["count"] == 2
@@ -900,9 +876,9 @@ def test_ut1509_publish_isolation_from_static_buffers() -> None:
     snapshot: dict[tuple[str, int], torch.Tensor] = {}
     for bid in first_ids:
         for layer_idx in range(_NUM_LAYERS):
-            snapshot[(bid, layer_idx)] = cache.fetch(
-                branch_id=bid, layer_idx=layer_idx
-            )["ffn_out"].clone()
+            snapshot[(bid, layer_idx)] = cache.fetch(branch_id=bid, layer_idx=layer_idx)[
+                "ffn_out"
+            ].clone()
 
     with torch.no_grad():
         runner.child_buf.add_(123.0)

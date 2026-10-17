@@ -42,14 +42,8 @@ def _validate_token_tensor(
             f"{name} must have {ndim} dimensions [batch, seq_len], "
             f"got shape {tuple(tokens.shape)}"
         )
-    if (
-        torch.is_floating_point(tokens)
-        or torch.is_complex(tokens)
-        or tokens.dtype == torch.bool
-    ):
-        raise ValueError(
-            f"{name} must have an integer dtype, got {tokens.dtype}"
-        )
+    if torch.is_floating_point(tokens) or torch.is_complex(tokens) or tokens.dtype == torch.bool:
+        raise ValueError(f"{name} must have an integer dtype, got {tokens.dtype}")
 
 
 def target_argmax_accept_mask(
@@ -113,17 +107,14 @@ def draft_region_mask(
     _validate_token_tensor("child_tokens", child_tokens, ndim=2)
     if parent_tokens.shape[0] != child_tokens.shape[0]:
         raise ValueError(
-            f"Batch mismatch: parent {parent_tokens.shape[0]} vs child "
-            f"{child_tokens.shape[0]}"
+            f"Batch mismatch: parent {parent_tokens.shape[0]} vs child " f"{child_tokens.shape[0]}"
         )
 
     t_parent = parent_tokens.shape[1]
     t_child = child_tokens.shape[1]
     common = min(t_parent, t_child)
 
-    mask = torch.zeros(
-        child_tokens.shape, dtype=torch.bool, device=child_tokens.device
-    )
+    mask = torch.zeros(child_tokens.shape, dtype=torch.bool, device=child_tokens.device)
     mask[:, :common] = child_tokens[:, :common] != parent_tokens[:, :common]
     if t_child > t_parent:
         mask[:, t_parent:] = True
@@ -196,14 +187,11 @@ def mean_log_prob(
         )
     if mask is not None and mask.shape != tokens.shape:
         raise ValueError(
-            f"mask shape {tuple(mask.shape)} does not match tokens shape "
-            f"{tuple(tokens.shape)}"
+            f"mask shape {tuple(mask.shape)} does not match tokens shape " f"{tuple(tokens.shape)}"
         )
 
     log_probs = torch.log_softmax(logits.float(), dim=-1)
-    token_log_probs = log_probs.gather(
-        -1, tokens.unsqueeze(-1).long()
-    ).squeeze(-1)
+    token_log_probs = log_probs.gather(-1, tokens.unsqueeze(-1).long()).squeeze(-1)
 
     if mask is None:
         return float(token_log_probs.mean().item())

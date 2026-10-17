@@ -77,9 +77,7 @@ class BaseEvalAdapter:
         if override is not None:
             self.max_new_tokens = override
         elif not self._max_new_tokens_explicit:
-            self.max_new_tokens = self._TASK_MAX_NEW_TOKENS.get(
-                task, self._DEFAULT_MAX_NEW_TOKENS
-            )
+            self.max_new_tokens = self._TASK_MAX_NEW_TOKENS.get(task, self._DEFAULT_MAX_NEW_TOKENS)
         return self.max_new_tokens
 
     def _validate_task(self, task: str) -> None:
@@ -135,9 +133,7 @@ class BaseEvalAdapter:
         if prompts and isinstance(prompts[0], torch.Tensor):
             prompt_tokens = [t for t in prompts if isinstance(t, torch.Tensor)]
         else:
-            prompt_tokens = self._encode_prompts(
-                [p for p in prompts if isinstance(p, str)], seed
-            )
+            prompt_tokens = self._encode_prompts([p for p in prompts if isinstance(p, str)], seed)
         predictions: list[str] = []
         stable_ratios: list[float] = []
         latencies_ms: list[float] = []

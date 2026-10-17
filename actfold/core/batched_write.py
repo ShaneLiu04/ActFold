@@ -38,9 +38,7 @@ def validate_entries(entries: Sequence[CachePutEntry]) -> list[CachePutEntry]:
     for index, entry in enumerate(validated):
         activations = entry.activations
         if not activations:
-            raise ValueError(
-                f"put_batch entry {index}: activations must not be empty"
-            )
+            raise ValueError(f"put_batch entry {index}: activations must not be empty")
         expected_shape: tuple[int, ...] | None = None
         for name, tensor in activations.items():
             if tensor.ndim < 2:
@@ -76,9 +74,7 @@ def copy_pairs(pairs: list[tuple[torch.Tensor, torch.Tensor]]) -> int:
         for dst, src in pairs:
             dst.copy_(src)
         return len(pairs)
-    groups: dict[
-        tuple[torch.device, torch.dtype], list[tuple[torch.Tensor, torch.Tensor]]
-    ] = {}
+    groups: dict[tuple[torch.device, torch.dtype], list[tuple[torch.Tensor, torch.Tensor]]] = {}
     for pair in pairs:
         dst = pair[0]
         groups.setdefault((dst.device, dst.dtype), []).append(pair)

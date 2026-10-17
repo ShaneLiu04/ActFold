@@ -9,8 +9,8 @@ import torch
 
 from actfold.core.adaptive_gate import AdaptiveQuantileGate
 from actfold.core.cache_factory import ActivationCacheType
-from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.folded_transformer import _ADAPTIVE_GATE_SCHEDULER_MSG
+from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER, StabilityProfile
 from actfold.speculative.acceptance import (
@@ -168,8 +168,7 @@ class ActFoldVerificationEngine:
             self._ema_initialized = True
         else:
             self.ema_acceptance_rate = (
-                self.ema_alpha * rate
-                + (1.0 - self.ema_alpha) * self.ema_acceptance_rate
+                self.ema_alpha * rate + (1.0 - self.ema_alpha) * self.ema_acceptance_rate
             )
 
         child_branch.metadata["actfold_score"] = score
