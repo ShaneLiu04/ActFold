@@ -84,12 +84,11 @@ from actfold.speculative.branch_tree import BranchNode
 from actfold.speculative.draft_generator import DraftGenerator
 from actfold.speculative.folded_generation import folded_generate
 from actfold.utils.config_manager import ActFoldConfig, load_config
-
 from tests.test_batched_branch_forward import (
     _NUM_LAYERS,
     _VOCAB,
-    _CausalBatchModel,
     _assert_tensor_close,
+    _CausalBatchModel,
     _make_equal_len_candidates,
     _spy_recompute_all,
     _track_cached_branches,
@@ -179,9 +178,7 @@ def _multi_call(
     """One multi-parent ``[N, T]`` batched call (the AR025 API face)."""
     stacked = torch.cat([child for group in groups for child in group], dim=0)
     branch_ids = [f"{tag}-r{i}" for i in range(stacked.shape[0])]
-    parent_branch_ids = [
-        pid for pid, group in zip(parent_ids, groups) for _ in group
-    ]
+    parent_branch_ids = [pid for pid, group in zip(parent_ids, groups) for _ in group]
     logits = folded(
         stacked,
         branch_id=None,
@@ -422,9 +419,9 @@ def test_ut2404_all_distinct_parents_parity(device: str) -> None:
     _raw_a, folded_a, cache_a, _gate = _build_setup_mp(device)
     _raw_b, folded_b, cache_b, _gate = _build_setup_mp(device)
     _populate_parents(folded_a, parents, ["pa", "pb"])
-    ref_outs, ref_ids = _per_parent_reference(folded_a, ["pa", "pb"], groups, "ref")
+    ref_outs, ref_ids = _per_parent_reference(folded_a, ["pa", "pb"], groups, "ref2404")
     _populate_parents(folded_b, parents, ["pa", "pb"])
-    logits, ids = _multi_call(folded_b, ["pa", "pb"], groups, "mp")
+    logits, ids = _multi_call(folded_b, ["pa", "pb"], groups, "mp2404")
     row = 0
     for out in ref_outs:
         for i in range(out.shape[0]):
@@ -486,9 +483,7 @@ def test_ut2406_missing_row_no_leak_constructive(device: str) -> None:
     # values) would be value-observable.
     assert not torch.equal(logits[offset : offset + 1], logits[0:1])
     for i in range(ref_outs[1].shape[0]):
-        _assert_tensor_close(
-            logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol
-        )
+        _assert_tensor_close(logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol)
 
 
 def test_ut2407_all_missing_whole_batch_recompute(device: str) -> None:
@@ -537,9 +532,7 @@ def test_ut2409_parent_length_mismatch_row_degrades(device: str) -> None:
         folded_a, ["pa", "pb"], groups, "ref", parented=[True, False]
     )
     # Parent B cached on a canvas three tokens longer than the children.
-    longer_b = torch.cat(
-        [parents[1], torch.randint(1, _VOCAB, (1, 3), device=device)], dim=1
-    )
+    longer_b = torch.cat([parents[1], torch.randint(1, _VOCAB, (1, 3), device=device)], dim=1)
     folded_b(parents[0], branch_id="pa")
     folded_b(longer_b, branch_id="pb")
     logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "mp")
@@ -547,9 +540,7 @@ def test_ut2409_parent_length_mismatch_row_degrades(device: str) -> None:
         _assert_tensor_close(logits[i : i + 1], ref_outs[0][i : i + 1], atol)
     offset = ref_outs[0].shape[0]
     for i in range(ref_outs[1].shape[0]):
-        _assert_tensor_close(
-            logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol
-        )
+        _assert_tensor_close(logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol)
 
 
 # ---------------------------------------------------------------------------
@@ -561,9 +552,7 @@ def test_ut2410_all_stable_fast_path_multi_parent(device: str) -> None:
     """UT-2410 (FR3): the fast path stacks multi-parent FFN rows, zero recompute."""
     atol = _atol(device)
     torch.manual_seed(4310)
-    parents = [
-        torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)
-    ]
+    parents = [torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)]
     groups = [[parent.clone() for _ in range(2)] for parent in parents]
     _raw, folded, _cache, _gate = _build_setup_mp(device)
     parent_logits = [folded(parent, branch_id=pid) for parent, pid in zip(parents, ["pa", "pb"])]
@@ -581,9 +570,7 @@ def test_ut2411_mixed_batch_stable_row_bit_identical(device: str) -> None:
     path for that row."""
     atol = _atol(device)
     torch.manual_seed(4311)
-    parents = [
-        torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)
-    ]
+    parents = [torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)]
     # Group A: token-identical children (fully stable rows); group B:
     # mid-divergent children (mixed rows).
     group_a = [parents[0].clone() for _ in range(2)]
@@ -597,11 +584,9 @@ def test_ut2411_mixed_batch_stable_row_bit_identical(device: str) -> None:
     _raw_b, folded_b, _cache_b, _gate = _build_setup_mp(device)
     parent_a_logits = folded_a(parents[0], branch_id="pa")
     folded_a(parents[1], branch_id="pb")
-    ref_outs, _ref_ids = _per_parent_reference(
-        folded_a, ["pa", "pb"], [group_a, group_b], "ref"
-    )
+    ref_outs, _ref_ids = _per_parent_reference(folded_a, ["pa", "pb"], [group_a, group_b], "ref")
     folded_b(parents[0], branch_id="pa")
-    parent_b_logits = folded_b(parents[1], branch_id="pb")
+    folded_b(parents[1], branch_id="pb")
     logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "mx")
     # Stable rows: the parent's own values (the serial fast-path result).
     for i in range(2):
@@ -612,29 +597,38 @@ def test_ut2411_mixed_batch_stable_row_bit_identical(device: str) -> None:
 
 
 def test_ut2412_fully_divergent_rows_equal_recompute(device: str) -> None:
-    """UT-2412 (FR3): fully divergent rows equal the whole-batch recompute."""
-    atol = _atol(device)
+    """UT-2412 (FR3): fully divergent rows equal the whole-batch recompute.
+
+    The reference is a single same-shape ``[4, T]`` unparented batched call
+    (the current API), so the comparison isolates the mechanism claim —
+    the merge with an all-False mask returns ``child_out`` unchanged —
+    from CUDA M-shape GEMM noise (a per-group ``[2, T]`` reference would
+    compound batch-shape differences across layers on CUDA).
+    """
     parents, _groups = _make_two_parent_world(device)
-    torch.manual_seed(4312)
-    groups = [
-        [torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)]
-        for _ in range(2)
-    ]
+    # GUARANTEED fully-divergent children: every position's token differs
+    # from the parent's (a fixed non-zero offset per row). Fresh random
+    # tokens can collide with the parent's at individual positions -- at
+    # layer 0 the gate compares pure token embeddings, so a collision is
+    # cosine-exactly-1.0 stable and the merge legitimately reuses the
+    # parent value there, breaking the "fully divergent" premise (found by
+    # the CUDA run; the CPU RNG happened not to collide).
+    groups = [[(parents[g] + 13 + 2 * g + i) % _VOCAB for i in range(2)] for g in range(2)]
     _raw_a, folded_a, _cache_a, _gate = _build_setup_mp(device)
     _raw_b, folded_b, _cache_b, _gate = _build_setup_mp(device)
-    folded_a(parents[0], branch_id="pa")
-    folded_a(parents[1], branch_id="pb")
-    ref_outs, _ref_ids = _per_parent_reference(
-        folded_a, ["pa", "pb"], groups, "ref", parented=[False, False]
+    stacked = torch.cat([child for group in groups for child in group], dim=0)
+    ref_ids = [f"rec2404-r{i}" for i in range(stacked.shape[0])]
+    ref_logits = folded_a(
+        stacked,
+        branch_id=None,
+        branch_ids=ref_ids,
+        parent_branch_id=None,
+        step_idx=1,
     )
-    folded_b(parents[0], branch_id="pa")
-    folded_b(parents[1], branch_id="pb")
-    logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "dv")
-    row = 0
-    for out in ref_outs:
-        for i in range(out.shape[0]):
-            _assert_tensor_close(logits[row : row + 1], out[i : i + 1], atol)
-            row += 1
+    _populate_parents(folded_b, parents, ["pa", "pb"])
+    logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "dv2412")
+    for row in range(stacked.shape[0]):
+        _assert_tensor_close(logits[row : row + 1], ref_logits[row : row + 1], _atol(device))
 
 
 def test_ut2413_fast_path_ffn_missing_slow_path(device: str) -> None:
@@ -647,22 +641,22 @@ def test_ut2413_fast_path_ffn_missing_slow_path(device: str) -> None:
     """
     atol = _atol(device)
     torch.manual_seed(4313)
-    parents = [
-        torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)
-    ]
+    parents = [torch.randint(1, _VOCAB, (1, 8), device=device) for _ in range(2)]
     groups = [[parent.clone() for _ in range(2)] for parent in parents]
     _raw_a, folded_a, _cache_a, _gate = _build_setup_mp(device)
     _raw_b, folded_b, cache_b, _gate = _build_setup_mp(device)
     _populate_parents(folded_a, parents, ["pa", "pb"])
-    ref_outs, _ref_ids = _per_parent_reference(
-        folded_a, ["pa", "pb"], groups, "ref"
-    )
+    ref_outs, _ref_ids = _per_parent_reference(folded_a, ["pa", "pb"], groups, "ref")
     _populate_parents(folded_b, parents, ["pa", "pb"])
-    folded_b.cache = _DropEntryCache(cache_b, "pb", 1)
+    # Drop at the TOP layer: a drop at an interior layer perturbs the
+    # downstream layers' child values (the recomputed row diverges from the
+    # parent, so the downstream gate goes mixed) -- the top layer isolates
+    # the fast-path FFN face with every upstream layer staying fast.
+    folded_b.cache = _DropEntryCache(cache_b, "pb", _NUM_LAYERS - 1)
     counts = _spy_recompute_all(folded_b)
-    logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "fp")
-    assert counts[0] == 0 and counts[2] == 0, "layers without the drop stay fast"
-    assert counts[1] >= 1, "the dropped layer must take the slow path"
+    logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "fp2413")
+    assert all(count == 0 for count in counts[:-1]), "layers without the drop stay fast"
+    assert counts[-1] >= 1, "the dropped layer must take the slow path"
     row = 0
     for out in ref_outs:
         for i in range(out.shape[0]):
@@ -694,9 +688,7 @@ def test_ut2414_merge_placeholder_row_no_leak(device: str) -> None:
     logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "mg")
     offset = ref_outs[0].shape[0]
     for i in range(ref_outs[1].shape[0]):
-        _assert_tensor_close(
-            logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol
-        )
+        _assert_tensor_close(logits[offset + i : offset + i + 1], ref_outs[1][i : i + 1], atol)
 
 
 def test_ut2415_merge_torch_zero_change_regression() -> None:
@@ -749,9 +741,7 @@ def test_ut2417_no_put_batch_capability_fallback(device: str) -> None:
         device, mff_kwargs={"multi_parent_batch": True}
     )
     _populate_parents(folded_a, parents, ["pa", "pb"])
-    ref_outs, _ref_ids = _per_parent_reference(
-        folded_a, ["pa", "pb"], groups, "ref"
-    )
+    ref_outs, _ref_ids = _per_parent_reference(folded_a, ["pa", "pb"], groups, "ref")
     _populate_parents(folded_b, parents, ["pa", "pb"])
     folded_b.cache = _NoBatchPutCache(cache_b)
     logits, _ids = _multi_call(folded_b, ["pa", "pb"], groups, "np")
@@ -791,15 +781,11 @@ def test_ut2419_single_parent_batch_put_batchized(device: str) -> None:
     ids = [f"sp-r{i}" for i in range(4)]
     folded_on(parent, branch_id="pa")
     before_on = cache_on.write_op_count
-    out_on = folded_on(
-        stacked, branch_id=None, branch_ids=ids, parent_branch_id="pa", step_idx=1
-    )
+    out_on = folded_on(stacked, branch_id=None, branch_ids=ids, parent_branch_id="pa", step_idx=1)
     delta_on = cache_on.write_op_count - before_on
     folded_off(parent, branch_id="pb")
     before_off = cache_off.write_op_count
-    out_off = folded_off(
-        stacked, branch_id=None, branch_ids=ids, parent_branch_id="pb", step_idx=1
-    )
+    out_off = folded_off(stacked, branch_id=None, branch_ids=ids, parent_branch_id="pb", step_idx=1)
     delta_off = cache_off.write_op_count - before_off
     assert delta_on < delta_off
     assert torch.equal(out_on, out_off)
@@ -836,9 +822,7 @@ def _run_two_chain_reference(
 def _build_adapter(raw: torch.nn.Module, folded: ManualFoldedForward) -> Any:
     from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
 
-    return FastDLLMAdapter(
-        raw, folded_model=folded, num_layers=_NUM_LAYERS, hidden_dim=32
-    )
+    return FastDLLMAdapter(raw, folded_model=folded, num_layers=_NUM_LAYERS, hidden_dim=32)
 
 
 def test_ut2420_batched_vs_per_chain_parity(device: str) -> None:
@@ -849,9 +833,7 @@ def test_ut2420_batched_vs_per_chain_parity(device: str) -> None:
         torch.tensor([[2, 6, 10, 14]], device=device),
     ]
     ref = _run_two_chain_reference(device, prompts, max_new_tokens=3)
-    _raw, folded, _cache, _gate = _build_setup_mp(
-        device, mff_kwargs={"multi_parent_batch": True}
-    )
+    _raw, folded, _cache, _gate = _build_setup_mp(device, mff_kwargs={"multi_parent_batch": True})
     draft = DraftGenerator(vocab_size=_VOCAB, mode="suffix_append", flip_ratio=0.0)
     results = folded_generate_batched(
         _build_adapter(_raw, folded),
@@ -876,9 +858,7 @@ def test_ut2421_unequal_length_fallback(device: str) -> None:
         torch.tensor([[2, 6, 10, 14, 7, 3]], device=device),
     ]
     ref = _run_two_chain_reference(device, prompts, max_new_tokens=3)
-    _raw, folded, _cache, _gate = _build_setup_mp(
-        device, mff_kwargs={"multi_parent_batch": True}
-    )
+    _raw, folded, _cache, _gate = _build_setup_mp(device, mff_kwargs={"multi_parent_batch": True})
     draft = DraftGenerator(vocab_size=_VOCAB, mode="suffix_append", flip_ratio=0.0)
     results = folded_generate_batched(
         _build_adapter(_raw, folded),
@@ -921,9 +901,7 @@ def test_ut2423_single_chain_degenerate(device: str) -> None:
     ChainInput, folded_generate_batched = _import_batched_generation_api()
     prompt = torch.tensor([[1, 5, 9, 13]], device=device)
     ref = _run_two_chain_reference(device, [prompt], max_new_tokens=3)
-    _raw, folded, _cache, _gate = _build_setup_mp(
-        device, mff_kwargs={"multi_parent_batch": True}
-    )
+    _raw, folded, _cache, _gate = _build_setup_mp(device, mff_kwargs={"multi_parent_batch": True})
     draft = DraftGenerator(vocab_size=_VOCAB, mode="suffix_append", flip_ratio=0.0)
     results = folded_generate_batched(
         _build_adapter(_raw, folded),
@@ -945,9 +923,7 @@ def test_ut2424_prune_per_chain(device: str) -> None:
         torch.tensor([[1, 5, 9, 13]], device=device),
         torch.tensor([[2, 6, 10, 14]], device=device),
     ]
-    _raw, folded, cache, _gate = _build_setup_mp(
-        device, mff_kwargs={"multi_parent_batch": True}
-    )
+    _raw, folded, cache, _gate = _build_setup_mp(device, mff_kwargs={"multi_parent_batch": True})
     put_ids = _track_cached_branches(cache)
     draft = DraftGenerator(vocab_size=_VOCAB, mode="suffix_append", flip_ratio=0.0)
     results = folded_generate_batched(

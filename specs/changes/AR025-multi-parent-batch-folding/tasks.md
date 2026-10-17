@@ -12,7 +12,7 @@
 | ID | 任务描述 | 依赖 | 状态 | 备注 |
 |----|---------|------|------|------|
 | T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | passing | 覆盖点矩阵=design §6.1（rev 3 定稿）；UT-2400..UT-2427 共 28 例：26 红+2 绿锚点 |
-| T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | pending | 冻结常数/语义对拍 UT 钉死 |
+| T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | passing | UT-2401..UT-2415 全绿（16/16）；spy 计数面即 mutation-kill 探针（UT-2407 counts==[1]*L/UT-2410 counts==[0]*L/UT-2413 顶层 drop） |
 | T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | pending | |
 | T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | pending | #5 unknown-key 规则 |
 | T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | pending | 判定式冻结入脚本 |
@@ -123,6 +123,36 @@
   纪律——无 blanket `__getattr__` 泄漏）/`_DropEntryCache`（隐藏
   单一 (branch, layer) fetch 项——快路径 FFN 前置条件破坏器，
   gate 层 fetch 不受扰）。
+
+### 2026-10-17 T002 Green 机制核心完成
+
+- `folded_transformer.py`：`FoldedTransformerLayer.forward` keyword-only
+  尾参 `parent_branch_ids`；`_forward_batched` 多父分发（None=单 parent
+  路径逐字节不变）；新 `_forward_batched_multi`（DD2 逐行 fetch
+  `_fetch_parent_gate_row`：缺失/dim/H/零长/T!=T_c 降级、batch!=1
+  逐行硬错 RuntimeError；DD2 构造性强制 `stable_mask[无效行]=False`
+  （gate 后 forced 前，metric 无关不流出）；DD3 快路径条件=全行
+  valid+全 stable+逐行父 FFN 可取（`_fetch_parent_ffn_row` 逐行
+  [1,T,H]→stack），任一不满足→统一 slow path；DD4
+  `_merge_parent_child_multi` 逐行父 FFN stack+缺失行占位
+  child_out 行+mask 行 False）。
+- `architecture_utils.py`：`ManualFoldedForward.forward` 尾参
+  `parent_branch_ids`（互斥/无 branch_ids/长度三类 ValueError）+
+  None-attach 零扰动（mp_kwargs 仅非 None 附着）+ DD10 防御（多父+
+  use_cuda_graph→warn-once `_multi_parent_graph_warned`+eager 回退，
+  graph 分支条件收紧 `parent_branch_ids is None`）。
+- 机制面 UT-2400..UT-2415 全绿 16/16；冻结面（AR015/AR023/graph
+  批量）64 passed+1 pre-existing fail（UT-2303 posterior-trap：经
+  stash 验证与本 AR 改动无关——AR024 并行会话在飞改动
+  llada_sampler/speculative_core 所致，非本会话责任）。
+- 质量门：black/isort/pyflakes/mypy（68 文件 0 错）全过。
+- 调试留档两则：①UT-2412 "全发散"前提在 CUDA RNG 下被 token 碰撞
+  破坏（层 0 gate 比较纯 embedding，碰撞位 cosine==1.0 判 stable→
+  merge 取父值=正确折叠语义但违反测试前提）——改保证逐位 token
+  互异（固定偏移 13+2g+i mod 32）；②UT-2413 drop 层选顶层（内层
+  drop 会扰动下行层 gate 稳定性——重算行与父分歧）。
+- CUDA 对拍纪律发现：同形同分配的多次运行逐位确定（rows 0/2/3
+  exact）；跨形/跨分配误差主要来自 gate 语义而非数值噪声。
 
 
 ## 阶段门控记录

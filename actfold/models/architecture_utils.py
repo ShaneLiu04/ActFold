@@ -493,6 +493,11 @@ class ManualFoldedForward(nn.Module):
         self._graph_batched_pe: Any = None
         self._graph_batched_position_ids: Any = None
         self._graph_batched_shape_warned = False
+        # Multi-parent (AR025): the captured batched graph body serves one
+        # shared parent; a per-row parent call takes the eager body with a
+        # one-time warning (warn-once, never an error — the graph face is
+        # Out-of-Scope for per-row parents).
+        self._multi_parent_graph_warned = False
         self._graph_batched_budget_warned = False
         self._graph_batched_capture_failed = False
         # Shape-keyed graph runner pool (AR021 FR2). 0 = legacy: the
@@ -593,6 +598,7 @@ class ManualFoldedForward(nn.Module):
         position_embeddings: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
         position_ids: torch.Tensor | None = None,
+        parent_branch_ids: Sequence[str] | None = None,
     ) -> Any:
         """Run a folded forward pass and return logits or hidden states.
 
@@ -645,8 +651,22 @@ class ManualFoldedForward(nn.Module):
                 the SAME tensor object on every replay after capture
                 (``is`` identity, mirroring the ``position_embeddings``
                 contract); a different object silently falls back to eager.
-                ``None`` (the default) attaches no kwarg at all, so
-                existing callers are byte-for-byte unchanged.
+                ``None`` (the default) attaches no kwarg at all, so existing
+                callers are byte-for-byte unchanged.
+            parent_branch_ids: Per-row parent identifiers (AR025): row
+                ``i`` of a batched call folds against
+                ``parent_branch_ids[i]`` — the per-row generalization of
+                the shared-``parent_branch_id`` expand contract (each
+                parent must be cached at batch 1; a missing or
+                length-mismatched parent degrades its row to a full
+                recompute). Mutually exclusive with ``parent_branch_id``
+                and requires ``branch_ids``. The batched CUDA-graph path
+                does not perceive per-row parents (its captured body serves
+                one shared parent): a multi-parent call with
+                ``use_cuda_graph`` emits a one-time warning and takes the
+                batched eager body. ``None`` (the default) attaches no
+                kwarg at all, so existing callers are byte-for-byte
+                unchanged.
 
         Returns:
             Output of the language modeling head, typically logits
@@ -745,6 +765,22 @@ class ManualFoldedForward(nn.Module):
                     f"[{seq_len}], [1, {seq_len}] or [{batch}, {seq_len}]; got "
                     f"{tuple(position_ids.shape)} for tokens {tuple(tokens.shape)}."
                 )
+        if parent_branch_ids is not None:
+            if parent_branch_id is not None:
+                raise ValueError(
+                    "ManualFoldedForward accepts either parent_branch_id "
+                    "(shared) or parent_branch_ids (per-row), not both."
+                )
+            if branch_ids is None:
+                raise ValueError(
+                    "parent_branch_ids (per-row parents) requires branch_ids "
+                    "(batched); serial calls use parent_branch_id."
+                )
+            if len(parent_branch_ids) != len(branch_ids):
+                raise ValueError(
+                    f"parent_branch_ids length {len(parent_branch_ids)} does "
+                    f"not match branch_ids length {len(branch_ids)}."
+                )
         if branch_ids is not None:
             if branch_id is not None:
                 raise ValueError(
@@ -755,8 +791,11 @@ class ManualFoldedForward(nn.Module):
             # dispatch below for the [N, T] capture shape; any miss falls
             # through to the batched eager body (a parent cached at
             # batch != 1 keeps its #41 RuntimeError — the graph layer never
-            # swallows or alters the eager contract).
-            if self.use_cuda_graph:
+            # swallows or alters the eager contract). AR025: the captured
+            # batched body serves ONE shared parent, so a per-row
+            # (multi-parent) call never enters the graph path — warn once
+            # and take the eager body (the graph face is Out-of-Scope).
+            if self.use_cuda_graph and parent_branch_ids is None:
                 graph_out = self._graph_forward_batched_or_none(
                     tokens,
                     branch_ids,
@@ -808,6 +847,24 @@ class ManualFoldedForward(nn.Module):
         pos_ids_kwargs: dict[str, Any] = (
             {"position_ids": position_ids} if position_ids is not None else {}
         )
+        # AR025: same rule for the per-row parents; ``None`` adds no kwarg
+        # so existing eager callers stay byte-for-byte unchanged.
+        mp_kwargs: dict[str, Any] = (
+            {"parent_branch_ids": list(parent_branch_ids)} if parent_branch_ids is not None else {}
+        )
+        if parent_branch_ids is not None and self.use_cuda_graph:
+            # DD10 defense: the batched graph body perceives only one shared
+            # parent; a per-row call degrades to the eager body below with a
+            # one-time warning (never an error).
+            if not self._multi_parent_graph_warned:
+                warnings.warn(
+                    "Multi-parent batched calls (parent_branch_ids) do not "
+                    "support the CUDA graph path; running the batched eager "
+                    "body instead.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+                self._multi_parent_graph_warned = True
         for wrapped in self._wrapped_layers:
             x = wrapped(
                 x,
@@ -819,6 +876,7 @@ class ManualFoldedForward(nn.Module):
                 **pe_kwargs,
                 **forced_kwargs,
                 **pos_ids_kwargs,
+                **mp_kwargs,
             )
             # Tuple-returning layers (e.g. the real LLaDA remote blocks): the
             # wrapped layer re-wraps its output as ``(hidden, None)`` for the

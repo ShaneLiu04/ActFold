@@ -112,6 +112,7 @@ class FoldedTransformerLayer(nn.Module):
         *,
         branch_ids: Sequence[str] | None = None,
         forced_divergent: torch.Tensor | None = None,
+        parent_branch_ids: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded Transformer layer.
@@ -137,6 +138,16 @@ class FoldedTransformerLayer(nn.Module):
                 all-stable reuse fast path. ``[seq_len]`` / ``[1, seq_len]``
                 on serial calls (broadcast), ``[N, seq_len]`` on batched
                 calls. ``None`` (the default) attaches no operation at all.
+            parent_branch_ids: Per-row parent identifiers (AR025): when set,
+                row ``i`` folds against ``parent_branch_ids[i]`` — the
+                per-row generalization of the shared-``parent_branch_id``
+                expand contract. Mutually exclusive with
+                ``parent_branch_id``; requires ``branch_ids``. v1
+                equal-length semantics: a parent whose length differs from
+                the child canvas degrades its row to a full recompute (no
+                AR007 truncation on this face). ``None`` (the default)
+                attaches nothing — the single-parent path is byte-for-byte
+                unchanged.
             **kwargs: Extra arguments forwarded to ``original_layer``
                 (filtered to its signature). This channel carries
                 ``position_embeddings`` (AR019): a rotary ``(cos, sin)``
@@ -160,6 +171,7 @@ class FoldedTransformerLayer(nn.Module):
                 parent_branch_id,
                 step_idx,
                 forced_divergent=forced_divergent,
+                parent_branch_ids=parent_branch_ids,
                 **kwargs,
             )
         # Resolve branch identifiers from explicit kwargs or the thread-local
@@ -431,6 +443,8 @@ class FoldedTransformerLayer(nn.Module):
         parent_branch_id: str | None,
         step_idx: int,
         forced_divergent: torch.Tensor | None = None,
+        *,
+        parent_branch_ids: Sequence[str] | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded layer for N same-parent branches in a single batch.
@@ -444,7 +458,9 @@ class FoldedTransformerLayer(nn.Module):
         recompute the whole batch, the gate runs on the plain (non-fused)
         path with the expanded parent, the three-way split is evaluated at
         batch granularity, and stores/profiler records happen per branch
-        on row slices.
+        on row slices. When ``parent_branch_ids`` is set (AR025), the call
+        delegates to :meth:`_forward_batched_multi` and this shared-parent
+        body is untouched (byte-for-byte).
 
         Args:
             hidden_states: Batched child hidden states ``[N, seq_len, hidden]``.
@@ -455,6 +471,9 @@ class FoldedTransformerLayer(nn.Module):
             forced_divergent: Optional ``[N, seq_len]`` boolean tensor
                 (AR021 FR2): True positions are forced divergent before the
                 profiler records and the stable-count consumption.
+            parent_branch_ids: Per-row parent identifiers (AR025): row ``i``
+                folds against ``parent_branch_ids[i]``. Mutually exclusive
+                with ``parent_branch_id``.
             **kwargs: Extra arguments forwarded to ``original_layer``.
 
         Returns:
@@ -465,6 +484,26 @@ class FoldedTransformerLayer(nn.Module):
             raise ValueError(
                 f"branch_ids length {len(branch_ids)} does not match the "
                 f"hidden-states batch {batch}."
+            )
+        if parent_branch_ids is not None:
+            if parent_branch_id is not None:
+                raise ValueError(
+                    "FoldedTransformerLayer accepts either parent_branch_id "
+                    "(shared) or parent_branch_ids (per-row), not both."
+                )
+            if len(parent_branch_ids) != batch:
+                raise ValueError(
+                    f"parent_branch_ids length {len(parent_branch_ids)} does "
+                    f"not match the hidden-states batch {batch}."
+                )
+            return self._forward_batched_multi(
+                hidden_states,
+                attention_mask,
+                branch_ids,
+                list(parent_branch_ids),
+                step_idx,
+                forced_divergent=forced_divergent,
+                **kwargs,
             )
         if parent_branch_id is None:
             # No parent to reuse from: whole-batch recompute (serial
@@ -634,6 +673,293 @@ class FoldedTransformerLayer(nn.Module):
         )
         self._store_batched(branch_ids, h_out, hidden_states)
         return self._pack_output(h_out)
+
+    def _fetch_parent_gate_row(
+        self,
+        parent_branch_id: str,
+        gate_layer: int,
+        gate_name: str,
+        seq_len: int,
+        hidden_dim: int,
+    ) -> torch.Tensor | None:
+        """Fetch one parent row's gate activation (AR025 DD2 per-row face).
+
+        Returns the cached ``[1, T, H]`` activation, or ``None`` when the
+        entry is missing / structurally unusable (dim, hidden, zero-length,
+        or a ``T != seq_len`` mismatch — v1 equal-length semantics: no AR007
+        truncation on the multi-parent face). A parent cached at batch != 1
+        is a hard ``RuntimeError`` (the per-row #41 contract violation, not
+        a cache miss).
+        """
+        try:
+            get_all_fn = getattr(self.cache, "get_all", None)
+            if get_all_fn is not None:
+                parent_activations = get_all_fn(
+                    branch_id=parent_branch_id,
+                    layer_idx=gate_layer,
+                )
+            else:
+                parent_activations = self.cache.fetch(
+                    branch_id=parent_branch_id,
+                    layer_idx=gate_layer,
+                )
+            h_parent = parent_activations.get(gate_name)
+        except (KeyError, RuntimeError):
+            return None
+        if h_parent is None:
+            return None
+        if h_parent.dim() != 3 or h_parent.shape[2] != hidden_dim or h_parent.shape[1] == 0:
+            # A hidden-dim mismatch or zero-length entry cannot donate a
+            # prefix-aligned activation: identical to a cache miss.
+            return None
+        if h_parent.shape[0] != 1:
+            # Per-row expand contract (AR025, the #41 rule applied row-wise):
+            # a parent cached at batch != 1 is a contract violation.
+            raise RuntimeError(
+                f"Multi-parent batched folding requires every parent cached "
+                f"at batch 1, got batch {h_parent.shape[0]} for "
+                f"branch={parent_branch_id}, layer={self.layer_idx}."
+            )
+        if h_parent.shape[1] != seq_len:
+            # v1 equal-length semantics (srs FR2): T_p_i == T_c. A parent
+            # longer or shorter than the child canvas degrades its row —
+            # the AR007 truncated-prefix donation stays a single-parent-face
+            # feature (variable-length rows are the next AR's face).
+            return None
+        return torch.as_tensor(h_parent)
+
+    def _forward_batched_multi(
+        self,
+        hidden_states: torch.Tensor,
+        attention_mask: torch.Tensor | None,
+        branch_ids: list[str],
+        parent_branch_ids: list[str],
+        step_idx: int,
+        forced_divergent: torch.Tensor | None = None,
+        **kwargs: Any,
+    ) -> torch.Tensor | tuple[torch.Tensor, None]:
+        """Run one folded layer for N branches folding against N parents.
+
+        Multi-parent semantics (AR025, design DD2/DD3/DD4): row ``i`` of
+        ``hidden_states`` belongs to ``branch_ids[i]`` and folds against
+        ``parent_branch_ids[i]`` (each cached at batch 1). The per-row
+        mechanism face (gate / forced AND / profiler / merge ``where``) is
+        already row-local, so the only batch-granularity work is the parent
+        assembly (per-row fetch + stack, zeros placeholder for rows without
+        a usable parent) and the mask-style three-way unification:
+
+        - a row whose parent gate entry is missing / mismatched is forced
+          ``stable_mask[row] = False`` CONSTRUCTIVELY (after the gate,
+          before the forced AND — metric-independent no-leak, design DD2),
+          so its values always come from the child recompute;
+        - the all-stable fast path requires every row valid, the mask all
+          True, and every row's parent FFN fetchable (per-row ``[1, T]``
+          fetch -> stack ``[N, T, H]``); any miss takes the unified slow
+          path where ``where(stable_mask, parent_ffn, child_out)`` realizes
+          every legacy branch as a row-level degenerate (the :617-620
+          contract).
+
+        Args:
+            hidden_states: Batched child hidden states ``[N, seq_len, hidden]``.
+            attention_mask: Optional attention mask.
+            branch_ids: One branch identifier per row.
+            parent_branch_ids: One parent identifier per row.
+            step_idx: Current diffusion step index.
+            forced_divergent: Optional ``[N, seq_len]`` boolean tensor
+                (AR021 FR2 ordering, unchanged).
+            **kwargs: Extra arguments forwarded to ``original_layer``.
+
+        Returns:
+            Updated hidden states ``[N, seq_len, hidden]``.
+        """
+        batch, seq_len, hidden_dim = hidden_states.shape
+        if self.scheduler is not None and not self.scheduler.should_fold(self.layer_idx, step_idx):
+            output = self._recompute_all(hidden_states, attention_mask, **kwargs)
+            self._store_batched(branch_ids, output, hidden_states)
+            return self._pack_output(output)
+        if self.scheduler is not None:
+            tau = self.scheduler.get_tau(
+                layer_idx=self.layer_idx,
+                step_idx=step_idx,
+                task_type="general",
+            )
+            self.gate.set_tau(tau)
+
+        gate_layer = 0 if self.layer_idx == 0 else self.layer_idx - 1
+        gate_name = "embedding" if self.layer_idx == 0 else "ffn_out"
+
+        # DD2 per-row fetch + validation; missing/mismatched rows degrade
+        # (row_valid False), batch != 1 parents raise (hard, row-wise #41).
+        row_valid: list[bool] = []
+        row_parent: list[torch.Tensor | None] = []
+        for pid in parent_branch_ids:
+            row = self._fetch_parent_gate_row(pid, gate_layer, gate_name, seq_len, hidden_dim)
+            row_parent.append(row)
+            row_valid.append(row is not None)
+        if not any(row_valid):
+            # Every parent missing/mismatched: whole-batch recompute (the
+            # serial cache-miss semantics, one batched recompute per layer).
+            output = self._recompute_all(hidden_states, attention_mask, **kwargs)
+            self._store_batched(branch_ids, output, hidden_states)
+            return self._pack_output(output)
+
+        # Assemble [N, T, H]: valid rows carry the parent activation,
+        # invalid rows a zeros placeholder (values never flow out — the
+        # constructive mask force below keeps the gate from certifying them
+        # stable under any metric, including l2/tau=0 where a zeros
+        # placeholder can outscore tau).
+        placeholder = torch.zeros(
+            1, seq_len, hidden_dim, dtype=hidden_states.dtype, device=hidden_states.device
+        )
+        h_parent = torch.cat(
+            [row if row is not None else placeholder for row in row_parent],
+            dim=0,
+        ).to(dtype=hidden_states.dtype, device=hidden_states.device)
+
+        # Plain gate only (the AR015 D3 discipline: stacked per-row parents
+        # are not validated inside the fused gate kernel).
+        stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
+
+        # DD2 constructive force: rows without a usable parent are never
+        # stable, whatever the gate said about the zeros placeholder.
+        if not all(row_valid):
+            for row_idx, valid in enumerate(row_valid):
+                if not valid:
+                    stable_mask[row_idx] = False
+
+        if forced_divergent is not None:
+            # AR021 FR2 single ordering (batched face), unchanged.
+            stable_mask &= ~forced_divergent
+
+        for row_idx, bid in enumerate(branch_ids):
+            GLOBAL_STABILITY_PROFILER.record(
+                branch_id=bid,
+                parent_branch_id=parent_branch_ids[row_idx],
+                layer_idx=self.layer_idx,
+                step_idx=step_idx,
+                stable_mask=stable_mask[row_idx : row_idx + 1],
+                tau=self.gate.tau,
+                metric=self.gate.metric,
+            )
+
+        # One batch-granularity readback covers the three-way split (F4a).
+        stable_count = int(stable_mask.sum())
+        num_tokens = stable_mask.numel()
+
+        if stable_count == num_tokens:
+            # All-stable fast path (DD3): every row's parent FFN is fetched
+            # per row and stacked — no recompute at all. Any per-row fetch
+            # miss falls through to the unified slow path below (values stay
+            # correct: stable rows merge to the parent values bit-identically).
+            ffn_rows: list[torch.Tensor | None] = []
+            for pid in parent_branch_ids:
+                ffn = self._fetch_parent_ffn_row(pid, seq_len, hidden_dim)
+                ffn_rows.append(ffn)
+            if all(row is not None for row in ffn_rows):
+                reused = torch.cat(
+                    [
+                        row.to(dtype=hidden_states.dtype, device=hidden_states.device)
+                        for row in ffn_rows
+                        if row is not None
+                    ],
+                    dim=0,
+                )
+                self._store_batched(branch_ids, reused, hidden_states)
+                return self._pack_output(reused)
+
+        # Unified slow path (DD3 mask-style): recompute the whole batch with
+        # full child attention context, then merge per-row parent FFN values
+        # — where(stable_mask, parent_ffn, child_out) realizes the legacy
+        # all-zero / mixed branches as row-level degenerates.
+        merged_kwargs = {**kwargs, "stable_count": stable_count}
+        child_out = self._recompute_merged(
+            hidden_states,
+            attention_mask,
+            stable_mask,
+            **merged_kwargs,
+        )
+        h_out = self._merge_parent_child_multi(
+            parent_branch_ids,
+            row_valid,
+            stable_mask,
+            child_out,
+        )
+        self._store_batched(branch_ids, h_out, hidden_states)
+        return self._pack_output(h_out)
+
+    def _fetch_parent_ffn_row(
+        self,
+        parent_branch_id: str,
+        seq_len: int,
+        hidden_dim: int,
+    ) -> torch.Tensor | None:
+        """Fetch one parent row's FFN output (AR025 DD3/DD4 per-row face).
+
+        Returns the cached ``[1, seq_len, hidden]`` FFN output or ``None``
+        when missing / shape-mismatched (v1 equal-length semantics — no
+        truncation). Unlike the gate row, no batch check is needed here:
+        the gate-row fetch already enforced batch 1 for a usable row.
+        """
+        try:
+            ffn_out = self.cache.fetch(
+                branch_id=parent_branch_id,
+                layer_idx=self.layer_idx,
+            ).get("ffn_out")
+        except (KeyError, RuntimeError):
+            return None
+        if ffn_out is None:
+            return None
+        if (
+            ffn_out.dim() != 3
+            or ffn_out.shape[0] != 1
+            or ffn_out.shape[1] != seq_len
+            or ffn_out.shape[2] != hidden_dim
+        ):
+            return None
+        return ffn_out
+
+    def _merge_parent_child_multi(
+        self,
+        parent_branch_ids: list[str],
+        row_valid: list[bool],
+        stable_mask: torch.Tensor,
+        child_out: torch.Tensor,
+    ) -> torch.Tensor:
+        """Merge per-row parent FFN values into the batched child output.
+
+        AR025 DD4: rows with a fetchable parent FFN merge through the
+        unchanged :func:`_merge_stable_divergent_torch` ``where`` semantics;
+        rows whose parent FFN is missing / mismatched take a
+        ``child_out[row]`` placeholder AND a forced-False mask row, so
+        placeholder values never flow out (shape alignment only).
+        """
+        num_branches, seq_len, hidden_dim = child_out.shape
+        parent_rows: list[torch.Tensor] = []
+        row_ffn_ok: list[bool] = []
+        for row_idx, pid in enumerate(parent_branch_ids):
+            if not row_valid[row_idx]:
+                # No parent at all (gate-level invalid): placeholder, and
+                # the constructive force already cleared the mask row.
+                parent_rows.append(child_out[row_idx : row_idx + 1])
+                row_ffn_ok.append(False)
+                continue
+            ffn = self._fetch_parent_ffn_row(pid, seq_len, hidden_dim)
+            if ffn is None:
+                # Parent FFN missing/mismatched: the row recomputes (mask
+                # forced False below) — never a hard error on this face.
+                parent_rows.append(child_out[row_idx : row_idx + 1])
+                row_ffn_ok.append(False)
+                continue
+            parent_rows.append(ffn.to(dtype=child_out.dtype, device=child_out.device))
+            row_ffn_ok.append(True)
+        parent_ffn = torch.cat(parent_rows, dim=0)
+        mask_eff = stable_mask
+        if not all(row_ffn_ok):
+            mask_eff = stable_mask.clone()
+            for row_idx, ok in enumerate(row_ffn_ok):
+                if not ok:
+                    mask_eff[row_idx] = False
+        return _merge_stable_divergent_torch(parent_ffn, child_out, mask_eff)
 
     def _store_batched(
         self,
