@@ -11,7 +11,7 @@
 
 | ID | 任务描述 | 依赖 | 状态 | 备注 |
 |----|---------|------|------|------|
-| T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | pending | 覆盖点矩阵=design §6.1（rev 3 定稿） |
+| T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | passing | 覆盖点矩阵=design §6.1（rev 3 定稿）；UT-2400..UT-2427 共 28 例：26 红+2 绿锚点 |
 | T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | pending | 冻结常数/语义对拍 UT 钉死 |
 | T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | pending | |
 | T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | pending | #5 unknown-key 规则 |
@@ -99,6 +99,30 @@
   多链薄包装（单链提前结束=退出合批余链继续）；FR4 放大器=eager
   put_batch 首接（L·N→L launch，单 parent 同受益）；真实基准
   split_layers=False+H1==1.0 硬门+H4 严格"<"。
+
+### 2026-10-17 T001 Red UT 完成（零实验先行）
+
+- `tests/test_multi_parent_batch.py` 新建：UT-2400..UT-2427 共 28 例，
+  覆盖 design §6.1 全矩阵（API×4/装配×6/三分支×4/merge×3/发布×4/
+  接线×5/配置×3+冻结锚点）。复用 AR015 测试基建（_build_setup 变体
+  `_build_setup_mp` 支持 gate 定制+MFF 开关 kwargs；两 parent 世界
+  构造；`_multi_call`/`_per_parent_reference` 对拍纪律——参考侧永远
+  只用现行生产 API，Red 失败隔离在新调用侧）。
+- Red 状态：26 failed（生产缺失面：`parent_branch_ids` 尾参
+  TypeError/多父装配/folded_generate_batched ImportError/
+  ActFoldConfig.multi_parent_batch AttributeError/YAML unknown-key
+  warning/MFF multi_parent_batch 构造 kwargs TypeError）+2 passed
+  （UT-2400 参考基线自洽锚点/UT-2415 `_merge_stable_divergent_torch`
+  [N,T] 行级语义零改动回归）。
+- 冻结面零破坏：test_batched_branch_forward + dream/llada/
+  greedy_alignment 投机面 56 passed。
+- 教训：UT-2415 初版 mask 构造笔误（`mask[:] = True` 全量断言后未
+  复位即设混合模式——行 2 残留全 True 假失败）；最小复现定位后修
+  为 `mask[:] = False` 复位再设混合。函数本身零问题。
+- 测试专用基建：`_NoBatchPutCache`（#42 显式 AttributeError 包装
+  纪律——无 blanket `__getattr__` 泄漏）/`_DropEntryCache`（隐藏
+  单一 (branch, layer) fetch 项——快路径 FFN 前置条件破坏器，
+  gate 层 fetch 不受扰）。
 
 
 ## 阶段门控记录
