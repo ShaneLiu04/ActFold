@@ -5,7 +5,7 @@
 | AR 编号 | AR025 |
 | 关联 srs | ./srs.md rev 2 |
 | 日期 | 2026-10-16（rev 1）/ 2026-10-17（rev 2 修复） |
-| 状态 | rev 4（rev 3=design 门控第 2 轮 **PASS**（ses_eb84f414fffefXCz2O1eIE44k6）：7 项修复全 VERIFIED+代码锚点实测全命中；Minor×4+Nit×4 当轮修入：DD2 伪代码残句/H1 CUDA M-shape 残余风险注记+归因字段/跨工件对照 AR023 同表补映射/PlantUML 构造性强制步骤/§6.1 胜者延续/合成面确定性注记/tasks 门控留档。历史：rev 2=第 1 轮 FAIL 修复 7 项。**rev 4=T003 实现期 DD2 erratum（append-only 前缀捐赠，见 DD2 尾注）+ DD8a 真实面接线增补（T006 实现前定案，见 DD8 之后）——DD8a 门控 **PASS WITH CONDITIONS**（ses_eb75aa130ffeOVCYAtYBaDeYxf）：C1-C6 六项代码断言全 VERIFIED（对已提交 HEAD）/DD8 冻结判定式零改动/FR5 备选形态原文确认 in-scope；Major F1（W2 折叠链状态清单不全：`_folding_parent`/`_folding_counter` 实例级——单实例+per-chain 状态+双实例禁令）+Minor F2（合并闭包 kwargs 翻译）/F3（temperature==0 前置条件）/F4-F5（C2 措辞+Dream ctx 来源注记）+Nit N6/N7 **全部当轮修入 DD8a**——T006 实现解锁**） |
+| 状态 | rev 4（rev 3=design 门控第 2 轮 **PASS**（ses_eb84f414fffefXCz2O1eIE44k6）：7 项修复全 VERIFIED+代码锚点实测全命中；Minor×4+Nit×4 当轮修入：DD2 伪代码残句/H1 CUDA M-shape 残余风险注记+归因字段/跨工件对照 AR023 同表补映射/PlantUML 构造性强制步骤/§6.1 胜者延续/合成面确定性注记/tasks 门控留档。历史：rev 2=第 1 轮 FAIL 修复 7 项。**rev 4=T003 实现期 DD2 erratum（append-only 前缀捐赠，见 DD2 尾注）+ DD8a 真实面接线增补（T006 实现前定案，见 DD8 之后）——DD8a 门控 **PASS WITH CONDITIONS**（ses_eb75aa130ffeOVCYAtYBaDeYxf）：C1-C6 六项代码断言全 VERIFIED（对已提交 HEAD）/DD8 冻结判定式零改动/FR5 备选形态原文确认 in-scope；Major F1（W2 折叠链状态清单不全：`_folding_parent`/`_folding_counter` 实例级——单实例+per-chain 状态+双实例禁令）+Minor F2（合并闭包 kwargs 翻译）/F3（temperature==0 前置条件）/F4-F5（C2 措辞+Dream ctx 来源注记）+Nit N6/N7 **全部当轮修入 DD8a**——T006 实现解锁。rev 4 期间另入 **DD8 erratum**（正式合成面首跑 5 点 S1 FAIL→blocked 保全；根因=fixture 缓存预算 8192 不足，A 侧 burst put_batch 逐出在飞 parents（LRU 最旧）致深层整批重算——容量混淆因子非机制缺陷；预算放大 65536 后冻结判定式零改动重跑 16/16 全过 supported；机制级边界入 DD10）**） |
 
 > 章节说明：本 design 为六章式压缩版（0 总览→1 DD 决策〔内嵌功能点
 > 标注 FR〕→6.1 UT 矩阵→7 PlantUML→8 复用映射；§2-§5 需求/详设
@@ -257,6 +257,34 @@ AR023 T006 完成后）：
   基线行并列——T008 README 表执行，基准脚本写入 cross_ref
   节引用 AR023 工件路径）。
 
+**DD8 erratum（正式 8 点合成面首次运行后，容量混淆因子）**：
+首次正式运行 16 记录中 5 点 S1 FAIL（全部 T=1024 点 +
+(4,8,256) 点，双构造同败）——判定式按冻结逻辑落
+blocked（工件保全为
+`ar025_multi_parent_bench_eviction_blocked.json`）。根因诊断
+（仪器化两侧 gate+逐层 fetch 追踪）：FAIL ⟺ A 侧 layer-0
+token 行数 `(chains + chains·N)·T > 8192`（原 fixture 缓存
+预算）——`ActivationCache._evict_over_budget` 按 token 行数
+LRU 逐出，A 侧合并调用在 L0 **一次 burst `put_batch` 写入
+ΣN 子条目**，parents 虽在 L0 被 fetch 触碰但先于子条目写入
+而为 LRU 最旧 → put_batch 进行中即被逐出 → L1+ 取父 gate 行
+miss → 整批重算（**值正确但深层失去折叠**）→ 与 B 侧（逐链
+交错调用，每层 fetch 刷新 parents LRU 而幸存）结构性分歧。
+诊断验证：同失败点预算放大至 65536 后 S1 双构造全恢复
+（bitwise/allclose 1e-6）且账本面不变。**定性：容量混淆
+因子，非机制缺陷**（per-row 装配/merge/put_batch 语义在
+无逐出时逐位等价；逐出降级路径值正确）。**修正**：fixture
+缓存预算按网格最坏 layer 人口
+`(4+32)·1024=36864` 行取 65536（`_CACHE_BUDGET_TOKENS`，
+meta 记录 `cache_budget_tokens_per_layer`+erratum 注记）；
+**冻结判定式 S1/S2/S3 零改动**，修正后重跑（一次性）16/16
+全过：S1 supported（nonsplit 逐位/split allclose 1e-6）、
+S2 supported（严格 4/40..4/160）、S3 0.9-0.975 报告值。
+**机制级已知边界（入 DD10 风险册）**：预算不足时 multi 路
+径 burst 发布可逐出在飞 parents——值正确、深层折叠丢失、
+与逐链交错路径降级不对称；真实面几何（T~256，2 链 N=4，
+layer 人口 ~2560 行）远低于默认预算，不触发。
+
 ### DD8a 真实面接线增补（rev 4，T006 实现前定案）
 
 **缺口声明**：OQ2/rev 3 将 FR5 定案为 `folded_generate_batched`
@@ -395,6 +423,19 @@ prompt 解码总墙钟：A=`sample_joint` 一次调用，B=`sample()` 背靠背
 - **开关谓词竞态**：`_batched_forward_supported` 在 off 时
   逐字节现行为——泛化条件仅在 on 时求值（UT 钉死 off 路径
   谓词短路序不变）。
+- **预算逐出在飞 parents（DD8 erratum 发现，机制级已知
+  边界）**：`ActivationCache._evict_over_budget` 按 token
+  行数 LRU 逐出；multi 路径每层 burst `put_batch` 写 ΣN 子
+  条目时，parents 虽刚被本层 fetch 触碰但仍先于子条目写入
+  （LRU 较旧）——预算不足时 put_batch 进行中即逐出在飞
+  parents → 深层取父 miss → 整批重算（**值正确、折叠丢失**）；
+  逐链交错路径因每层 fetch 刷新而幸存——**降级不对称**。
+  触发条件：`(parents + ΣN)·T > max_entries_per_layer`。
+  真实面几何（T~256、2 链 N=4、~2560 行/层）远低于默认预算
+  不触发；合成面已按网格最坏人口放大预算（DD8 erratum）。
+  潜在缓解（若未来大画布生产面触发）：MFF 级 multi forward
+  延迟发布（层循环后统一 put_batch）或 parent pinning API
+  ——均超出本 AR 范围，仅注记。
 
 ## 6.1 UT 覆盖点矩阵（T001 Red 基线）
 

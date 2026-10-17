@@ -15,7 +15,7 @@
 | T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | passing | UT-2401..UT-2415 全绿（16/16）；spy 计数面即 mutation-kill 探针（UT-2407 counts==[1]*L/UT-2410 counts==[0]*L/UT-2413 顶层 drop） |
 | T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | passing | UT-2416..UT-2424 全绿（9/9）+ UT-2427 谓词泛化；`_forward_batched_multi` 前缀捐赠修正（见进度记录） |
 | T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | passing | UT-2425/UT-2426 绿；known-key 过滤随 dataclass 字段自动生效；注释段落点 dream/fast_dllm 两 yaml（llada_8b.yaml 为 AR024 并行会话在飞文件，注释段随其提交后补） |
-| T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | passing | `scripts/ar025_multi_parent_bench.py` --mode synth：判定式 S1/S2/S3 冻结入脚本（DD8 原文）；8 点网格×双构造（nonsplit 逐位/split allclose 1e-6）；`--quick` 单点冒烟 CPU 过（S1/S2 supported，ops A/B/C=4/40/40，ratio 0.9，独立 _quick 工件）；正式 8 点面随 GPU 空闲执行（与 T006 同窗，"先不做实验"边界）；--mode real 为 T006 交付（诚实脚手架，parser.error 零伪数字） |
+| T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | passing | `scripts/ar025_multi_parent_bench.py` --mode synth：判定式 S1/S2/S3 冻结入脚本（DD8 原文）；8 点网格×双构造（nonsplit 逐位/split allclose 1e-6）；`--quick` 单点冒烟 CPU 过（S1/S2 supported，ops A/B/C=4/40/40，ratio 0.9，独立 _quick 工件）。**正式 8 点面已执行（两轮，均有档）**：首跑 5 点 S1 FAIL（T=1024 全档+(4,8,256)）→ 冻结判定式落 blocked（工件保全 `ar025_multi_parent_bench_eviction_blocked.json`）；根因诊断（gate 仪器化+逐层 fetch 追踪）=**容量混淆因子**——缓存预算 8192 下 A 侧 L0 burst put_batch 按 token 行数 LRU 逐出在飞 parents（先于子条目写入故最旧）→ L1+ 取父 miss → 整批重算（值正确、折叠丢失），与逐链交错路径（每层 fetch 刷新幸存）不对称；FAIL ⟺ (chains+chains·N)·T>8192 完全吻合；诊断验证预算 65536 恢复 parity。**DD8 erratum**（design rev 4）：预算按网格最坏人口 (4+32)·1024=36864 取 65536，冻结判定式零改动重跑——**16/16 全过：S1 supported（nonsplit 逐位/split allclose 1e-6）+S2 supported（严格 4/40..4/160）+S3 0.9-0.975**（工件 `ar025_multi_parent_bench.json`，meta 含预算字段+erratum 注记）；机制级逐出边界入 DD10（真实面几何 ~2560 行/层不触发）。--mode real 为 T006 交付（诚实脚手架，parser.error 零伪数字） |
 | T006 | 真实 checkpoint 基准：LLaDA/Dream 双链并行投机合批 vs 分批 A/B（reps=30 预承诺单次定案，ar019 venv；AR023 T006 基准完成后执行）；工件 `ar025_multi_parent_bench.json` | T005 | pending | **设计定案（design rev 4 DD8a，门控 PASS WITH CONDITIONS ses_eb75aa130ffeOVCYAtYBaDeYxf——F1/F2/F3/N6/N7 全部当轮修入，T006 实现解锁）**：接线=W2 lockstep `sample_joint`（单实例+per-chain 画布/折叠链状态，双实例禁令=branch id 碰撞；`_speculative_commit` 按 forward 接缝两段拆分，合并闭包覆写 `parent_branch_id`→`parent_branch_ids`；temperature>0 入口 ValueError）；UT 前置守卫（合成族 sample_joint vs 逐链 sample 逐位相等+账本严格小）；计时对象=两 prompt 解码总墙钟（A=sample_joint×1 / B=sample()×2 背靠背，AR023 测量同构）。**实现待 AR024 sampler 在飞文件落地+AR023 基准完成（PID 8292 仍在跑）+GPU 空闲** |
 | T007 | 质量门：全量 pytest（1022/0/4 起只增不减，ar019 venv canonical 口径）+ pyflakes/mypy/black + demo 三锚点不动确认 | T003, T004 | pending | |
 | T008 | 文档五件：README 全量中文重写（AGENTS 强制规则）+ AGENTS 新条目（多 parent 契约）+ GUIDE 新部分 + CHANGELOG + RERUN 新步骤（数字工件溯源） | T006, T007 | pending | |
@@ -251,6 +251,44 @@
 - `--mode real` 诚实脚手架：parser.error 指向 T006（需 AR023
   T006 工件；reps=30 预承诺单次），零伪数字。
 - lint：black（重排）/isort/pyflakes 过。
+
+**正式 8 点面执行+erratum（2026-10-17，AR023 llada 基准完成后
+CPU 执行）**：
+
+- 首跑：5/8 点 S1 FAIL（T=1024 全档+(4,8,256)，双构造同败）→
+  冻结判定式落 blocked（S1/S2/overall 全 blocked，理由字段
+  逐点列出；工件保全
+  `results/optimization/ar025_multi_parent_bench_eviction_blocked.json`）。
+- 根因诊断（临时诊断脚本，非判定运行）：①gate 仪器化两侧
+  对拍——A 侧整次 forward 仅 **1 次** gate 调用（L0），B 侧
+  逐层 8 次（mask 语义一致：每行仅中位 512 divergent）；②
+  逐层 fetch 追踪——A 侧 L1 起 `_fetch_parent_gate_row` 全
+  None 但缓存 dump 明明有 pa layer-0 ffn_out；③聚合模式：
+  FAIL ⟺ A 侧 layer-0 token 行数 `(chains+chains·N)·T>8192`
+  （原 fixture 预算）——`_evict_over_budget` 按 token 行数
+  LRU 逐出，A 侧 L0 burst put_batch 写 ΣN 子条目时 parents
+  虽刚被 fetch 触碰但先于子条目写入（LRU 较旧）→ put_batch
+  进行中即被逐出 → L1+ 取父 miss → 整批重算（**值正确、
+  深层折叠丢失**）；B 侧逐链交错调用每层 fetch 刷新 parents
+  LRU 而幸存——**降级不对称**，A vs B 在 513+ 位结构性分歧
+  （max 0.0039），512 位（替换位）两侧同重算一致。④中间假设
+  逐一排除：跨形状 GEMM ULP（实测同输入 M=8T vs 4T 逐位同）、
+  tau 边界翻转（cos[513+]≈1-2e-8 远离 0.95，无近-tau 位）。
+- 诊断验证：三个失败点预算放大 65536 后 S1 双构造全恢复+账本
+  面不变（4/40..4/160）。
+- DD8 erratum（design rev 4 同批）：fixture 预算按网格最坏
+  layer 人口 (4+32)·1024=36864 行取 65536
+  （`_CACHE_BUDGET_TOKENS`，meta 新增
+  `cache_budget_tokens_per_layer`+erratum 注记+docstring 注记）；
+  **冻结判定式 S1/S2/S3 零改动**。
+- 重跑（一次性）：**16/16 全过——S1 supported（nonsplit
+  逐位/split allclose 1e-6）、S2 supported（严格）、S3
+  0.9/0.95/0.975 报告值**；工件
+  `results/optimization/ar025_multi_parent_bench.json`
+  （`verdicts_declared`+`synthetic_verdicts` 双节，blocked
+  证据工件独立保全供溯源）。
+- 机制级逐出边界入 DD10（触发条件/真实面几何不触发结论/
+  潜在缓解注记——延迟发布或 parent pinning，超本 AR 范围）。
 
 
 ## 阶段门控记录

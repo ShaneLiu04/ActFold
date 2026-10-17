@@ -1,0 +1,332 @@
+{
+  "meta": {
+    "cache_budget_note": "sized to the grid's worst-case layer population ((chains + chains*N)*T = 36864 rows at the (4,8,1024) point) so no in-flight eviction occurs \u2014 the DD8 erratum: the original 8192 budget let the A side's burst put_batch evict the in-flight parents (LRU-oldest at store time) and silently disable folding at deeper layers, an asymmetric capacity confound vs the per-chain interleave (evidence: ar025_multi_parent_bench_eviction_blocked.json)",
+    "cache_budget_tokens_per_layer": 65536,
+    "command": "python -m scripts.ar025_multi_parent_bench --mode synth",
+    "constructions": [
+      "nonsplit",
+      "split"
+    ],
+    "cupti_note": "launch-ledger proxy is write_op_count (#42 semantics); kernel counts are NOT claimed (this face carries no kernel-count measurement, #39)",
+    "device": "cpu",
+    "device_note": "default CPU (the #41 bitwise wording is CPU-limited); a CUDA run puts the non-split tier under the known M-shape numerical boundary ([sum(N),T] vs [N,T] GEMM blocking) \u2014 an honest blocked is the correct outcome there",
+    "gate": "SimilarityGate cosine tau=0.95",
+    "grid": [
+      [
+        2,
+        4,
+        256
+      ],
+      [
+        2,
+        4,
+        1024
+      ],
+      [
+        2,
+        8,
+        256
+      ],
+      [
+        2,
+        8,
+        1024
+      ],
+      [
+        4,
+        4,
+        256
+      ],
+      [
+        4,
+        4,
+        1024
+      ],
+      [
+        4,
+        8,
+        256
+      ],
+      [
+        4,
+        8,
+        1024
+      ]
+    ],
+    "model": "synthetic causal cumsum decoder L=4 H=64 V=128 (prefix-stable scan + detectable post_attention_layernorm->mlp chain)",
+    "run_date_utc": "2026-10-17T13:53:54.151549+00:00",
+    "seed": 2026,
+    "seed_formula": "SEED + 1000*chains + 10*N + T//256 + 5*split (frozen arithmetic, never Python hash)",
+    "switch_states": {
+      "A_merged": "on",
+      "B_per_chain": "off",
+      "C_serial": "off"
+    },
+    "timing": null,
+    "timing_note": "deterministic single-shot per point (parity + ledger face only); the reps=30 wall-clock statistics are the real face (--mode real, AR025 T006)",
+    "torch_version": "2.5.1+cu121"
+  },
+  "real": {
+    "note": "the real-face section (LLaDA/Dream two-chain speculative A/B, reps=30 pre-committed single shot, split_layers=False, H1/H2/delivery-line/H4 frozen verdicts) is delivered with AR025 T006 after the AR023 T006 artifacts; no numbers are fabricated here",
+    "status": "pending_t006"
+  },
+  "synthetic_points": [
+    {
+      "candidates_per_chain": 4,
+      "chains": 2,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 40,
+      "ops_c_serial_report_only": 40,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.9,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 2,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 40,
+      "ops_c_serial_report_only": 40,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.9,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 2,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 40,
+      "ops_c_serial_report_only": 40,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.9,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 2,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 40,
+      "ops_c_serial_report_only": 40,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.9,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 2,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 2,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 2,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 2,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 4,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 4,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 4,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 4,
+      "chains": 4,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 80,
+      "ops_c_serial_report_only": 80,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.95,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 4,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 160,
+      "ops_c_serial_report_only": 160,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.975,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 4,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 160,
+      "ops_c_serial_report_only": 160,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.975,
+      "seq_len": 256,
+      "serial_b_vs_c_bitwise_report_only": null
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 4,
+      "construction": "nonsplit",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 160,
+      "ops_c_serial_report_only": 160,
+      "parity_tier": "bitwise",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.975,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": true
+    },
+    {
+      "candidates_per_chain": 8,
+      "chains": 4,
+      "construction": "split",
+      "ops_a_merged": 4,
+      "ops_b_per_chain": 160,
+      "ops_c_serial_report_only": 160,
+      "parity_tier": "allclose(1e-6)",
+      "s1_parity_pass": true,
+      "s2_ledger_strictly_smaller": true,
+      "s3_reduction_ratio_report_only": 0.975,
+      "seq_len": 1024,
+      "serial_b_vs_c_bitwise_report_only": null
+    }
+  ],
+  "synthetic_verdicts": {
+    "S1_parity": "supported",
+    "S2_ledger_strictly_smaller": "supported",
+    "S3_reduction_ratio": {
+      "note": "report-only, no hard gate (honest forecast: moderate gain)",
+      "per_point": [
+        0.9,
+        0.9,
+        0.9,
+        0.9,
+        0.95,
+        0.95,
+        0.95,
+        0.95,
+        0.95,
+        0.95,
+        0.95,
+        0.95,
+        0.975,
+        0.975,
+        0.975,
+        0.975
+      ]
+    },
+    "aggregation_rule": "any S1 FAIL or S2 non-strict result blocks ALL synthetic verdicts (frozen, design DD8; equal ledger means zero merged-batch benefit \u2014 the honest standard)",
+    "blocked_reasons": [],
+    "overall": "supported"
+  },
+  "verdicts_declared": {
+    "S1": "per point, A (merged multi-parent [sum(N),T], switch on) vs B (per-chain [N,T], switch off) logits parity: non-split torch.equal (bitwise); split torch.allclose(rtol=atol=1e-6); any FAIL blocks ALL synthetic verdicts",
+    "S2": "write_op_count delta(A) < delta(B) STRICTLY at every point and construction (equal means zero merged-batch benefit \u2014 blocked by the honest standard)",
+    "S3": "ledger reduction ratio 1 - ops(A)/ops(B) per point: reported, no hard gate"
+  }
+}

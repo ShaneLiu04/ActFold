@@ -33,7 +33,11 @@ artifacts). Default device is CPU — the #41 bitwise wording is
 CPU-limited; a ``--device cuda`` run puts the non-split tier under the
 known M-shape numerical boundary (``[sum(N),T]`` vs ``[N,T]`` GEMM
 blocking) and an honest ``blocked`` is the correct outcome there
-(direction strict, never lenient).
+(direction strict, never lenient). The cache budget is sized to the
+grid's worst-case layer population (see ``_CACHE_BUDGET_TOKENS``): an
+undersized budget lets the A side's burst ``put_batch`` evict the
+in-flight parents — a capacity confound, not a mechanism defect (DD8
+erratum).
 
 Run::
 
@@ -68,6 +72,15 @@ _TAU = 0.95
 _SPLIT_MIN_TOKENS = 512
 _SEED = 2026
 _ATOL = 1e-6
+# Cache budget sized to the grid's worst-case layer population: the merged
+# A side writes (chains + chains*N) groups per layer, peaking at
+# (4 + 32) * 1024 = 36,864 token rows at layer 0 — a smaller budget lets the
+# burst put_batch evict the LRU-oldest entries (the in-flight parents) and
+# silently disables folding at the deeper layers: a capacity confound, not
+# a mechanism defect (design DD8 erratum; evidence
+# ar025_multi_parent_bench_eviction_blocked.json). 65536 covers the worst
+# point with headroom.
+_CACHE_BUDGET_TOKENS = 65536
 
 # (chains, candidates_per_chain, seq_len): the design DD8 grid
 # (chains {2,4}) x (N {4,8}) x (T {256,1024}), all 8 combinations.
@@ -158,7 +171,7 @@ def _build_setup(
     torch.manual_seed(seed)
     raw = _CausalBatchModel(_VOCAB, _HIDDEN, _NUM_LAYERS).to(device)
     raw.eval()
-    cache = ActivationCache(max_entries_per_layer=8192, device=device)
+    cache = ActivationCache(max_entries_per_layer=_CACHE_BUDGET_TOKENS, device=device)
     gate = SimilarityGate(tau=_TAU)
     folded = ManualFoldedForward(
         raw,
@@ -392,6 +405,17 @@ def run_synth_bench(device: str, quick: bool) -> dict[str, Any]:
                 "launch-ledger proxy is write_op_count (#42 semantics); "
                 "kernel counts are NOT claimed (this face carries no "
                 "kernel-count measurement, #39)"
+            ),
+            "cache_budget_tokens_per_layer": _CACHE_BUDGET_TOKENS,
+            "cache_budget_note": (
+                "sized to the grid's worst-case layer population "
+                "((chains + chains*N)*T = 36864 rows at the (4,8,1024) "
+                "point) so no in-flight eviction occurs — the DD8 erratum: "
+                "the original 8192 budget let the A side's burst put_batch "
+                "evict the in-flight parents (LRU-oldest at store time) and "
+                "silently disable folding at deeper layers, an asymmetric "
+                "capacity confound vs the per-chain interleave (evidence: "
+                "ar025_multi_parent_bench_eviction_blocked.json)"
             ),
             "command": "python -m scripts.ar025_multi_parent_bench --mode synth"
             + (" --quick" if quick else "")
