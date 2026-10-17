@@ -21,7 +21,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/assets/cover.png" alt="ActFold — 面向 Diffusion LLM 投机解码的跨分支激活复用" width="100%">
+  <img src="docs/assets/cover-v6.png" alt="ActFold — 面向 Diffusion LLM 投机解码的跨分支激活复用" width="100%">
 </p>
 
 ---

@@ -1,0 +1,114 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="640" viewBox="0 0 1280 640">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#050a14"/>
+      <stop offset="0.55" stop-color="#0b1e33"/>
+      <stop offset="1" stop-color="#0a2630"/>
+    </linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#22d3ee"/>
+      <stop offset="1" stop-color="#818cf8"/>
+    </linearGradient>
+    <linearGradient id="title" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#e0f2fe"/>
+      <stop offset="0.5" stop-color="#67e8f9"/>
+      <stop offset="1" stop-color="#a5b4fc"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.76" cy="0.55" r="0.5">
+      <stop offset="0" stop-color="#22d3ee" stop-opacity="0.12"/>
+      <stop offset="0.55" stop-color="#818cf8" stop-opacity="0.05"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </radialGradient>
+    <pattern id="dots" width="30" height="30" patternUnits="userSpaceOnUse">
+      <circle cx="2" cy="2" r="1.1" fill="#7dd3fc" fill-opacity="0.30"/>
+    </pattern>
+    <filter id="soft" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="9" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glowLine" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="4" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="640" fill="url(#bg)"/>
+  <rect width="1280" height="640" fill="url(#dots)" opacity="0.24"/>
+  <rect width="1280" height="640" fill="url(#glow)"/>
+  <rect x="0" y="0" width="1280" height="5" fill="url(#accent)"/>
+  <rect x="96" y="118" width="3" height="414" rx="1.5" fill="url(#accent)" opacity="0.8"/>
+
+  <g font-family="'Segoe UI','Noto Sans CJK SC','PingFang SC','Microsoft YaHei',Helvetica,Arial,sans-serif">
+    <text x="950" y="160" text-anchor="middle" font-size="16" fill="#94a3b8">P1-7 优化阶梯 &#183; AR015 &#8594; AR020</text>
+
+    <polyline points="765,475.0 854,445.0 943,415.0 1032,385.0 1121,355.0 1210,325.0" fill="none" stroke="#7dd3fc" stroke-opacity="0.35" stroke-width="1.4" stroke-dasharray="5 6"/>
+    <path d="M690,505 L690,488 Q690,479 699,479 L756,479 Q765,479 765,488 L765,505 Z" fill="#22d3ee" fill-opacity="0.13" stroke="#22d3ee" stroke-opacity="0.8" stroke-width="1.5"/>
+    <path d="M779,505 L779,458 Q779,449 788,449 L845,449 Q854,449 854,458 L854,505 Z" fill="#35c5f0" fill-opacity="0.13" stroke="#35c5f0" stroke-opacity="0.8" stroke-width="1.5"/>
+    <path d="M868,505 L868,428 Q868,419 877,419 L934,419 Q943,419 943,428 L943,505 Z" fill="#48b7f2" fill-opacity="0.13" stroke="#48b7f2" stroke-opacity="0.8" stroke-width="1.5"/>
+    <path d="M957,505 L957,398 Q957,389 966,389 L1023,389 Q1032,389 1032,398 L1032,505 Z" fill="#5ba8f4" fill-opacity="0.13" stroke="#5ba8f4" stroke-opacity="0.8" stroke-width="1.5"/>
+    <path d="M1046,505 L1046,368 Q1046,359 1055,359 L1112,359 Q1121,359 1121,368 L1121,505 Z" fill="#6e9af6" fill-opacity="0.13" stroke="#6e9af6" stroke-opacity="0.8" stroke-width="1.5"/>
+    <path d="M1135,505 L1135,338 Q1135,329 1144,329 L1201,329 Q1210,329 1210,338 L1210,505 Z" fill="#818cf8" fill-opacity="0.26" stroke="#818cf8" stroke-opacity="0.8" stroke-width="1.5" filter="url(#glowLine)"/>
+    <text x="727" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR015</text>
+    <text x="727" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">批量前向</text>
+    <text x="816" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR016</text>
+    <text x="816" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">批量 Graph</text>
+    <text x="905" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR017</text>
+    <text x="905" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">自适应容量</text>
+    <text x="994" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR018</text>
+    <text x="994" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">发布压缩</text>
+    <text x="1083" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR019</text>
+    <text x="1083" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">真实 ckpt</text>
+    <text x="1172" y="524" text-anchor="middle" font-size="10.5" fill="#64748b">AR020</text>
+    <text x="1172" y="539" text-anchor="middle" font-size="11" fill="#94a3b8">put 批量化</text>
+
+    <line x1="690" y1="506" x2="1210" y2="506" stroke="#334155" stroke-opacity="0.9" stroke-width="1"/>
+
+    <text x="1215" y="300" text-anchor="end" font-size="42" font-weight="800" fill="url(#title)">2.40–2.67&#215;</text>
+    <text x="1215" y="322" text-anchor="end" font-size="13" fill="#94a3b8">端到端 &#183; Fast-dLLM-v2-1.5B 真实 checkpoint</text>
+
+    <text x="950" y="566" text-anchor="middle" font-size="14" fill="#64748b">P1-7 六档优化阶梯 &#183; 各档独立实测 &#183; 全链输出逐位一致</text>
+  </g>
+
+  <g font-family="'Segoe UI','Noto Sans CJK SC','PingFang SC','Microsoft YaHei',Helvetica,Arial,sans-serif">
+    <rect x="96" y="88" width="446" height="34" rx="17" fill="#22d3ee" fill-opacity="0.10" stroke="#22d3ee" stroke-opacity="0.35"/>
+    <text x="319" y="110" text-anchor="middle" font-size="13.5" letter-spacing="2.2" fill="#7dd3fc">DIFFUSION LLM &#183; SPECULATIVE DECODING</text>
+
+    <text x="96" y="212" font-size="116" font-weight="800" fill="url(#title)" filter="url(#soft)">ActFold</text>
+    <text x="98" y="260" font-size="28" font-weight="600" fill="#cbd5e1">Cross-Branch Activation Reuse</text>
+    <text x="98" y="292" font-size="19" fill="#94a3b8"
+          textLength="440" lengthAdjust="spacing">Speculative Decoding for Diffusion LLMs</text>
+    <text x="98" y="324" font-size="18" fill="#7dd3fc"
+          textLength="360" lengthAdjust="spacing">面向 Diffusion LLM 投机解码的跨分支激活复用</text>
+
+    <g font-size="16" fill="#e2e8f0">
+      <rect x="98" y="350" rx="15" width="86" height="32" fill="#0f172a" stroke="#334155"/>
+      <text x="141" y="371" text-anchor="middle">Python</text>
+      <rect x="194" y="350" rx="15" width="94" height="32" fill="#0f172a" stroke="#334155"/>
+      <text x="241" y="371" text-anchor="middle">PyTorch</text>
+      <rect x="298" y="350" rx="15" width="76" height="32" fill="#0f172a" stroke="#334155"/>
+      <text x="336" y="371" text-anchor="middle">Triton</text>
+      <rect x="384" y="350" rx="15" width="68" height="32" fill="#0f172a" stroke="#334155"/>
+      <text x="418" y="371" text-anchor="middle">CUDA</text>
+      <rect x="462" y="350" rx="15" width="52" height="32" fill="#0f172a" stroke="#334155"/>
+      <text x="488" y="371" text-anchor="middle">CI</text>
+    </g>
+
+    <g font-size="16">
+      <rect x="98" y="400" rx="14" width="560" height="38" fill="#082f38" stroke="#22d3ee" stroke-opacity="0.55"/>
+      <circle cx="120" cy="419" r="4" fill="#22d3ee"/>
+      <text x="136" y="425" fill="#a5f3fc" textLength="504" lengthAdjust="spacing">端到端 2.40–2.67×（Fast-dLLM-v2-1.5B 真实 checkpoint，逐位一致）</text>
+
+      <rect x="98" y="448" rx="14" width="560" height="38" fill="#1e1b4b" stroke="#818cf8" stroke-opacity="0.55"/>
+      <circle cx="120" cy="467" r="4" fill="#818cf8"/>
+      <text x="136" y="473" fill="#c7d2fe" textLength="478" lengthAdjust="spacing">批量前向 2.0–2.6× · Graph 1.37–1.77× · 自适应容量 2.30/2.46×</text>
+
+      <rect x="98" y="496" rx="14" width="560" height="38" fill="#0f2a23" stroke="#34d399" stroke-opacity="0.5"/>
+      <circle cx="120" cy="515" r="4" fill="#34d399"/>
+      <text x="136" y="521" fill="#a7f3d0" textLength="504" lengthAdjust="spacing">验证阶段 TFLOPs 目标 −21%~−62% · 折叠前向 2.3–2.7× · Triton 3.43×</text>
+    </g>
+
+    <text x="98" y="598" font-size="15" fill="#64748b"
+          textLength="560" lengthAdjust="spacing">ShaneLiu04 &#183; github.com/ShaneLiu04/ActFold &#183; gitee.com/liu-xingyan04/act-fold</text>
+  </g>
+</svg>
