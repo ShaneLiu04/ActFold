@@ -31,10 +31,7 @@ import torch.nn as nn
 
 from actfold.core.fused_ops import fused_gate_mask_count, merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
-from actfold.core.split_layer import (
-    SplitFoldedTransformerLayer,
-    _padded_divergent_index,
-)
+from actfold.core.split_layer import SplitFoldedTransformerLayer, _padded_divergent_index
 
 __all__ = ["FoldedGraphRunner"]
 
@@ -460,8 +457,9 @@ class FoldedGraphRunner:
                 mask &= ~self._forced_divergent_static
                 count.copy_(mask.sum())
             use_split = isinstance(layer, SplitFoldedTransformerLayer) and layer.split_enabled
+            layer_impl: Any = layer
             if use_split:
-                layer._split_state = {  # type: ignore[union-attr]
+                layer_impl._split_state = {
                     "flat_index": _padded_divergent_index(mask, self._capacity),
                     "input_shape": None,
                     "num_divergent": 0,
@@ -477,14 +475,14 @@ class FoldedGraphRunner:
                     extra_kwargs["position_embeddings"] = self._position_embeddings_static
                 if self._position_ids_static is not None:
                     extra_kwargs["position_ids"] = self._position_ids_static
-                child_out = layer._recompute_all(
+                child_out = layer_impl._recompute_all(
                     x,
                     self._attention_mask_static,
                     **extra_kwargs,
                 )
             finally:
                 if use_split:
-                    layer._split_state = None  # type: ignore[union-attr]
+                    layer_impl._split_state = None
             merged = merge_stable_divergent(
                 parent_static[layer_idx + 1],
                 child_out,
