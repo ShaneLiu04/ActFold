@@ -295,7 +295,14 @@ def _install_layer_spy(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
 
 
 def _track_cached_branches(cache: ActivationCache) -> list[Any]:
-    """Record every branch id stored at layer 0 via an instance-level ``put`` spy."""
+    """Record every branch id stored at layer 0 via instance-level spies.
+
+    Wraps both publish faces: ``put`` (per-row, the switch-off and serial
+    paths) and — when the cache is batch-capable — ``put_batch`` (the
+    AR025 ``multi_parent_batch`` publish), whose ``CachePutEntry`` items
+    are unwrapped per entry. Existing switch-off callers never trigger
+    ``put_batch``, so their ``seen`` lists are unchanged.
+    """
     seen: list[Any] = []
     original_put = cache.put
 
@@ -315,6 +322,17 @@ def _track_cached_branches(cache: ActivationCache) -> list[Any]:
         )
 
     cache.put = _spy_put  # type: ignore[assignment]
+
+    original_put_batch = getattr(cache, "put_batch", None)
+    if callable(original_put_batch):
+
+        def _spy_put_batch(entries: Any) -> None:
+            for entry in entries:
+                if entry.layer_idx == 0 and entry.branch_id not in seen:
+                    seen.append(entry.branch_id)
+            return original_put_batch(entries)
+
+        cache.put_batch = _spy_put_batch  # type: ignore[assignment]
     return seen
 
 
@@ -950,8 +968,8 @@ def test_ut1412_truncated_mixed_merge_parity() -> None:
     parent, candidates = _make_truncated_candidates(
         device, child_len=6, seed=4112, divergent_tail=2
     )
-    _cache_b, _cache_s, profiles_b, _profiles_s, _gate_b, _probe = (
-        _run_batched_vs_serial_parity(device, "1412", parent, candidates)
+    _cache_b, _cache_s, profiles_b, _profiles_s, _gate_b, _probe = _run_batched_vs_serial_parity(
+        device, "1412", parent, candidates
     )
 
     for i in range(_NUM_CANDIDATES):

@@ -13,8 +13,8 @@
 |----|---------|------|------|------|
 | T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | passing | 覆盖点矩阵=design §6.1（rev 3 定稿）；UT-2400..UT-2427 共 28 例：26 红+2 绿锚点 |
 | T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | passing | UT-2401..UT-2415 全绿（16/16）；spy 计数面即 mutation-kill 探针（UT-2407 counts==[1]*L/UT-2410 counts==[0]*L/UT-2413 顶层 drop） |
-| T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | pending | |
-| T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | pending | #5 unknown-key 规则 |
+| T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | passing | UT-2416..UT-2424 全绿（9/9）+ UT-2427 谓词泛化；`_forward_batched_multi` 前缀捐赠修正（见进度记录） |
+| T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | passing | UT-2425/UT-2426 绿；known-key 过滤随 dataclass 字段自动生效；注释段落点 dream/fast_dllm 两 yaml（llada_8b.yaml 为 AR024 并行会话在飞文件，注释段随其提交后补） |
 | T005 | 合成基准脚本：多 parent 批量 vs 分批 vs 串行三方（路径分档容差对拍 + launch 账本）+ multi-geometry ≥4 形状点 + `--quick` 冒烟 | T003, T004 | pending | 判定式冻结入脚本 |
 | T006 | 真实 checkpoint 基准：LLaDA/Dream 双链并行投机合批 vs 分批 A/B（reps=30 预承诺单次定案，ar019 venv；AR023 T006 基准完成后执行）；工件 `ar025_multi_parent_bench.json` | T005 | pending | 待 GPU 空闲 |
 | T007 | 质量门：全量 pytest（1022/0/4 起只增不减，ar019 venv canonical 口径）+ pyflakes/mypy/black + demo 三锚点不动确认 | T003, T004 | pending | |
@@ -153,6 +153,71 @@
   drop 会扰动下行层 gate 稳定性——重算行与父分歧）。
 - CUDA 对拍纪律发现：同形同分配的多次运行逐位确定（rows 0/2/3
   exact）；跨形/跨分配误差主要来自 gate 语义而非数值噪声。
+
+### 2026-10-17 T003+T004 发布/循环接线+配置面完成
+
+- **T003 发布面**：`FoldedTransformerLayer.__init__` 加
+  `multi_parent_batch: bool = False`（DD5/DD6 单开关，layer 级）；
+  `_store_batched` put_batch 化——开关 on+`BatchedPutCapable`
+  （#42 结构探针，**每次重探不缓存**）→ 每层一次 put_batch N 行
+  `CachePutEntry`（payload 与逐行面逐字节同构：ffn_out 行视图+
+  layer0 加 embedding 行视图）；无能力→逐行 put 逐字节回退；
+  单 parent 批同受益（FR4 放大器，UT-2419）。
+  `SplitFoldedTransformerLayer` ctor 透传；`ManualFoldedForward.__init__`
+  加 kwargs → `_wrap_layer` 双分支传参。
+- **T003 接线面**：`_batched_forward_supported` 泛化（开关 on：同
+  parent 条件放宽为逐行 parent 仅要求非 None；off 逐字节不变）；
+  `ChainInput` dataclass + `folded_generate_batched` 多链入口（每链
+  独立 tree/active/policy select/acceptance 记账/prune+clear_branch；
+  每 step 各链候选收集→全部等长+开关 on→`_run_folded_forward_multi`
+  一次 `parent_branch_ids` 调用；否则逐链 folded_generate 语义分发
+  ——AR015 单父批 or 串行）；**多链 root id `root-{chain_idx}`
+  唯一化**（单链硬编码 "root" 跨链 cache 碰撞）；单链提前结束=
+  退出合批余链继续；`_run_folded_forward_multi` 镜像
+  `_run_folded_forward_batched`（stack→MFF branch_ids+
+  parent_branch_ids→逐行 logits 视图+profile 回填）。
+- **关键修正（design FR2 措辞偏离，机制不变方向）**：T002 的
+  `_fetch_parent_gate_row`/`_fetch_parent_ffn_row` 按 design rev 3
+  "v1 等长语义 T_p==T_c" 实现全部 `T_p != T_c → 降级`——但生成循环
+  正典形态是 child=parent+1 token（**父恒短于子一字**），多父路径
+  在循环内永不折叠（UT-2420/2423 稳定比 0.0 vs 参考 0.563 暴露）。
+  修正为镜像单父 `_forward_batched` :577-604 前缀语义：**父短于子
+  →前缀捐赠**（gate 比较前缀+后缀构造性发散；FFN merge 补零对齐，
+  `where` 永不读补零位）；**父长于子→仍降级**（UT-2409 钉死的
+  无 AR007 截断面不变）；等长→全画布比较（机制 UT-2401..2415 原
+  路径逐字节保留）。gate 组装分档：全 valid+统一长度→一次批量
+  gate（统一前缀或全画布，单父面镜像）；混合长度/部分 invalid→
+  逐行 gate+逐行 zeros 行（无效行不再对 zeros placeholder 过 gate，
+  构造性强制后终态 mask 不变）。design.md DD2/FR2 已补 erratum。
+- **测试基建修正两则**：①`_NoBatchPutCache` 删除误加的
+  `def put_batch: raise AttributeError`——#42 `runtime_checkable`
+  isinstance=hasattr 探针会把它判 True（`_IncapableCacheWrapper`
+  先例=完全不定义该方法）；②`_track_cached_branches`
+  （test_batched_branch_forward.py 共享基建）扩 put_batch spy——
+  `CachePutEntry` 逐条解包 layer 0 branch_id，开关 off 调用方
+  seen 列表不变（冻结面 68 passed 验证）。
+- **T004 配置面**：`ActFoldConfig.multi_parent_batch: bool = False`
+  （utils/config_manager.py，consumption+operational 双面——MFF ctor
+  消费）；known-key 过滤随 `__dataclass_fields__` 自动生效（UT-2426
+  unknown-key 零警告）。
+- 验证：AR025 模块 28/28 passed（本机 cuda:0 device fixture）；
+  冻结面回归：test_batched_branch_forward+test_batched_put 68
+  passed / generation+config+arch+publish_cost 75 passed /
+  graph+adaptive+pe+perf_proxy 53 passed+1 skipped+1 failed
+  （BS007 类性能单测 `test_bs007_graph_replay_not_slower` 在
+  AR023 llada 基准（PID 8292）GPU/CPU 竞争负载下失败——AR023
+  tasks :109 已实录同型噪声，本 AR 未触碰 graph 路径，GPU 空闲后
+  T007 全量门复验）/ split_layer 52 passed。
+- 质量门：black/isort/pyflakes 过；mypy 系统 python 68 文件 0 错
+  （ar019 venv 下 generic.py/causal_lm.py 各 1
+  `no-untyped-call`——venv transformers 4.53.1 桩差异，两文件均非
+  本会话改动，系统 python 0 错交叉证实环境性）。
+- 提交纪律：只 stage 本会话 7 文件（folded_transformer/split_layer/
+  architecture_utils/folded_generation/config_manager/
+  test_multi_parent_batch/test_batched_branch_forward+tasks.md），
+  AR024 并行会话在飞文件（llada_sampler/speculative_core/
+  llada_8b.yaml/test_llada_granularity/ar024_granularity_bench/
+  AR024 tasks.md）不碰。
 
 
 ## 阶段门控记录

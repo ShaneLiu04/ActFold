@@ -42,11 +42,12 @@ parent_branch_ids: Sequence[str] | None = None
 - 行 i 的父 = `parent_branch_ids[i]`；各父仍须以 **batch 1** 存储
   （#41 expand 契约逐行版——batch≠1 的父行 = 硬 `RuntimeError`，
   与现契约同严）。
-- **v1 等长语义（定案）**：`T_p_i == T_c`（逐行校验）。生产链形态
-  依据：扩散解码同画布迭代（T 恒定，AR021/22/23 投机块候选与父
-  同画布）——等长是生产自然形态；变长 prefix（AR003 append-only /
-  AR007 截断）与变长 pad 面同属 Out-of-Scope 切分（srs 明示）。
-  逐行 `T_p_i != T_c` = 该行降级（DD3），不整批失败。
+- **v1 等长语义（定案；T003 erratum 见 DD2 尾注）**：`T_p_i == T_c`
+  （逐行校验）。生产链形态依据：扩散解码同画布迭代（T 恒定，
+  AR021/22/23 投机块候选与父同画布）——等长是生产自然形态；变长
+  prefix（AR003 append-only / AR007 截断）与变长 pad 面同属
+  Out-of-Scope 切分（srs 明示）。逐行 `T_p_i != T_c` = 该行降级
+  （DD3），不整批失败。
 
 ### DD2 per-row 父装配（FR2，批量读）
 
@@ -74,6 +75,26 @@ h_parent = torch.cat(  # [N, T, H]；缺失行占位 zeros_like(child[:1])
   `[N,T,H]` 逐父比较天然正确（cosine 逐行）；`forced_divergent`
   AND 逐行（:561-565 现状已 per-row）；profiler record 循环
   （:567-576）仅替换 `parent_branch_id=parent_branch_ids[i]`。
+
+> **T003 erratum（2026-10-17，实现期发现）**：上表伪代码与 v1 等长
+> 语义的 `T_p != T_c -> 降级` 按字面实现后，UT-2420/2423（生成循环
+> 接线 parity）稳定比 0.0 vs 参考 0.563 暴露语义缺口——
+> `folded_generate`/`folded_generate_batched` 的正典形态是
+> **child = parent + 1 token（父恒短于子一字）**，单父批量面
+> （`_forward_batched` :577-604）对此支持 **append-only 前缀折叠**
+> （gate 比较前缀+后缀构造性发散），多父面若全降级则在生成循环内
+> 永不折叠。修正（机制方向不变，仅放宽短父）：
+> ①`_fetch_parent_gate_row`/`_fetch_parent_ffn_row` 长度校验改为
+> `T_p > T_c -> 降级`（**父长于子仍降级**——UT-2409 钉死的无 AR007
+> 截断面不变；等长→全画布比较——机制 UT-2401..2415 原路径逐字节
+> 保留）；②短父行捐赠前缀：gate 分档（全 valid+统一长度→一次批量
+> gate 镜像单父面前缀/全画布两形态；混合长度/部分缺失→逐行 gate+
+> 逐行 zeros 行，无效行不再对 zeros 占位过 gate，构造性强制后终态
+> mask 与原设计一致）；③merge 端短父 FFN 补零对齐（`where` 永不读
+> 补零位——mask 构造性 False）；④DD3 全 stable 快路径对短父不可达
+> （后缀 zeros ⇒ stable_count < num_tokens，自动退统一 slow path，
+> 无需显式条件）。"变长 pad 面 Out-of-Scope" 切分不变——本修正
+> 仅覆盖单父面既有的 append-only 前缀形态的逐行泛化。
 
 ### DD3 三分支行级统一（OQ1 定案：掩码式）
 

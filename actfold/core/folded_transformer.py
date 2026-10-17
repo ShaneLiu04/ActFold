@@ -74,6 +74,7 @@ class FoldedTransformerLayer(nn.Module):
         gate: SimilarityGate,
         layer_idx: int,
         scheduler: FoldingScheduler | None = None,
+        multi_parent_batch: bool = False,
     ) -> None:
         super().__init__()
         if scheduler is not None and isinstance(gate, AdaptiveQuantileGate):
@@ -83,6 +84,12 @@ class FoldedTransformerLayer(nn.Module):
         self.gate = gate
         self.layer_idx = layer_idx
         self.scheduler = scheduler
+        # AR025 DD5/DD6: the single behavior switch. Off (default): the
+        # eager batched publish stores per row (byte-for-byte the AR015
+        # loop). On: a batch-capable cache takes ONE put_batch per layer
+        # (N entries, branch_ids order); an incapable cache keeps the
+        # per-row loop unchanged.
+        self.multi_parent_batch = bool(multi_parent_batch)
         # Set on the first recomputation: some architectures (e.g. LLaDA) return
         # ``(hidden_states, cache)`` tuples that the base model unpacks.
         self._returns_tuple: bool | None = None
@@ -684,12 +691,16 @@ class FoldedTransformerLayer(nn.Module):
     ) -> torch.Tensor | None:
         """Fetch one parent row's gate activation (AR025 DD2 per-row face).
 
-        Returns the cached ``[1, T, H]`` activation, or ``None`` when the
-        entry is missing / structurally unusable (dim, hidden, zero-length,
-        or a ``T != seq_len`` mismatch — v1 equal-length semantics: no AR007
-        truncation on the multi-parent face). A parent cached at batch != 1
-        is a hard ``RuntimeError`` (the per-row #41 contract violation, not
-        a cache miss).
+        Returns the cached ``[1, T_p, H]`` activation (``T_p <= seq_len``),
+        or ``None`` when the entry is missing / structurally unusable (dim,
+        hidden, zero-length, or ``T_p > seq_len`` — a LONGER parent degrades
+        its row: no AR007 truncation on the multi-parent face, UT-2409). A
+        parent SHORTER than the child canvas donates its prefix (the
+        append-only generate-loop shape, mirroring the single-parent
+        ``_forward_batched`` face; the prefix is compared and the suffix is
+        constructively divergent in the caller). A parent cached at
+        batch != 1 is a hard ``RuntimeError`` (the per-row #41 contract
+        violation, not a cache miss).
         """
         try:
             get_all_fn = getattr(self.cache, "get_all", None)
@@ -720,11 +731,10 @@ class FoldedTransformerLayer(nn.Module):
                 f"at batch 1, got batch {h_parent.shape[0]} for "
                 f"branch={parent_branch_id}, layer={self.layer_idx}."
             )
-        if h_parent.shape[1] != seq_len:
-            # v1 equal-length semantics (srs FR2): T_p_i == T_c. A parent
-            # longer or shorter than the child canvas degrades its row —
-            # the AR007 truncated-prefix donation stays a single-parent-face
-            # feature (variable-length rows are the next AR's face).
+        if h_parent.shape[1] > seq_len:
+            # A LONGER parent degrades its row (UT-2409: no AR007
+            # truncated-prefix donation on the multi face). A shorter parent
+            # donates its prefix — the caller builds the per-row mask.
             return None
         return torch.as_tensor(h_parent)
 
@@ -803,25 +813,106 @@ class FoldedTransformerLayer(nn.Module):
             self._store_batched(branch_ids, output, hidden_states)
             return self._pack_output(output)
 
-        # Assemble [N, T, H]: valid rows carry the parent activation,
-        # invalid rows a zeros placeholder (values never flow out — the
-        # constructive mask force below keeps the gate from certifying them
-        # stable under any metric, including l2/tau=0 where a zeros
-        # placeholder can outscore tau).
-        placeholder = torch.zeros(
-            1, seq_len, hidden_dim, dtype=hidden_states.dtype, device=hidden_states.device
-        )
-        h_parent = torch.cat(
-            [row if row is not None else placeholder for row in row_parent],
-            dim=0,
-        ).to(dtype=hidden_states.dtype, device=hidden_states.device)
-
-        # Plain gate only (the AR015 D3 discipline: stacked per-row parents
-        # are not validated inside the fused gate kernel).
-        stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
+        # Assemble the per-row gate comparison. Valid rows carry the parent
+        # activation (possibly SHORTER than the child — the append-only
+        # generate-loop shape donates its prefix, mirroring the
+        # single-parent :577-604 face; a LONGER parent degrades, UT-2409);
+        # invalid rows get an all-False mask row directly (the constructive
+        # force of the zeros placeholder, without gating against zeros).
+        if all(row_valid):
+            valid_parent_rows = [row for row in row_parent if row is not None]
+            prefix_len = valid_parent_rows[0].shape[1]
+            if len({row.shape[1] for row in valid_parent_rows}) == 1:
+                # Uniform parent length: one batched gate call (prefix or
+                # full canvas, the ``_forward_batched`` mirror).
+                h_parent = torch.cat(
+                    valid_parent_rows,
+                    dim=0,
+                ).to(dtype=hidden_states.dtype, device=hidden_states.device)
+                # Plain gate only (the AR015 D3 discipline: stacked per-row
+                # parents are not validated inside the fused gate kernel).
+                if prefix_len == seq_len:
+                    stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
+                else:
+                    # AR003 append-only prefix folding: compare the prefix,
+                    # force the appended suffix divergent.
+                    prefix_mask = self.gate(hidden_states[:, :prefix_len], h_parent)
+                    stable_mask = torch.cat(
+                        [
+                            prefix_mask,
+                            torch.zeros(
+                                batch,
+                                seq_len - prefix_len,
+                                dtype=torch.bool,
+                                device=hidden_states.device,
+                            ),
+                        ],
+                        dim=1,
+                    )
+            else:
+                # Mixed parent lengths: per-row prefix masks.
+                mask_rows: list[torch.Tensor] = []
+                for row_idx, row in enumerate(row_parent):
+                    assert row is not None
+                    t_p = row.shape[1]
+                    row_mask = self.gate(
+                        hidden_states[row_idx : row_idx + 1, :t_p],
+                        row.to(dtype=hidden_states.dtype, device=hidden_states.device),
+                    )
+                    if t_p < seq_len:
+                        row_mask = torch.cat(
+                            [
+                                row_mask,
+                                torch.zeros(
+                                    1,
+                                    seq_len - t_p,
+                                    dtype=torch.bool,
+                                    device=hidden_states.device,
+                                ),
+                            ],
+                            dim=1,
+                        )
+                    mask_rows.append(row_mask)
+                stable_mask = torch.cat(mask_rows, dim=0)
+        else:
+            # Some rows lack a usable parent: all-False rows for them, the
+            # same per-row prefix treatment for the rest.
+            mask_rows = []
+            for row_idx, row in enumerate(row_parent):
+                if row is None:
+                    mask_rows.append(
+                        torch.zeros(
+                            1,
+                            seq_len,
+                            dtype=torch.bool,
+                            device=hidden_states.device,
+                        )
+                    )
+                    continue
+                t_p = row.shape[1]
+                row_mask = self.gate(
+                    hidden_states[row_idx : row_idx + 1, :t_p],
+                    row.to(dtype=hidden_states.dtype, device=hidden_states.device),
+                )
+                if t_p < seq_len:
+                    row_mask = torch.cat(
+                        [
+                            row_mask,
+                            torch.zeros(
+                                1,
+                                seq_len - t_p,
+                                dtype=torch.bool,
+                                device=hidden_states.device,
+                            ),
+                        ],
+                        dim=1,
+                    )
+                mask_rows.append(row_mask)
+            stable_mask = torch.cat(mask_rows, dim=0)
 
         # DD2 constructive force: rows without a usable parent are never
-        # stable, whatever the gate said about the zeros placeholder.
+        # stable, whatever the gate said (the mixed branches above already
+        # build all-False rows; this is the idempotent safety net).
         if not all(row_valid):
             for row_idx, valid in enumerate(row_valid):
                 if not valid:
@@ -895,10 +986,13 @@ class FoldedTransformerLayer(nn.Module):
     ) -> torch.Tensor | None:
         """Fetch one parent row's FFN output (AR025 DD3/DD4 per-row face).
 
-        Returns the cached ``[1, seq_len, hidden]`` FFN output or ``None``
-        when missing / shape-mismatched (v1 equal-length semantics — no
-        truncation). Unlike the gate row, no batch check is needed here:
-        the gate-row fetch already enforced batch 1 for a usable row.
+        Returns the cached ``[1, T_p, H]`` FFN output with
+        ``T_p <= seq_len`` (a prefix-shorter parent donates its prefix; a
+        LONGER parent or any other shape mismatch is ``None`` — no AR007
+        truncation on this face). Positions beyond ``T_p`` are pad-aligned
+        by the caller and never read (the mask is constructively False
+        there). Unlike the gate row, no batch check is needed here: the
+        gate-row fetch already enforced batch 1 for a usable row.
         """
         try:
             ffn_out = self.cache.fetch(
@@ -912,7 +1006,8 @@ class FoldedTransformerLayer(nn.Module):
         if (
             ffn_out.dim() != 3
             or ffn_out.shape[0] != 1
-            or ffn_out.shape[1] != seq_len
+            or ffn_out.shape[1] == 0
+            or ffn_out.shape[1] > seq_len
             or ffn_out.shape[2] != hidden_dim
         ):
             return None
@@ -950,7 +1045,25 @@ class FoldedTransformerLayer(nn.Module):
                 parent_rows.append(child_out[row_idx : row_idx + 1])
                 row_ffn_ok.append(False)
                 continue
-            parent_rows.append(ffn.to(dtype=child_out.dtype, device=child_out.device))
+            ffn = ffn.to(dtype=child_out.dtype, device=child_out.device)
+            if ffn.shape[1] < seq_len:
+                # Prefix-shorter parent: pad the appended-suffix region with
+                # zeros for shape alignment only — the mask is constructively
+                # False there, so ``where`` never reads the padded values.
+                ffn = torch.cat(
+                    [
+                        ffn,
+                        torch.zeros(
+                            1,
+                            seq_len - ffn.shape[1],
+                            hidden_dim,
+                            dtype=ffn.dtype,
+                            device=ffn.device,
+                        ),
+                    ],
+                    dim=1,
+                )
+            parent_rows.append(ffn)
             row_ffn_ok.append(True)
         parent_ffn = torch.cat(parent_rows, dim=0)
         mask_eff = stable_mask
@@ -974,7 +1087,38 @@ class FoldedTransformerLayer(nn.Module):
         case). The all-stable fast path passes the expanded ``[N, ...]``
         parent view — every row carries the same parent values, exactly
         like the serial fast path stores the parent view per child.
+
+        AR025 DD5: when the ``multi_parent_batch`` switch is on and the
+        cache is ``BatchedPutCapable`` (the #42 structural probe,
+        re-checked on EVERY call — the cache attribute is swappable and
+        the result is never cached on the instance), this layer's N rows
+        go through ONE ``put_batch`` (L put_batch calls per forward total,
+        one per layer — L·N → L). An incapable cache keeps the per-row
+        loop below byte-for-byte. The payload mirrors the per-row face
+        exactly (``ffn_out`` row views, plus the ``embedding`` row views
+        at layer 0), so the terminal cache state is bit-identical either
+        way. Single-parent batches take the same path — the publish face
+        is orthogonal to the parent count.
         """
+        if self.multi_parent_batch:
+            from actfold.core.cache_protocol import BatchedPutCapable, CachePutEntry
+
+            if isinstance(self.cache, BatchedPutCapable):
+                entries: list[CachePutEntry] = []
+                for row_idx, bid in enumerate(branch_ids):
+                    child_ffn = ffn_out if ffn_out.shape[0] == 1 else ffn_out[row_idx : row_idx + 1]
+                    activations: dict[str, torch.Tensor] = {"ffn_out": child_ffn}
+                    if self.layer_idx == 0:
+                        activations["embedding"] = hidden_states[row_idx : row_idx + 1]
+                    entries.append(
+                        CachePutEntry(
+                            branch_id=bid,
+                            layer_idx=self.layer_idx,
+                            activations=activations,
+                        )
+                    )
+                self.cache.put_batch(entries)
+                return
         for row_idx, bid in enumerate(branch_ids):
             child_ffn = ffn_out if ffn_out.shape[0] == 1 else ffn_out[row_idx : row_idx + 1]
             self._store_activations(bid, child_ffn, hidden_states[row_idx : row_idx + 1])

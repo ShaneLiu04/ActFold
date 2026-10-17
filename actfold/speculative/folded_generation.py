@@ -130,9 +130,7 @@ def folded_generate(
 
             if not candidates:
                 # No candidates produced; fall back to appending an EOS-like token.
-                logger.warning(
-                    "No candidates produced at step %d; stopping generation.", token_idx
-                )
+                logger.warning("No candidates produced at step %d; stopping generation.", token_idx)
                 break
 
             # Register candidates in the tree and run the folded forward pass.
@@ -192,12 +190,8 @@ def folded_generate(
     # stable ratio is the mean over every folded step, not the last step's
     # value (each step overwrites node metadata, so the last-step read was a
     # silent bug that skewed downstream TFLOPs estimates).
-    stable_ratio = (
-        sum(step_ratios) / len(step_ratios) if step_ratios else 0.0
-    )
-    mean_acceptance = (
-        sum(step_acceptances) / len(step_acceptances) if step_acceptances else 0.0
-    )
+    stable_ratio = sum(step_ratios) / len(step_ratios) if step_ratios else 0.0
+    mean_acceptance = sum(step_acceptances) / len(step_acceptances) if step_acceptances else 0.0
     return FoldedGenerationResult(
         tokens=active.tokens,
         stable_ratio=float(stable_ratio),
@@ -324,10 +318,18 @@ def _batched_forward_supported(
         return False
     if len(candidates) <= 1:
         return False
-    if len({node.parent_id for node in candidates}) != 1:
-        return False
-    if candidates[0].parent_id is None:
-        return False
+    if getattr(folded_model, "multi_parent_batch", False):
+        # AR025 DD6: the switch generalizes the shared-parent condition to
+        # per-row parents — candidates may fold against DIFFERENT parents
+        # (multi-parent rows mixed with single-parent rows); each candidate
+        # still needs a non-None parent.
+        if any(node.parent_id is None for node in candidates):
+            return False
+    else:
+        if len({node.parent_id for node in candidates}) != 1:
+            return False
+        if candidates[0].parent_id is None:
+            return False
     first_shape = tuple(candidates[0].tokens.shape)
     if any(tuple(node.tokens.shape) != first_shape for node in candidates):
         return False
@@ -368,3 +370,256 @@ def _run_folded_forward_batched(
         profile = GLOBAL_STABILITY_PROFILER.get_profile(node.branch_id)
         if profile is not None:
             node.metadata["stable_ratio"] = profile.mean_stable_ratio
+
+
+@dataclass
+class ChainInput:
+    """One independent generation chain for :func:`folded_generate_batched`.
+
+    Args:
+        input_ids: Prompt token IDs ``[batch, prompt_len]`` for this chain.
+    """
+
+    input_ids: torch.Tensor
+
+
+def _multi_chain_merge_supported(nodes: list[BranchNode]) -> bool:
+    """Whether the step's flattened candidates may share ONE multi-parent call.
+
+    Conditions (AR025 DD7): every candidate has a non-None parent (per-row
+    parents — chains fold against their own actives), all candidates are
+    equal-length, and the parent batch is 1. The switch itself
+    (``multi_parent_batch``) is checked by the caller; this predicate is
+    purely structural.
+    """
+    if not nodes:
+        return False
+    if any(node.parent_id is None for node in nodes):
+        return False
+    first_shape = tuple(nodes[0].tokens.shape)
+    if any(tuple(node.tokens.shape) != first_shape for node in nodes):
+        return False
+    return first_shape[0] == 1
+
+
+def _run_folded_forward_multi(
+    model: FastDLLMAdapter,
+    nodes: list[BranchNode],
+    folded_model: ManualFoldedForward,
+    step_idx: int,
+) -> None:
+    """Execute one multi-parent batched folded forward for all ``nodes`` (AR025).
+
+    Mirrors :func:`_run_folded_forward_batched` with per-row parents: row
+    ``i`` of the stacked batch belongs to ``nodes[i]`` and folds against
+    ``nodes[i].parent_id`` (chains in one call fold against different
+    actives). Profiles are reset per branch and logits are stored as
+    read-only ``[1, seq_len, vocab]`` row views, exactly like the
+    single-parent batched path.
+    """
+    del model  # The batched path always routes through the folded model.
+    for node in nodes:
+        # Reset any stale profile so the profiler only records the current pass.
+        GLOBAL_STABILITY_PROFILER.reset_branch(node.branch_id)
+
+    stacked = torch.cat([node.tokens for node in nodes], dim=0)
+    logits = folded_model(
+        stacked,
+        branch_id=None,
+        branch_ids=[node.branch_id for node in nodes],
+        parent_branch_ids=[node.parent_id for node in nodes],
+        step_idx=step_idx,
+    )
+
+    for row_idx, node in enumerate(nodes):
+        node.logits = logits[row_idx : row_idx + 1]
+
+        profile = GLOBAL_STABILITY_PROFILER.get_profile(node.branch_id)
+        if profile is not None:
+            node.metadata["stable_ratio"] = profile.mean_stable_ratio
+
+
+def folded_generate_batched(
+    model: FastDLLMAdapter,
+    chains: list[ChainInput],
+    max_new_tokens: int,
+    folded_model: FoldedModel | ManualFoldedForward | None = None,
+    draft_generator: Optional[DraftGenerator] = None,
+    acceptance_policy: Optional[AcceptancePolicy] = None,
+    num_branches_per_step: int = 1,
+    record_stability: bool = True,
+    step_idx: int = 0,
+) -> list[FoldedGenerationResult]:
+    """Generate for several independent chains, merging forwards when legal.
+
+    Per step, each active chain builds its own candidates (its own tree,
+    its own policy selection, its own acceptance accounting — a chain never
+    observes another chain's candidates). When the ``multi_parent_batch``
+    switch is on (DD6) and every live chain's candidates are equal-length
+    with non-None parents, ALL candidates share ONE
+    :func:`_run_folded_forward_multi` call — chains fold against their own
+    actives through per-row ``parent_branch_ids``. Any other shape (or the
+    default off switch) dispatches per chain through the exact
+    :func:`folded_generate` step semantics (the AR015 single-parent batched
+    path when supported, the serial loop otherwise), so the off-switch
+    result is per-chain ``folded_generate`` step-for-step.
+
+    Chain roots take ``root-{chain_idx}`` ids: the single-chain loop's
+    hardcoded ``"root"`` would collide across chains in the shared
+    activation cache. A chain that produces no candidates finishes early;
+    the remaining chains keep merging without it.
+
+    Args:
+        model: Model adapter that exposes ``forward()`` and ``embed()``.
+        chains: One :class:`ChainInput` per independent chain.
+        max_new_tokens: Number of new tokens to generate per chain.
+        folded_model: Optional folded model (``ManualFoldedForward`` for
+            the merged/batched paths).
+        draft_generator: Optional draft generator (shared across chains;
+            per-call seeding keeps it deterministic per chain).
+        acceptance_policy: Policy for selecting among each chain's
+            candidate branches.
+        num_branches_per_step: Number of draft candidates per chain step.
+        record_stability: Whether to collect per-layer stability profiles.
+        step_idx: Current diffusion step index (1 for autoregressive models).
+
+    Returns:
+        One :class:`FoldedGenerationResult` per chain, in chain order.
+    """
+    num_chains = len(chains)
+    if num_chains == 0:
+        return []
+
+    profiler_was_enabled = getattr(GLOBAL_STABILITY_PROFILER, "enabled", True)
+    if not record_stability:
+        GLOBAL_STABILITY_PROFILER.set_enabled(False)
+
+    try:
+        policy = acceptance_policy or GreedyAcceptancePolicy()
+        roots = [
+            BranchNode(
+                branch_id=f"root-{chain_idx}",
+                parent_id=None,
+                tokens=chain.input_ids.clone(),
+                depth=0,
+            )
+            for chain_idx, chain in enumerate(chains)
+        ]
+        trees = [BranchTree(root) for root in roots]
+        actives = list(roots)
+        finished = [False] * num_chains
+        step_ratios: list[list[float]] = [[] for _ in range(num_chains)]
+        step_acceptances: list[list[float]] = [[] for _ in range(num_chains)]
+
+        for token_idx in range(max_new_tokens):
+            chain_candidates: list[list[BranchNode]] = [[] for _ in range(num_chains)]
+            for chain_idx in range(num_chains):
+                if finished[chain_idx]:
+                    continue
+                candidates = _make_candidates(
+                    model=model,
+                    parent=actives[chain_idx],
+                    token_idx=token_idx,
+                    folded_model=folded_model,
+                    draft_generator=draft_generator,
+                    num_branches=num_branches_per_step,
+                    step_idx=step_idx,
+                )
+                if not candidates:
+                    logger.warning(
+                        "No candidates produced at step %d for chain %d; " "stopping that chain.",
+                        token_idx,
+                        chain_idx,
+                    )
+                    finished[chain_idx] = True
+                    continue
+                chain_candidates[chain_idx] = candidates
+
+            live = [i for i in range(num_chains) if not finished[i]]
+            if not live:
+                break
+
+            flattened = [node for i in live for node in chain_candidates[i]]
+            evaluated_by_chain: dict[int, list[BranchNode]] = {}
+            if (
+                isinstance(folded_model, ManualFoldedForward)
+                and getattr(folded_model, "multi_parent_batch", False)
+                and _multi_chain_merge_supported(flattened)
+            ):
+                # AR025 DD7: all live chains' candidates — possibly against
+                # different per-chain parents — share one multi-parent
+                # batched forward.
+                for i in live:
+                    for node in chain_candidates[i]:
+                        trees[i].add(node)
+                _run_folded_forward_multi(model, flattened, folded_model, step_idx)
+                for i in live:
+                    evaluated_by_chain[i] = list(chain_candidates[i])
+            else:
+                # Per-chain dispatch: the exact folded_generate step
+                # semantics (AR015 single-parent batching when supported,
+                # the serial loop otherwise).
+                for i in live:
+                    candidates = chain_candidates[i]
+                    evaluated: list[BranchNode] = []
+                    if isinstance(folded_model, ManualFoldedForward) and _batched_forward_supported(
+                        folded_model, candidates
+                    ):
+                        for node in candidates:
+                            trees[i].add(node)
+                        _run_folded_forward_batched(model, candidates, folded_model, step_idx)
+                        evaluated = list(candidates)
+                    else:
+                        for node in candidates:
+                            trees[i].add(node)
+                            _run_folded_forward(model, node, folded_model, step_idx)
+                            evaluated.append(node)
+                    evaluated_by_chain[i] = evaluated
+
+            for i in live:
+                evaluated = evaluated_by_chain[i]
+                accepted = policy.select(evaluated)
+                accepted.accepted = True
+
+                # True acceptance semantics (AR004) against the chain's own
+                # pre-advance active snapshot.
+                assert accepted.logits is not None
+                parent_tokens = actives[i].tokens
+                accept_mask = target_argmax_accept_mask(accepted.tokens, accepted.logits)
+                draft_mask = draft_region_mask(parent_tokens, accepted.tokens)
+                step_rate = acceptance_rate(accept_mask, draft_mask)
+                accepted.metadata["acceptance_rate"] = step_rate
+                step_acceptances[i].append(float(step_rate))
+
+                actives[i] = accepted
+                step_ratio = accepted.metadata.get("stable_ratio", 0.0)
+                step_ratios[i].append(float(step_ratio))
+
+                # Prune this chain's rejected siblings to free cache.
+                for node in evaluated:
+                    if node.branch_id != accepted.branch_id:
+                        trees[i].prune(node.branch_id)
+                        if folded_model is not None and folded_model.cache is not None:
+                            folded_model.cache.clear_branch(node.branch_id)
+    finally:
+        # Always restore the global profiler state (the folded_generate
+        # contract).
+        if not record_stability:
+            GLOBAL_STABILITY_PROFILER.set_enabled(profiler_was_enabled)
+
+    results: list[FoldedGenerationResult] = []
+    for i in range(num_chains):
+        ratios = step_ratios[i]
+        accs = step_acceptances[i]
+        stable_ratio = sum(ratios) / len(ratios) if ratios else 0.0
+        mean_acceptance = sum(accs) / len(accs) if accs else 0.0
+        results.append(
+            FoldedGenerationResult(
+                tokens=actives[i].tokens,
+                stable_ratio=float(stable_ratio),
+                num_folded_steps=actives[i].depth,
+                final_branch_id=actives[i].branch_id,
+                acceptance_rate=float(mean_acceptance),
+            )
+        )
+    return results

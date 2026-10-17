@@ -426,6 +426,7 @@ class ManualFoldedForward(nn.Module):
         graph_adaptive_capacity: bool = False,
         graph_adaptive_config: Any | None = None,
         graph_runner_pool_size: int = 0,
+        multi_parent_batch: bool = False,
     ) -> None:
         super().__init__()
         if not 0.0 < graph_capacity_ratio <= 1.0:
@@ -525,6 +526,14 @@ class ManualFoldedForward(nn.Module):
         # (parent-None window populate, parent-at-old-shape window switch).
         self._degradation_fallback_count = 0
         self._structural_eager_count = 0
+        # AR025 DD6: the single behavior switch. Off (default): the dispatch
+        # predicate, the eager publish, and the generation loop are
+        # byte-for-byte the pre-AR025 wiring. On: the predicate merges
+        # per-row-parent candidate batches, the eager batched publish takes
+        # one put_batch per layer (#42 probe, re-checked per call), and
+        # ``folded_generate_batched`` merges chains. The API face
+        # (``parent_branch_ids``) is NOT gated by this switch.
+        self.multi_parent_batch = bool(multi_parent_batch)
         self._wrapped_layers = nn.ModuleList(
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
@@ -576,6 +585,7 @@ class ManualFoldedForward(nn.Module):
                 layer_idx=idx,
                 scheduler=self.scheduler,
                 min_split_tokens=self.split_min_tokens,
+                multi_parent_batch=self.multi_parent_batch,
             )
         from actfold.core.folded_transformer import FoldedTransformerLayer
 
@@ -585,6 +595,7 @@ class ManualFoldedForward(nn.Module):
             gate=self.gate,
             layer_idx=idx,
             scheduler=self.scheduler,
+            multi_parent_batch=self.multi_parent_batch,
         )
 
     def forward(

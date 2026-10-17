@@ -118,7 +118,21 @@ class ActFoldConfig:
     # dataclasses (LLaDASamplerConfig / DreamSamplerConfig).
     num_block_candidates: int = 0
     candidate_top_k: int = 10
+    # AR024: YAML consumption faces for the LLaDA commit-granularity knobs
+    # (LLaDA-only family semantics). Same consumption-only pattern: the
+    # operational fields and their validation live on LLaDASamplerConfig.
+    speculative_sub_block_size: int = 8
+    progressive_refill: bool = False
+    refill_top_k: int | None = None
+    candidate_eos_aware: bool = True
     max_new_tokens: int = 256
+    # AR025: the single multi-parent batch behavior switch. Off (default)
+    # keeps the dispatch predicate, the eager publish, and the generation
+    # loop byte-for-byte pre-AR025. On: ManualFoldedForward gains per-row
+    # parents (``parent_branch_ids``), the eager batched publish takes one
+    # put_batch per layer (#42 probe), and folded_generate_batched merges
+    # chains. The MFF constructor consumes the field.
+    multi_parent_batch: bool = False
 
     def __post_init__(self) -> None:
         if self.max_new_tokens <= 0:

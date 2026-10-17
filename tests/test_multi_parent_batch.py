@@ -254,10 +254,11 @@ def _assert_cache_entry_close(
 class _NoBatchPutCache:
     """Delegating cache WITHOUT ``put_batch`` (the #42 wrapper discipline).
 
-    Every consumed method is explicit; there is no blanket ``__getattr__``
-    (a blanket delegate would leak the inner cache's ``put_batch`` and both
-    sides of an A/B would take the same branch). ``put_batch`` raises
-    ``AttributeError`` explicitly.
+    Every consumed method is explicit and there is no blanket
+    ``__getattr__``: a ``runtime_checkable`` isinstance probe uses
+    ``hasattr``, so attribute-fallback delegation would fake the
+    capability whenever the inner cache grows ``put_batch`` (the
+    ``_IncapableCacheWrapper`` precedent of AR020).
     """
 
     def __init__(self, inner: ActivationCache) -> None:
@@ -285,9 +286,6 @@ class _NoBatchPutCache:
 
     def clear_branch(self, branch_id: str) -> None:
         self._inner.clear_branch(branch_id)
-
-    def put_batch(self, entries: Any) -> None:
-        raise AttributeError("put_batch")
 
 
 class _DropEntryCache(_NoBatchPutCache):

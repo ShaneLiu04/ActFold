@@ -33,6 +33,14 @@ load_in_4bit: false
 torch_dtype: null
 device_map: null
 
+# Multi-parent batch folding (AR025). Default OFF — the dispatch
+# predicate, the eager publish, and the generation loop stay byte-for-byte
+# pre-AR025. ON merges per-row-parent candidate batches, takes one
+# put_batch per layer on the eager publish (#42), and enables
+# folded_generate_batched chain merging. Consumed by the
+# ManualFoldedForward constructor:
+# multi_parent_batch: true
+
 # Evaluation backend configuration.
 use_real_eval: true
 eval_backend: "auto"
