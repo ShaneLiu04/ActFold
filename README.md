@@ -20,6 +20,10 @@
 
 </div>
 
+<p align="center">
+  <img src="docs/assets/cover.png" alt="ActFold — 面向 Diffusion LLM 投机解码的跨分支激活复用" width="100%">
+</p>
+
 ---
 
 ## 项目概述
@@ -1079,7 +1083,6 @@ python demo.py
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
 - [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令，第 12 步 = AR022）
-- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单
 - [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR022）
 
 ---
