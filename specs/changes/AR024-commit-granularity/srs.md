@@ -133,7 +133,10 @@ folded_model / 无 branch_ids 能力 / cfg_scale>0）全承 AR023。
   不含 EOS 且 == 排除 EOS 的 argmax 填充、行 0 可能含 EOS、行 1..N-2
   与 eos_aware=False 逐位相同
 - Given EOS 不在池中的 fixture，When eos_aware=True，Then 行 N-1 == 行 0
-  （退化同值）、选定结果与 eos_aware=False 确定性一致
+  （退化同值）且构建确定性（双跑 bit-exact）；N=1+greedy 退化 fixture 下
+  选定结果与 eos_aware=False 一致——一般 N 时行集合构造性不同（随机行
+  N-1 被替换为延续行），选定不预设一致（design §4.1.5 措辞精化，
+  2026-10-16 design 门控 G14 回写）
 - Given eos_aware=False，When 投机运行，Then 与 AR023 候选构建逐位相同
 - Given N=1 + eos_aware=True，When 构建，Then 单行兼两角色、无异常
 

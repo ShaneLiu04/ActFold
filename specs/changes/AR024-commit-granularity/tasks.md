@@ -39,6 +39,12 @@
   并行态注记：AR023 T006 正式跑进行中（GPU 独占），AR024 CPU 面
   （T001-T004、T007 CPU 部分、T008 起草）先行，实机面（T005/T006）与
   归档（T011）排队——AR023 先归档、AR024 后归档。
+- 2026-10-16：design 阶段完成。方案 A 定案（族持窗口循环 + Core 最小三扩
+  展：`eos_aware`/`refill_top_k` 尾部可选参默认字节不变）；5 设计冻结点定案
+  （k=None→s//2、行 N-1 无条件优先、FR3 验收措辞精化、批量前向计数口径、
+  refill history 每窗一条）；校验域冻结（s 上界 scoped N>0）。design.md 生
+  成，任务结构与设计对齐确认（T002/T003 描述已含 Core 最小扩展授权面，无
+  结构调整）。开发期按 G6 Minor 建议以 FR1→FR2→FR3→FR4 微任务链推进。
 
 ## 阶段门控记录
 
@@ -51,3 +57,11 @@
 - 修复的问题：无
 - 遗留 Minor：G6——T002/T003 批次粒度偏粗属 TDD 惯例可接受；开发阶段按 FR1→FR2→FR3→FR4 微任务链逐个 Red/Green 缓解，不改 tasks.md 结构
 - 审查代理：sdd-gate-reviewer（ses_ebb3b85edffe4HT3vhLPTmgbFQ）
+
+### 2026-10-16 design 门控记录
+
+- 门控结果：PASS（第 1 轮）
+- 审查项数：15 项（G1-G15，无 NO；G10 组件详设目录不存在确认跳过）
+- 修复的问题（4 项当场修入）：G13 Important——§4.2.1 窗口级早停缺显式 UT，补 UT-2413（早停确定性 + refill finished-仅-top-k 位 + 无掩码位跳过），随 T002 Red 实现；G3——design §4.1.4 伪码签名补 `ctx`（与 §4.3 一致）；G8——design §6 头部补覆盖率目标显式声明（功能点/分支 100% 映射 + 基线只增不减）；G14——srs FR3 第二条验收句按 design §4.1.5 精化措辞回写
+- 关键交叉验证：`_speculative_commit` 现签名逐参一致（扩展确为尾部两可选参）；Dream 调用点不传新参兼容论证成立；22 个 ar023 导入助手名防虚构全命中；branch tag 冻结与现行一致；A/B 锚种子公式逐项成立
+- 审查代理：sdd-gate-reviewer（ses_eb88c4bf7ffeKBol8MhP6gWLwh）
