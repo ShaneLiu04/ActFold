@@ -4,14 +4,14 @@
 |------|------|
 | AR 编号 | AR025 |
 | 关联 srs.md | ./srs.md |
-| 关联 design.md | ./design.md（待生成）|
+| 关联 design.md | ./design.md rev 3（design 门控 PASS）|
 | 创建日期 | 2026-10-16 |
 
 ## 任务列表
 
 | ID | 任务描述 | 依赖 | 状态 | 备注 |
 |----|---------|------|------|------|
-| T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | pending | 覆盖点矩阵待 design §6.1 |
+| T001 | Red UT：多 parent 批量机制面测试全红（生产缺失：`parent_branch_ids` 参数/per-row 父装配/逐行 gate 对拍）；冻结面（AR015 批量契约 UT + AR023 族投机面）零破坏确认 | - | pending | 覆盖点矩阵=design §6.1（rev 3 定稿） |
 | T002 | Green 机制核心：`ManualFoldedForward.parent_branch_ids` 尾参（互斥校验/None-attach 零扰动）+ per-row 父装配（gather + 行级降级，OQ1 定案形态）+ 逐行 gate/merge；mutation 全杀还原 | T001 | pending | 冻结常数/语义对拍 UT 钉死 |
 | T003 | Green 发布与循环接线：`put_batch` 逐行胜者发布验证（#42 零改动预期验证）+ `_batched_forward_supported` 条件泛化 + `folded_generate` 多链入口（OQ2 定案形态）；mutation 全杀还原 | T002 | pending | |
 | T004 | 配置面：合批开关（默认 off）+ `ActFoldConfig` 消费 + YAML 注释段；默认 off 逐字节兼容 UT | T002 | pending | #5 unknown-key 规则 |
@@ -64,6 +64,43 @@
   md 造成双重编码损坏（读回乱码）——srs/tasks 已用 write 工具整体重写
   修复；此后中文 md 一律 write/edit 工具（与 D:\RSI 会话纪律一致）。
 
+### 2026-10-17 design 起草 + 门控 2 轮 PASS（llada/dream 基准运行期间，零实验先行）
+
+- design.md rev 1 起草：核心洞察经代码核实成立——批量 eager 体的
+  gate/forced/profiler/merge 逐行机制面已 per-row，整批粒度仅父装配
+  （单键 fetch→expand，:490-536）与三分支决策（:582-615）；DD1-DD10
+  决策+UT 矩阵+PlantUML+复用映射；OQ1 掩码式/OQ2 folded_generate_batched
+  双定案。
+- design 门控第 1 轮（审查代理 ses_eb85d707bffeut2qVgEtMzVCIm）
+  **FAIL**（G12/G13 两 Major）：G12 H1"构造性逐位"与 DD10 自认的
+  split 1-ULP 风险自相矛盾（split 层 N=4/T≥128 必然激活→近平票
+  argmax 翻转→H1 假阳性 block）；G13 DD9 虚构路径
+  `actfold/config_manager.py`（实际 `utils/config_manager.py`）+
+  遗漏 DD1 主落点 `architecture_utils.py`。另 Minor×5（G8 占位值
+  流出对 l2/tau=0 不闭合→构造性强制/G10 B 侧开关未钉死/G11 单链
+  提前结束语义缺/G15 章节压缩未注记/G9 措辞）。
+- 修复 7 项 → rev 2 → 第 2 轮重审（同代理续审
+  ses_eb84f414fffefXCz2O1eIE44k6）**PASS**：7 项修复全 VERIFIED
+  （split_layers=False 构造定案经 `_wrap_layer` :562-574 结构性
+  证实 fast/slow path 均无 split 依赖；G12 修复采用"真实基准显式
+  split_layers=False 恢复构造性+split 面归合成 S1 分档"两面互补
+  方案；H2/交付线拆分；S2/H4 严格"<"从严声明）；代码锚点实测
+  全命中零回归；srs↔design FR 映射完整。
+- 第 2 轮新发现 Minor×4+Nit×4 当轮修入（rev 3）：DD2 伪代码残句
+  （else zeros else）；H1 CUDA 残余风险注记（#41 逐位契约 CPU
+  限定措辞——CUDA/bf16 M-shape 差异→meta `h1_blocked_attribution`
+  归因字段，方向过严不过松）；跨工件对照 AR023 同表显式映射
+  （工件 cross_ref 节）；PlantUML 补构造性强制步骤；§6.1 补
+  "含胜者延续两轮"；合成面确定性对拍注记（reps=30 专指真实面）；
+  日期字段补 rev 3；本条 tasks 门控留档（补 design 第 1 轮 FAIL
+  记录——Minor-4 流程项）。
+- 关键定案汇总：OQ1 掩码式（`where(stable_mask,parent_ffn,child_out)`
+  行级退化，:617-620 契约依据）；OQ2 `folded_generate_batched`
+  多链薄包装（单链提前结束=退出合批余链继续）；FR4 放大器=eager
+  put_batch 首接（L·N→L launch，单 parent 同受益）；真实基准
+  split_layers=False+H1==1.0 硬门+H4 严格"<"。
+
+
 ## 阶段门控记录
 
 > 由 sdd-phase-gate skill 在阶段门控审查后追加，记录每轮审查结果（PASS/FAIL + 轮次）。
@@ -73,5 +110,19 @@
 - 门控结果：PASS（第 1 轮）
 - 审查项数：13 项（G1-G9 + 证据核对 N1-N4）
 - 修复的问题：Minor×8 当轮修入（G1 伪引文/G4 multi-geometry 缺承诺/G6 降级触发器未预注册/G7 容差分档+基线口径+账本代理语义/G8 质量门口径未钉死/G9 模板偏离+AR 编号冲突）
-- 审查代理：sdd-gate-reviewer（ses_eb8979327ffeDKNbfXYBzcD1b9）；证据核对 N1-N4 全 YES（`_batched_forward_supported` :310-334 精确命中五原子检查/#41 原文逐点吻合/#42 put_batch 三点核实/folded_transformer.py :498-522-536 单键 expand 广播无 per-row gather+AR020 design §4.3 方案 C 否决理由旁证读路径从未批量化）
+- 审查代理：sdd-gate-reviewer（ses_eb8979327ffeDKNbfXYBzcD1b9）；证据核对 N1-N4 全 YES（`_batched_forward_supported` :310-334 精确命中五原子检查/#41 原文逐点吻合/#42 put_batch 三点核实/folded_transformer.py :498-514-522-536 单键 expand 广播无 per-row gather+AR020 design §4.3 方案 C 否决理由旁证读路径从未批量化）
 - 结论：需求阶段门控通过，可进入 design 阶段。
+
+### 2026-10-17 design 门控记录
+
+- 门控结果：PASS（第 2 轮；第 1 轮 FAIL）
+- 第 1 轮（ses_eb85d707bffeut2qVgEtMzVCIm）：FAIL——G12 Major
+  （H1 构造性逐位 vs DD10 split 1-ULP 自相矛盾）+G13 Major
+  （DD9 虚构路径 utils/config_manager+遗漏 architecture_utils.py
+  主落点）+Minor×5（G8/G9/G10/G11/G15）；修复 7 项→rev 2。
+- 第 2 轮（ses_eb84f414fffefXCz2O1eIE44k6）：PASS——7 项修复全
+  VERIFIED（split_layers=False 构造经 `_wrap_layer` :562-574
+  结构性证实；三个 architecture_utils 锚点 :585/:759-771/:1510-1575
+  实测命中；构造性强制/开关钉死/提前结束语义/压缩注记全核实）；
+  第 1 轮 OK 项零回归；新发现 Minor×4+Nit×4 当轮修入→rev 3。
+- 结论：设计阶段门控通过，可进入开发阶段（T001 Red UT）。
