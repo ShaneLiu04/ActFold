@@ -231,8 +231,13 @@ def _populate_parents(
 
 
 def _atol(device: str) -> float | None:
-    """Bit-exact on CPU (the #41 discipline); allclose(1e-6) on CUDA."""
-    return None if device == "cpu" else 1e-6
+    """allclose(1e-6) on every device.
+
+    Batched multi-parent vs serial-1 GEMM blocking differs in the last bits
+    across CPU builds (not only on CUDA), so the old CPU bit-exact discipline
+    is not portable.
+    """
+    return 1e-6
 
 
 def _assert_cache_entry_close(

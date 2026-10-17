@@ -111,8 +111,8 @@ def test_benchmark_runner_real_judges() -> None:
         runner = BenchmarkRunner(config)
         results = runner.run(tasks=["gsm8k"], num_samples=2)
     assert "gsm8k" in results
-    assert "baseline_accuracy" in results["gsm8k"]
-    assert "actfold_accuracy" in results["gsm8k"]
+    assert "baseline_exact_match" in results["gsm8k"]
+    assert "actfold_exact_match" in results["gsm8k"]
 
 
 def test_benchmark_runner_draft_mode_passthrough() -> None:

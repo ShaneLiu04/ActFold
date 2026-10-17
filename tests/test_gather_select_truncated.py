@@ -25,7 +25,7 @@ from actfold.core import folded_transformer as folded_transformer_module
 from actfold.core import fused_ops as fused_ops_module
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.vectorized_cache import VectorizedActivationCache
-from test_folded_transformer import DummyLayer, _t016_parent_cache_with
+from tests.test_folded_transformer import DummyLayer, _t016_parent_cache_with
 
 _PERTURB_POSITIONS = [1, 3]
 
@@ -54,9 +54,7 @@ def _ring_parent_cache_with(
     trigger eviction, so UT-1002/1003 build independent caches with an
     explicit ``max_entries_per_layer`` (srs 3.2, req-gate Minor-3).
     """
-    cache = VectorizedActivationCache(
-        max_entries_per_layer=capacity, max_branch_steps=0
-    )
+    cache = VectorizedActivationCache(max_entries_per_layer=capacity, max_branch_steps=0)
     cache.put("parent", 0, {"ffn_out": p0})
     cache.put("parent", 1, {"ffn_out": p1})
     return cache
@@ -80,7 +78,9 @@ def _patch_fused_path(mp: pytest.MonkeyPatch, calls: list[tuple[Any, ...]]) -> N
 
     mp.setattr(fused_ops_module, "gather_select", _recording_gather_select)
     mp.setattr(
-        folded_transformer_module, "gather_select", _recording_gather_select,
+        folded_transformer_module,
+        "gather_select",
+        _recording_gather_select,
         raising=False,
     )
 
@@ -140,18 +140,14 @@ def test_ut1001_truncated_path_uses_gather_select_bit_exact() -> None:
     out_default = folded_default(child, branch_id="child", parent_branch_id="parent")
 
     calls: list[tuple[Any, ...]] = []
-    folded_fused = FoldedTransformerLayer(
-        layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1
-    )
+    folded_fused = FoldedTransformerLayer(layer, _t016_parent_cache_with(p0, p1), gate, layer_idx=1)
     with pytest.MonkeyPatch.context() as mp:
         _patch_fused_path(mp, calls)
         out_fused = folded_fused(child, branch_id="child", parent_branch_id="parent")
         assert len(calls) == 1
 
     assert torch.equal(out_default, out_fused)
-    _assert_merge_composition(
-        out_default, stable_mask, p1[:, :t_child], layer(child)
-    )
+    _assert_merge_composition(out_default, stable_mask, p1[:, :t_child], layer(child))
 
 
 def test_ut1002_ring_wrapped_parent_falls_back_without_gather_select() -> None:
@@ -216,9 +212,7 @@ def test_ut1003_varlen_shorter_parent_never_calls_gather_select() -> None:
     p0 = torch.randn(batch, t_parent, hidden_dim)
     p1 = torch.randn(batch, t_parent, hidden_dim)
     cache = _ring_parent_cache_with(p0, p1, capacity=t_child)
-    child = torch.cat(
-        [p0, torch.randn(batch, t_child - t_parent, hidden_dim)], dim=1
-    )
+    child = torch.cat([p0, torch.randn(batch, t_child - t_parent, hidden_dim)], dim=1)
     assert bool(gate(child[:, :t_parent], p0).all())
 
     calls: list[tuple[Any, ...]] = []

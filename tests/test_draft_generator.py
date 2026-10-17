@@ -603,8 +603,7 @@ class _CausalTokenTarget(torch.nn.Module):
         self.rest = torch.nn.ParameterList(
             [
                 torch.nn.Parameter(
-                    torch.randn(vocab_size, vocab_size, generator=g)
-                    * (0.05 / vocab_size**0.5)
+                    torch.randn(vocab_size, vocab_size, generator=g) * (0.05 / vocab_size**0.5)
                 )
                 for _ in range(num_layers - 1)
             ]
@@ -689,14 +688,15 @@ def test_model_draft_acceptance_beats_random(device: str) -> None:
     """UT-506: correlated model_draft acceptance exceeds random by >= 0.1."""
     target = _CausalTokenTarget(_GRADIENT_V).to(device)
     draft = _CorrelatedDraft(target).to(device)
-    g = torch.Generator(device="cpu").manual_seed(123)
-    parent_tokens = torch.randint(
-        0, _GRADIENT_V, (1, _GRADIENT_T), generator=g
-    ).to(device)
+    # Seed 7 keeps the parent stream disjoint from the draft stream (seed 123):
+    # on CPU both would share one RNG stream and the random draft would
+    # reproduce the parent tokens exactly (empty draft region -> rate 1.0).
+    g = torch.Generator(device="cpu").manual_seed(7)
+    parent_tokens = torch.randint(0, _GRADIENT_V, (1, _GRADIENT_T), generator=g).to(device)
     target_logits = target(parent_tokens)
 
     # Fixture sanity: the draft argmax hit rate is strictly inside (0, 1).
-    hit = (draft(parent_tokens).argmax(dim=-1) == target_logits.argmax(dim=-1))
+    hit = draft(parent_tokens).argmax(dim=-1) == target_logits.argmax(dim=-1)
     hit_rate = hit.float().mean().item()
     assert 0.0 < hit_rate < 1.0
 
@@ -710,15 +710,11 @@ def test_model_draft_acceptance_below_logits_draft_upper_bound(device: str) -> N
     target = _CausalTokenTarget(_GRADIENT_V).to(device)
     draft = _CorrelatedDraft(target).to(device)
     g = torch.Generator(device="cpu").manual_seed(123)
-    parent_tokens = torch.randint(
-        0, _GRADIENT_V, (1, _GRADIENT_T), generator=g
-    ).to(device)
+    parent_tokens = torch.randint(0, _GRADIENT_V, (1, _GRADIENT_T), generator=g).to(device)
     target_logits = target(parent_tokens)
 
     model_rate = _measure_accept_rate("model_draft", parent_tokens, target_logits, draft)
-    logits_rate = _measure_accept_rate(
-        "logits_draft", parent_tokens, target_logits, None
-    )
+    logits_rate = _measure_accept_rate("logits_draft", parent_tokens, target_logits, None)
     assert model_rate <= logits_rate
     assert logits_rate < 1.0  # comparator is measured, not the trivial argmax
 
@@ -727,14 +723,11 @@ def test_uncorrelated_draft_acceptance_near_random_floor(device: str) -> None:
     """UT-508: uncorrelated draft acceptance stays within 0.05 of random."""
     target = _CausalTokenTarget(_GRADIENT_V).to(device)
     draft = _UncorrelatedDraft(_GRADIENT_V).to(device)
-    g = torch.Generator(device="cpu").manual_seed(123)
-    parent_tokens = torch.randint(
-        0, _GRADIENT_V, (1, _GRADIENT_T), generator=g
-    ).to(device)
+    # Seed 7 keeps the parent stream disjoint from the draft stream (seed 123).
+    g = torch.Generator(device="cpu").manual_seed(7)
+    parent_tokens = torch.randint(0, _GRADIENT_V, (1, _GRADIENT_T), generator=g).to(device)
     target_logits = target(parent_tokens)
 
-    uncorrelated_rate = _measure_accept_rate(
-        "model_draft", parent_tokens, target_logits, draft
-    )
+    uncorrelated_rate = _measure_accept_rate("model_draft", parent_tokens, target_logits, draft)
     random_rate = _measure_accept_rate("random", parent_tokens, target_logits, None)
     assert abs(uncorrelated_rate - random_rate) < 0.05
