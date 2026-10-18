@@ -1,0 +1,43 @@
+{
+  "schema": "ar026_probe_graph_faces",
+  "note": "AR026 T006 Step-1 first-verification: production graph face run in worker mode (--_face-worker FAMILY graph) on the real checkpoints, one fresh process per family. Not the full seven-face probe artifact; the tracked ar023_family_probe.json conclusions are unchanged. Raw-capture failure signatures quoted from the AR023 artifact.",
+  "env": {
+    "venv": "ar019_venv (transformers==4.53.1)",
+    "models_root": "D:\\ar023_models"
+  },
+  "timestamp": "2026-10-18T09:50:49.863770+00:00",
+  "families": {
+    "llada": {
+      "face": "graph (production)",
+      "result": {
+        "ok": true,
+        "capture_delta_mb": 0.0,
+        "headroom_mb": 0.0,
+        "dtype": "bf16",
+        "graph_captures": 2,
+        "degradation_fallback_count": 0,
+        "structural_eager_count": 1,
+        "capture_diagnostics_overflow": 0,
+        "diagnostics": []
+      },
+      "ar023_raw_face_signature": "captures_underway.empty() INTERNAL ASSERT FAILED (CUDACachingAllocator.cpp:2967)",
+      "conclusion": "production capture succeeds on the real 8B checkpoint; the AR023 raw-capture allocator assert does not reproduce on the production path"
+    },
+    "dream": {
+      "face": "graph (production)",
+      "result": {
+        "ok": true,
+        "capture_delta_mb": 513.1,
+        "headroom_mb": 0.0,
+        "dtype": "bf16",
+        "graph_captures": 2,
+        "degradation_fallback_count": 0,
+        "structural_eager_count": 1,
+        "capture_diagnostics_overflow": 0,
+        "diagnostics": []
+      },
+      "ar023_raw_face_signature": "[64 vs 4] dim-2 broadcast failure (raw ad-hoc capture proxy)",
+      "conclusion": "production batched capture succeeds on the real Dream checkpoint; the AR023 raw-capture broadcast failure does not reproduce on the production path"
+    }
+  }
+}

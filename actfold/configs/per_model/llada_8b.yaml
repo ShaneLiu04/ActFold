@@ -40,6 +40,16 @@ device_map: null
 # candidate_top_k: 10
 # candidate_include_greedy: true
 
+# LLaDA commit-granularity (AR024). Defaults: s=8 sub-block windows with
+# the EOS-aware continuation row on (the recommended AR024 stack once the
+# speculative path is enabled); progressive refill stays OFF (opt-in).
+# A/B anchor restoration of the AR023 semantics:
+# speculative_sub_block_size: <block_size> + candidate_eos_aware: false.
+# speculative_sub_block_size: 8
+# candidate_eos_aware: true
+# progressive_refill: false
+# refill_top_k: null
+
 # Evaluation backend configuration.
 use_real_eval: true
 eval_backend: "auto"

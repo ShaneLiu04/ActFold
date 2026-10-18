@@ -6,6 +6,37 @@
 > 本清单不含任何特定平台路径或镜像硬编码；HF 端点与缓存目录一律通过
 > `--hf-endpoint` / `--hf-home` CLI 参数或对应环境变量传入。
 
+## 0. 服务器一键快速开始（复制即用）
+
+```bash
+# 1) 取代码（gitee 与本地主仓内容一致；commit id 天然不同属正常）
+git clone https://gitee.com/liu-xingyan04/act-fold.git && cd act-fold
+
+# 2) 基础环境（CPU 可跑 demo 与整仓测试）
+python -m venv .venv && . .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
+python demo.py
+
+# 4) 整仓质量门：期望 1098 passed / 4 skipped / 3 deselected（slow 默认跳过）
+python -m pytest tests/ -q
+
+# 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
+#    新建实验 venv（--system-site-packages 继承系统 torch），详见 §1/§9b：
+python -m venv --system-site-packages .venv-hf
+. .venv-hf/bin/activate && pip install "transformers==4.53.1" "huggingface_hub<1.0" einops
+
+# 6) 冒烟 → 正式：任何真实实验先跑 --quick，正式跑为预承诺单次（§7 有逐实验命令）
+python -m scripts.<实验名> --quick ... # 分钟到小时级
+```
+
+- 评测类实验另装 `requirements-bench.txt`（lm-eval / evalplus；evalplus 需 Unix-like）。
+- 显存与耗时的逐实验预期见 §2；高算力服务器复现要点（Linux/TCC、锁频、权重获取、
+  WDDM 限制、工件回填）见 **§7**。
+- 判定语义（H1-H4 冻结门 / 诚实负结果 / 绝不 rerun-until-pass）见各实验脚本头注释与
+  `AGENTS.md`「Experimental Validation Rule」。
+
 ## 1. 环境要求
 
 | 项 | 要求 |
@@ -33,6 +64,9 @@
 | `ar019_real_e2e_bench`（真实块验证三路径） | Fast-dLLM-v2-1.5B bf16（28 层, H=1536，本地权重目录） | 实测峰值 5624/7640/8949 MB（三配置），16 GB 卡可跑 |
 | `ar021_generation_loop_bench`（生产生成回路三模式） | Fast-dLLM-v2-1.5B bf16（同上权重；AR019 venv） | 实测峰值 ≤5374.5 MB（~5.4 GB），16 GB 卡可跑 |
 | `ar022_speculative_quality_bench`（四模式质量对齐基准） | Fast-dLLM-v2-1.5B bf16（同上权重；AR019 venv） | 实测峰值 ≤5840.1 MB（~5.8 GB），16 GB 卡可跑 |
+| `ar023_family_probe` / `ar023_cross_family_bench` | LLaDA-8B-Base / Dream-v0-Base-7B bf16（~30GB 权重下载） | ≥24 GiB（8B bf16 权重 ~16 GiB + 激活；单卡 40 GiB 更舒适，全程 LLaDA ~4-5h / Dream ~6-8h） |
+| `ar025_multi_parent_bench`（多 parent 批量折叠合成面） | 合成小模型（16 形状点：多链×N 候选×seq_len） | CPU 即可（分钟级） |
+| `ar026_real_graph_bench`（真实 checkpoint 四模式图基准） | LLaDA-8B-Base / Dream-v0-Base-7B bf16（同 AR023 权重；AR019 venv） | ≥24 GiB（8B bf16 ~16 GiB + 图池捕获侧 VRAM；16 GB 卡为紧约束，正式跑建议 ≥24 GiB 或按 quick 冒烟实测余量） |
 
 ## 3. 重跑步骤
 
@@ -157,8 +191,10 @@ python demo.py
 #     定案结论：两族均 bf16 / degraded=False / graph_enabled=False
 #     （llada bf16 15265MB/int8 10966MB；dream bf16 14836.7MB/int8 12093MB）
 #     b) 四模式跨族基准（预承诺单次纪律，不重跑钓鱼；每族一工件；
-#        全量 reps=30/P=2/128 token，LLaDA 全程 ~4-5h、Dream ~6-8h
-#        （8B bf16 单卡），--quick 冒烟 = 单 prompt/reps=3/64 token
+#        全量 reps=30/P=2/128 token。墙钟以实跑为准：本机（16GB WDDM
+#        工作站 + CPU 竞争）llada 正式跑实测 ≈29.2 h（单样本 p50 ≈330 s）；
+#        高算力服务器预期显著缩短（数量级估计，未实测——以新机计时为准）；
+#        --quick 冒烟 = 单 prompt/reps=3/64 token
 #        每族 ~10min，写独立 _quick 工件、永不覆写正式工件）：
 # <venv目录>\Scripts\python -m scripts.ar023_cross_family_bench \
 #     --family llada --models-root <权重根目录> --reps 30
@@ -174,6 +210,84 @@ python demo.py
 #      零伪造数字）
 #     对照数字：（T006 定案后回填——预承诺 reps=30 单次，两族四模式
 #      p50/H1-H4 verdict 以工件为准，勿以 --quick 冒烟数字替代）
+#
+# 14) AR025 多 parent 批量折叠合成面基准（合成模型，CPU 即可，分钟级）
+#     python -m scripts.ar025_multi_parent_bench
+#     工件：results/optimization/ar025_multi_parent_bench.json
+#     （S1/S2/S3 判定式全文冻结于 meta；16 个合成形状点（chains×N×seq_len）
+#      ——S1 A 侧合并 [sum(N),T] vs B 侧逐链 [N,T] logits parity（nonsplit
+#      bitwise / split allclose 1e-6，任一 FAIL 全 verdict blocked）、
+#      S2 write_op_count 严格小于逐链（账本 4 vs 40..160）、S3 合并/串行
+#      投入比 report-only 0.9–0.975；meta.cache_budget_tokens_per_layer=65536
+#      ——DD8 erratum：默认 8192 预算下 (parents+ΣN)·T 超限会触发
+#      ActivationCache LRU 逐出在飞 parent（容量混淆因子，非机制缺陷），
+#      首跑 blocked 证据工件 ar025_multi_parent_bench_eviction_blocked.json
+#      独立保全；--quick 冒烟写独立 _quick 工件、永不覆写正式工件；
+#      --mode real 见步骤 16（AR025 T006，已开放））
+#     对照数字：verdicts_declared.overall=supported（S1/S2 全 supported、
+#      blocked_reasons 空）；真实面结果以 AR025 T006 工件为准
+#
+# 15) AR026 真实 checkpoint 端到端图路径（生产捕获 + 四模式图基准）
+#     a) 探针生产图面首验（每族子进程隔离，~30min）：
+# <venv目录>\Scripts\python -m scripts.ar023_family_probe \
+#     --models-root <权重根目录> \
+#     --output results/optimization/ar026_family_probe_rerun.json
+#     （勿写默认输出路径——会覆写 AR023 结论工件；graph 面 =
+#      MFF+FoldedGraphRunner 生产捕获（captures>0 且零失败诊断才 ok），
+#      graph_raw = 旧裸捕获诊断面；graph_enabled 结论只依据生产面）
+#     b) 四模式基准 quick 冒烟（llada/dream 各一，~1-2h/族）：
+# <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
+#     --family llada --quick --models-root <权重根目录>
+# <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
+#     --family dream --quick --models-root <权重根目录> \
+#     --out results/optimization/ar026_dream_graph_quick.json
+#     工件（quick）：results/optimization/ar026_real_graph_bench_quick.json
+#     c) 正式面（预承诺单次；reps=30/P=2/128 token，与 AR023 同协议；
+#        本机 16GB WDDM 上 AR023 llada 正式跑实测 ≈29.2h → 须排多日窗口）：
+# <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
+#     --family llada --models-root <权重根目录> --reps 30
+#     工件：results/optimization/ar026_real_graph_bench.json
+#     （schema=ar026_real_graph_bench；四模式 baseline 官方配方 /
+#      folded-batched eager 锚 / graph-fixed / graph-adaptive —— 模式间
+#      仅图旋钮差异（capacity 0.5 / pool 4 / adaptive on|off）；
+#      H1 图奇偶：参与度门（零捕获 = inconclusive，永不冒充奇偶通过）+
+#      三面（vs 锚 posthoc |Δ|≤1e-6、decode-length 逐 prompt 相等、
+#      block-grid 全中率 ==1.0）；H2 严格 baseline/图加速 >1.0，图-vs-锚
+#      预注册无方向（report-only）；H4 canary 为真实面：timed 窗
+#      degradation_fallback_count 增量 ==0；复现双跑 strict 失配 ⇒ 全 verdict
+#      blocked；degraded 族 ⇒ blocked 工件零伪造；EVR≥4 形状面显式豁免
+#      （理由在 meta.geometry_inheritance_note：16GB VRAM 为绑定约束））
+#     对照数字：待 T006/T007 实机工件（预承诺单次；勿以 quick 冒烟替代）
+#
+# 16) AR025 真实面双链并行投机基准（W2 lockstep sample_joint vs 逐链串行）
+#     a) quick 冒烟（独立 _quick 工件，永不覆写正式面）：
+# <venv目录>\Scripts\python -m scripts.ar025_multi_parent_bench \
+#     --mode real --family llada --quick \
+#     --models-root <权重根目录> --probe-artifact results/optimization/ar023_family_probe.json
+# <venv目录>\Scripts\python -m scripts.ar025_multi_parent_bench \
+#     --mode real --family dream --quick \
+#     --models-root <权重根目录> --probe-artifact results/optimization/ar023_family_probe.json
+#     工件（quick）：results/optimization/ar025_real_bench_llada_quick.json /
+#      ar025_real_bench_dream_quick.json
+#     b) 正式面（预承诺单次，reps=30、num_tokens=128、P=2 prompt 对截断公共长度）：
+# <venv目录>\Scripts\python -m scripts.ar025_multi_parent_bench \
+#     --mode real --family llada \
+#     --models-root <权重根目录> --probe-artifact results/optimization/ar023_family_probe.json \
+#     --reps 30
+#     工件：results/optimization/ar025_real_bench_llada.json（dream 同理）
+#     c) 判定式（DD8 冻结，先于数据）：H1 逐位（A vs B 两链 token 逐位相等硬门 +
+#      logits allclose 归因回放）；H2 严格 p50(B)/p50(A)>1.0；交付线 ≥10%（不过
+#      ⇒ FR7 冻结降级为 blocked 注记，非错误）；H4 写账本严格小于；canary =
+#      graph-off null note。复现双跑 strict 失配 ⇒ 全 verdict blocked；degraded
+#      族（probe 结论）⇒ blocked 工件零伪造数字。
+#     d) dtype 纪律：默认 auto = AR023 装载纪律（bf16 优先、int8 回退）——正式跑
+#      一条 dtype 纪律贯穿到底。`--real-dtype int8` 仅为 16GB 级主机冒烟逃生门；
+#      `--real-num-tokens` 仅为慢机冒烟规模逃生门（正式跑不传 = 冻结值 64/128）。
+#     e) 本机 16GB WDDM 限制（实测）：bf16 权重 15.8GB + 折叠缓存 4096 行/层
+#      满载显存 ⇒ 进程硬崩无 traceback（VRAM 上限，非代码回归）；int8 逃生门
+#      可装载但 bitsandbytes 量化在 WDDM 坏态下停滞（fresh 重启复现）。正式
+#      面与完整冒烟应在 Linux/TCC 高算力机执行后回填工件（步骤 7 流程）。
+#     对照数字：待正式工件（预承诺单次；勿以 quick 冒烟替代）
 ```
 
 ## 4. 方法学要求（重跑必须满足）
@@ -215,3 +329,37 @@ python demo.py
 - 每组对比实验附：运行日期、GPU 型号与时钟状态、种子列表、repeats 数。
 - 与本清单命令不一致的自定义运行（不同 prompt 长度、dtype、时钟策略）须在
   产物 `meta` 中注明。
+
+## 7. 高算力服务器复现（推荐路径）
+
+本清单命令在任意 Linux/TCC GPU 服务器上等价可用；换到高速算力机时的推荐流程与差异点：
+
+1. **环境（一次性）**：
+
+   ```bash
+   git clone <repo> && cd ActFold
+   python -m venv .venv && . .venv/bin/activate
+   pip install -r requirements.txt -r requirements-dev.txt
+   # 真实 checkpoint 实验需要 remote-code 兼容版本（requirements.txt 已限 <5）：
+   pip install "transformers==4.53.1" "huggingface_hub<1.0" einops
+   python -m pytest tests/ -q -m "not slow"    # 期望全绿（CUDA 面自动启用）
+   ```
+
+2. **权重获取**：探针脚本内置 curl 清单 + SHA256 校验（见步骤 13a）；也可直接
+   `huggingface-cli download` 后以 `--models-root <目录>` 指向本地布局
+   （`<root>/llada`、`<root>/dream`）。
+3. **时钟与干扰**：对比类实验锁频（如 `nvidia-smi -lgc <clock>`）并独占 GPU；
+   正式跑为预承诺单次承诺，不与其它任务共享（本仓库的共享工作站教训：CPU 竞争
+   会把单样本 p50 从秒级推到数百秒）。
+4. **Windows WDDM 限制（重要）**：小内核 CUDA Graph 在 WDDM 下不消除提交延迟
+   ——同一份 AR002 代码在本机实测出现图重放比 eager 慢约 4.5x（worktree 二分
+   确证非代码回归），BS-007 性能判定因此在该类主机上诚实 skip。**图路径的正式
+   时延结论应在 Linux/TCC 主机取得**；迁移后重跑步骤 15 的 graph 模式并以新
+   工件为准。
+5. **规模化预期**：AR023/AR026 的 reps=30 正式跑在本机（16GB WDDM + CPU 竞争）
+   实测 llada 约 29.2h（单样本 p50 约 330s）；数据中心 8B bf16 吞吐远高于此
+   （数量级估计、未实测——以新机首跑计时为准）。建议先跑 --quick 冒烟取得
+   本机单样本实测，再按比例估算正式窗口并一次性排程。
+6. **产物回填**：新机工件落到同一 `results/optimization/` 路径后，按 README
+   优越性总表口径从工件回填（禁止手输数字；跨机数字须在工件 meta 注明
+   GPU/时钟状态）。

@@ -18,14 +18,13 @@ import pytest
 import torch
 import torch.nn as nn
 
-from actfold.core import ActivationCache, fused_ops
+from actfold.core import ActivationCache
 from actfold.core.adaptive_gate import AdaptiveQuantileGate
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.fused_ops import merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
 
 _EPS = 1e-8
-_HAS_TRITON = fused_ops._HAS_TRITON
 
 
 def _load_fused_gate_mask_count():
@@ -407,10 +406,7 @@ class _ExplodingKernel:
         return _raise
 
 
-@pytest.mark.skipif(
-    not (torch.cuda.is_available() and _HAS_TRITON),
-    reason="CUDA + Triton required (the test patches the JIT kernel object)",
-)
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA only")
 def test_ut006c_compile_failure_warns_once_and_disables(monkeypatch: pytest.MonkeyPatch) -> None:
     """AR002 design UT-006c: kernel failure -> one RuntimeWarning + fallback.
 

@@ -1134,7 +1134,7 @@ class ManualFoldedForward(nn.Module):
             if forced_divergent is not None and not forced_divergent.is_cuda:
                 self._degradation_fallback_count += 1
                 return None
-            from actfold.core.cuda_graph import FoldedGraphRunner
+            from actfold.core.cuda_graph import FoldedGraphRunner, safe_capture
 
             new_runner = FoldedGraphRunner(
                 wrapped_layers=self._wrapped_layers,
@@ -1151,7 +1151,9 @@ class ManualFoldedForward(nn.Module):
                 position_ids_static=position_ids,
             )
             try:
-                new_runner.capture(
+                safe_capture(
+                    new_runner,
+                    "serial",
                     tokens,
                     branch_id,
                     parent_branch_id,
@@ -1414,7 +1416,7 @@ class ManualFoldedForward(nn.Module):
             if forced_divergent is not None and not forced_divergent.is_cuda:
                 self._degradation_fallback_count += 1
                 return None
-            from actfold.core.cuda_graph import FoldedGraphRunner
+            from actfold.core.cuda_graph import FoldedGraphRunner, safe_capture
 
             new_runner = FoldedGraphRunner(
                 wrapped_layers=self._wrapped_layers,
@@ -1431,7 +1433,9 @@ class ManualFoldedForward(nn.Module):
                 position_ids_static=position_ids,
             )
             try:
-                new_runner.capture(
+                safe_capture(
+                    new_runner,
+                    "batched",
                     tokens,
                     branch_ids[0],
                     parent_branch_id,
@@ -1779,7 +1783,7 @@ class ManualFoldedForward(nn.Module):
         prospective = max(1, min(math.ceil(new_ratio * num_tokens), num_tokens))
         if prospective == current_capacity:
             return
-        from actfold.core.cuda_graph import FoldedGraphRunner
+        from actfold.core.cuda_graph import FoldedGraphRunner, safe_capture
 
         new_runner = FoldedGraphRunner(
             wrapped_layers=self._wrapped_layers,
@@ -1796,7 +1800,9 @@ class ManualFoldedForward(nn.Module):
             position_ids_static=position_ids,
         )
         try:
-            new_runner.capture(
+            safe_capture(
+                new_runner,
+                "adaptive",
                 tokens,
                 branch_ids[0],
                 parent_branch_id,
@@ -1846,7 +1852,16 @@ class ManualFoldedForward(nn.Module):
         the two eager counters count every graph-path eager fallback in the
         two-class split (degradation vs structural). Pool sections carry
         only ``pool_size`` while the pool is off (no runner is ever pooled).
+        AR026 adds the process-global capture-safety probe keys:
+        ``capture_diagnostics`` (the first recorded failure records from
+        ``safe_capture`` — copies, capped) and
+        ``capture_diagnostics_overflow`` (failures past the cap).
         """
+        from actfold.core.cuda_graph import (
+            capture_diagnostics_overflow,
+            capture_diagnostics_snapshot,
+        )
+
         serial: dict[str, Any] = {"pool_size": len(self._graph_runner_pool)}
         for pool_key, entry in self._graph_runner_pool_stats.items():
             serial[pool_key] = dict(entry)
@@ -1858,6 +1873,8 @@ class ManualFoldedForward(nn.Module):
             "batched": batched,
             "degradation_fallback_count": self._degradation_fallback_count,
             "structural_eager_count": self._structural_eager_count,
+            "capture_diagnostics": capture_diagnostics_snapshot(),
+            "capture_diagnostics_overflow": capture_diagnostics_overflow(),
         }
 
     @property

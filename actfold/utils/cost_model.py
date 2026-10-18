@@ -7,7 +7,7 @@ outputs, and running the similarity gate.  The resulting estimates are closer
 to wall-clock latency, especially in memory-bound regimes.
 
 Hardware profiles are resolved per device via :data:`_DEVICE_TABLE` (known GPU
-name substrings → bf16 dense TFLOPS / memory GB/s) with a conservative
+name substrings -> bf16 dense TFLOPS / memory GB/s) with a conservative
 fallback, or measured directly with a short micro-benchmark
 (``HardwareProfile.from_device(device, calibrate=True)``).
 """
@@ -20,7 +20,7 @@ from typing import Optional
 
 import torch
 
-# Uppercase device-name substring → (bf16 dense TFLOPS, achievable memory GB/s).
+# Uppercase device-name substring -> (bf16 dense TFLOPS, achievable memory GB/s).
 # Values are vendor peak dense numbers derated to realistic achievable rates.
 _DEVICE_TABLE: dict[str, tuple[float, float]] = {
     "H100": (989.0, 3350.0),
@@ -41,7 +41,7 @@ _FALLBACK_CUDA_PROFILE = (100.0, 600.0)
 def _microbench_cuda(index: int | None) -> tuple[float, float]:
     """Measure bf16 dense matmul TFLOPS and copy bandwidth on a CUDA device.
 
-    Runs a short (~2 s) micro-benchmark: a 4096³ bf16 matmul loop for compute
+    Runs a short (~2 s) micro-benchmark: a 4096^3 bf16 matmul loop for compute
     throughput and a 512 MiB device-to-device copy loop for memory bandwidth.
     """
     device = torch.device("cuda", index) if index is not None else torch.device("cuda")

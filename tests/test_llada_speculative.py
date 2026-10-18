@@ -483,6 +483,11 @@ class _LLaDATrapFixture:
             num_block_candidates=2,
             candidate_top_k=2,
             candidate_include_greedy=True,
+            # AR023 semantic restoration (AR024 design §4.1.6 note): the
+            # default flipped to eos-aware in AR024, which makes row N-1 the
+            # argmax continuation row; this frozen AR023 face pins the pinned
+            # random-draw semantics explicitly.
+            candidate_eos_aware=False,
         )
         self.mff = _make_mff(self.inner, device)
 

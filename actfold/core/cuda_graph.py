@@ -24,6 +24,8 @@ replay output and recompute eagerly (correctness first).
 from __future__ import annotations
 
 import math
+import sys
+from dataclasses import dataclass
 from typing import Any, Callable
 
 import torch
@@ -33,7 +35,7 @@ from actfold.core.fused_ops import fused_gate_mask_count, merge_stable_divergent
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.core.split_layer import SplitFoldedTransformerLayer, _padded_divergent_index
 
-__all__ = ["FoldedGraphRunner"]
+__all__ = ["CaptureDiagnostics", "FoldedGraphRunner", "safe_capture"]
 
 
 class FoldedGraphRunner:
@@ -496,3 +498,164 @@ class FoldedGraphRunner:
             x = self._head_fn(x)
         self._logits_buf = x
         return x
+
+
+# ---------------------------------------------------------------------------
+# AR026: capture root-cause fidelity (design.md srs.md FR1)
+# ---------------------------------------------------------------------------
+
+# The production capture boundary must never let the capture-unwinding
+# ``captures_underway.empty() INTERNAL ASSERT`` secondary failure mask the
+# primary exception (the AR023 family-probe llada graph-face signature: a
+# primary failure inside the capture body makes ``capture_end``/the caching
+# allocator assert during unwinding, and the assert is what surfaces).  The
+# diagnostics below record BOTH faces; ``safe_capture`` then re-raises the
+# ORIGINAL exception unchanged so the call-site degradation semantics stay
+# byte-identical.
+
+_CAPTURE_DIAGNOSTICS_MAX = 8
+_capture_diagnostics: "list[CaptureDiagnostics]" = []
+_capture_diagnostics_overflow = 0
+
+
+@dataclass(frozen=True)
+class CaptureDiagnostics:
+    """Serializable record of one production capture attempt (AR026 FR1).
+
+    ``secondary_error`` is the failure that crossed the capture boundary (the
+    one the call site's ``except`` sees); ``primary_error`` is the deepest
+    exception in its ``__context__`` chain — the failure that actually
+    happened inside the capture body before the unwinding assert, or ``None``
+    when the boundary failure has no context (``reset_error`` similarly
+    records a failed best-effort post-failure ``synchronize``).  VRAM fields
+    are ``None`` on the CPU face (no CUDA call is ever made there).
+    """
+
+    ok: bool
+    stage: str
+    primary_error: str | None
+    secondary_error: str | None
+    reset_error: str | None
+    vram_free_mb: float | None
+    vram_total_mb: float | None
+    platform: str
+
+    def to_json_dict(self) -> dict[str, Any]:
+        """Return a JSON-serializable copy of this record."""
+        return {
+            "ok": self.ok,
+            "stage": self.stage,
+            "primary_error": self.primary_error,
+            "secondary_error": self.secondary_error,
+            "reset_error": self.reset_error,
+            "vram_free_mb": self.vram_free_mb,
+            "vram_total_mb": self.vram_total_mb,
+            "platform": self.platform,
+        }
+
+
+def _deepest_context(exc: BaseException) -> BaseException | None:
+    """Walk the ``__context__`` chain to the oldest in-flight exception."""
+    current = exc.__context__
+    if current is None:
+        return None
+    while current.__context__ is not None:
+        current = current.__context__
+    return current
+
+
+def _platform_stamp() -> str:
+    return f"{sys.platform}/torch{torch.__version__}"
+
+
+def _attempt_reset() -> str | None:
+    """Best-effort post-failure device reset (never replaces the failure)."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        torch.cuda.synchronize()
+    except Exception as exc:  # noqa: BLE001 - diagnostics-only best effort
+        return f"{type(exc).__name__}: {exc}"
+    return None
+
+
+def _vram_snapshot() -> tuple[float | None, float | None]:
+    """Free/total VRAM in MB; ``(None, None)`` on the CPU face."""
+    if not torch.cuda.is_available():
+        return None, None
+    try:
+        free_bytes, total_bytes = torch.cuda.mem_get_info()
+    except Exception:  # noqa: BLE001 - diagnostics-only best effort
+        return None, None
+    return free_bytes / (1024 * 1024), total_bytes / (1024 * 1024)
+
+
+def _record_capture_diagnostics(diagnostics: CaptureDiagnostics) -> None:
+    """Keep the FIRST ``_CAPTURE_DIAGNOSTICS_MAX`` failure records, then count."""
+    global _capture_diagnostics_overflow
+    if len(_capture_diagnostics) < _CAPTURE_DIAGNOSTICS_MAX:
+        _capture_diagnostics.append(diagnostics)
+    else:
+        _capture_diagnostics_overflow += 1
+
+
+def capture_diagnostics_snapshot() -> list[dict[str, Any]]:
+    """Copies of the recorded failure diagnostics (mutations never leak)."""
+    return [record.to_json_dict() for record in _capture_diagnostics]
+
+
+def capture_diagnostics_overflow() -> int:
+    """Failures recorded past the first-``_CAPTURE_DIAGNOSTICS_MAX`` cap."""
+    return _capture_diagnostics_overflow
+
+
+def _reset_capture_diagnostics() -> None:
+    """Restore the pristine accumulator state (test isolation only)."""
+    global _capture_diagnostics_overflow
+    _capture_diagnostics.clear()
+    _capture_diagnostics_overflow = 0
+
+
+def safe_capture(runner: Any, stage: str, *args: Any, **kwargs: Any) -> CaptureDiagnostics:
+    """Capture through ``runner.capture`` with root-cause fidelity (AR026).
+
+    Forwards ``*args``/``**kwargs`` verbatim to ``runner.capture(*args,
+    **kwargs)``.  On success returns a ``CaptureDiagnostics`` with ``ok=True``
+    and records nothing (the success path adds zero behavior beyond the
+    returned artifact).  On failure extracts the primary exception from the
+    ``__context__`` chain, takes a best-effort VRAM snapshot and device reset,
+    records the diagnostics, and then RE-RAISES the original exception object
+    unchanged — the call site's existing ``except`` semantics are
+    byte-identical whether or not it routes through this wrapper.
+    """
+    try:
+        runner.capture(*args, **kwargs)
+    except BaseException as exc:
+        primary = _deepest_context(exc)
+        reset_error = _attempt_reset()
+        vram_free_mb, vram_total_mb = _vram_snapshot()
+        _record_capture_diagnostics(
+            CaptureDiagnostics(
+                ok=False,
+                stage=stage,
+                primary_error=(
+                    f"{type(primary).__name__}: {primary}" if primary is not None else None
+                ),
+                secondary_error=f"{type(exc).__name__}: {exc}",
+                reset_error=reset_error,
+                vram_free_mb=vram_free_mb,
+                vram_total_mb=vram_total_mb,
+                platform=_platform_stamp(),
+            )
+        )
+        raise
+    return CaptureDiagnostics(
+        ok=True,
+        stage=stage,
+        primary_error=None,
+        secondary_error=None,
+        reset_error=None,
+        vram_free_mb=None,
+        vram_total_mb=None,
+        platform=_platform_stamp(),
+    )

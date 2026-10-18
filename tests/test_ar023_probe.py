@@ -442,11 +442,21 @@ def _make_recording_runner(
 
 
 def test_ut_2318_cuda_face_names_is_exactly_the_gpu_faces() -> None:
-    """CUDA_FACE_NAMES pins the five GPU faces that must run in fresh
-    subprocesses; download/load stay in-process."""
+    """CUDA_FACE_NAMES pins the GPU faces that must run in fresh
+    subprocesses; download/load stay in-process. AR026 T004 adds
+    ``graph_raw`` (the demoted raw-capture diagnostic face — a failed
+    capture poisons process-wide allocator state, so BOTH graph faces need
+    the isolation wrapper)."""
     from scripts.ar023_family_probe import CUDA_FACE_NAMES
 
-    assert set(CUDA_FACE_NAMES) == {"bf16", "int8", "smoke", "graph", "prompt"}
+    assert set(CUDA_FACE_NAMES) == {
+        "bf16",
+        "int8",
+        "smoke",
+        "graph",
+        "graph_raw",
+        "prompt",
+    }
     assert "download" not in CUDA_FACE_NAMES
     assert "load" not in CUDA_FACE_NAMES
 

@@ -1,0 +1,333 @@
+{
+  "schema": "ar023_cross_family_bench",
+  "schema_version": 1,
+  "family": "llada",
+  "status": "ok",
+  "modes": {
+    "baseline": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 391618.6373,
+          "std_ms": 382113.6161,
+          "p50_ms": 321858.0803,
+          "n": 30
+        },
+        "prompt1": {
+          "mean_ms": 606850.3876,
+          "std_ms": 957168.5971,
+          "p50_ms": 337994.3974,
+          "n": 30
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 3,
+        "prompt1": 18
+      }
+    },
+    "folded-serial": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 345411.25,
+          "std_ms": 125985.4237,
+          "p50_ms": 323541.2247,
+          "n": 30
+        },
+        "prompt1": {
+          "mean_ms": 603278.0015,
+          "std_ms": 797232.7043,
+          "p50_ms": 340451.0667,
+          "n": 30
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 128,
+        "prompt1": 128
+      }
+    },
+    "folded-batched": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 250574.0357,
+          "std_ms": 132725.418,
+          "p50_ms": 216455.6038,
+          "n": 30
+        },
+        "prompt1": {
+          "mean_ms": 327331.4003,
+          "std_ms": 554781.0761,
+          "p50_ms": 225344.6801,
+          "n": 30
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 128,
+        "prompt1": 128
+      }
+    },
+    "folded-batched-greedy": {
+      "wall_ms": {
+        "prompt0": {
+          "mean_ms": 238632.7298,
+          "std_ms": 126569.4443,
+          "p50_ms": 216334.5199,
+          "n": 30
+        },
+        "prompt1": {
+          "mean_ms": 325773.4313,
+          "std_ms": 542384.6733,
+          "p50_ms": 226283.8866,
+          "n": 30
+        }
+      },
+      "decode_lengths": {
+        "prompt0": 128,
+        "prompt1": 128
+      }
+    }
+  },
+  "quality": {
+    "per_prompt": [
+      {
+        "prompt_index": 0,
+        "prompt_text": "The capital of France is",
+        "decode_length": {
+          "baseline": 3,
+          "folded-serial": 128,
+          "folded-batched": 128,
+          "folded-batched-greedy": 128
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.536872,
+            "overall_min": 0.195012,
+            "window": "[5, 8)"
+          },
+          "folded-serial": {
+            "overall_mean": 0.07859,
+            "overall_min": 0.045473,
+            "window": "[5, 133)"
+          },
+          "folded-batched": {
+            "overall_mean": 0.538149,
+            "overall_min": 0.000377,
+            "window": "[5, 133)"
+          },
+          "folded-batched-greedy": {
+            "overall_mean": 0.07859,
+            "overall_min": 0.045473,
+            "window": "[5, 133)"
+          }
+        },
+        "block_exact": {
+          "folded-serial": {
+            "matched": 1,
+            "compared": 3
+          },
+          "folded-batched": {
+            "matched": 0,
+            "compared": 3
+          },
+          "folded-batched-greedy": {
+            "matched": 1,
+            "compared": 3
+          }
+        },
+        "position_match": {
+          "folded-serial": {
+            "matched": 1,
+            "compared": 3,
+            "rate": 0.333333
+          },
+          "folded-batched": {
+            "matched": 0,
+            "compared": 3,
+            "rate": 0.0
+          },
+          "folded-batched-greedy": {
+            "matched": 1,
+            "compared": 3,
+            "rate": 0.333333
+          }
+        }
+      },
+      {
+        "prompt_index": 1,
+        "prompt_text": "Explain in one sentence why the sky is blue.",
+        "decode_length": {
+          "baseline": 18,
+          "folded-serial": 128,
+          "folded-batched": 128,
+          "folded-batched-greedy": 128
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.9617,
+            "overall_min": 0.83662,
+            "window": "[10, 28)"
+          },
+          "folded-serial": {
+            "overall_mean": 0.952365,
+            "overall_min": 0.007394,
+            "window": "[10, 138)"
+          },
+          "folded-batched": {
+            "overall_mean": 0.491812,
+            "overall_min": 0.000346,
+            "window": "[10, 138)"
+          },
+          "folded-batched-greedy": {
+            "overall_mean": 0.838172,
+            "overall_min": 0.063146,
+            "window": "[10, 138)"
+          }
+        },
+        "block_exact": {
+          "folded-serial": {
+            "matched": 2,
+            "compared": 18
+          },
+          "folded-batched": {
+            "matched": 0,
+            "compared": 18
+          },
+          "folded-batched-greedy": {
+            "matched": 0,
+            "compared": 18
+          }
+        },
+        "position_match": {
+          "folded-serial": {
+            "matched": 2,
+            "compared": 18,
+            "rate": 0.111111
+          },
+          "folded-batched": {
+            "matched": 0,
+            "compared": 18,
+            "rate": 0.0
+          },
+          "folded-batched-greedy": {
+            "matched": 0,
+            "compared": 18,
+            "rate": 0.0
+          }
+        }
+      }
+    ]
+  },
+  "verdicts": {
+    "h1": {
+      "verdict": "refuted",
+      "faces": {
+        "a_gap_shrink_ratio_le_0_5": false,
+        "b_length_recovery": true,
+        "c_block_exact_strict_improvement": true
+      },
+      "strong": {
+        "quality_full_alignment": null,
+        "exact_all_hit": null,
+        "length_equals_baseline": null
+      },
+      "numbers": {
+        "gap": {
+          "folded-batched": -0.234305,
+          "folded-batched-greedy": -0.290905
+        },
+        "ratio": 1.241563,
+        "exact": {
+          "folded-batched": 0.0,
+          "folded-batched-greedy": 0.047619
+        },
+        "per_prompt_decode_lengths": [
+          {
+            "prompt_index": 0,
+            "len_baseline": 3,
+            "len_folded_batched": 128,
+            "len_aligned": 128,
+            "recovered": true
+          },
+          {
+            "prompt_index": 1,
+            "len_baseline": 18,
+            "len_folded_batched": 128,
+            "len_aligned": 128,
+            "recovered": true
+          }
+        ],
+        "none_posthoc_mean": false
+      }
+    },
+    "h2": {
+      "verdict": "supported",
+      "numbers": {
+        "speedup_p50_vs_baseline": 1.4908,
+        "p50_baseline_ms": 329926.2388250036,
+        "p50_aligned_ms": 221309.20327500097,
+        "aligned_vs_batched_ratio": 1.0019,
+        "rule": "supported iff p50(baseline)/p50(aligned) > 1.0"
+      }
+    },
+    "h4": {
+      "verdict": "supported",
+      "numbers": {
+        "canary_degradation_zero": {
+          "folded-serial": true,
+          "folded-batched": true,
+          "folded-batched-greedy": true
+        },
+        "ledger_within_bound": {
+          "folded-serial": true,
+          "folded-batched": true,
+          "folded-batched-greedy": true
+        },
+        "graph_enabled": false,
+        "graph_note": "graph path off per the probe conclusion: eager folding by construction, no degradation fallback path exists (neutral)",
+        "stable_ratios": {
+          "folded-serial": 0.140366,
+          "folded-batched": 0.045378,
+          "folded-batched-greedy": 0.06649
+        },
+        "stable_ratio_mean": 0.084078
+      }
+    }
+  },
+  "reproduction": {
+    "ok": true
+  },
+  "meta": {
+    "checkpoint_dir": "D:\\ar023_models\\llada",
+    "checkpoint_sha256": null,
+    "dtype": "bf16",
+    "quantization": "none",
+    "transformers_version": "4.53.1",
+    "torch_version": "2.5.1+cu121",
+    "family_constants": {
+      "block_size": 32,
+      "num_steps": 32,
+      "remasking": "low_confidence",
+      "num_tokens": 128,
+      "seed": 2026,
+      "reps": 30,
+      "num_candidates": 4,
+      "candidate_top_k": 10,
+      "speculative_steps": 8,
+      "gate_tau": 0.95,
+      "cache_budget_per_layer": 64,
+      "block_grid_measurement": 32,
+      "approximate_folding": "similarity-gated folding (cosine tau=0.95): near-exact reuse by gate"
+    },
+    "graph_enabled": false,
+    "graph_note": "graph path off per the probe conclusion (eager folding by construction)",
+    "cupti_note": "#39 wall-clock discipline: host perf_counter + cuda synchronize; no kernel-launch claims (CUPTI not probed)",
+    "seed": 2026,
+    "reps": 30,
+    "quick": false,
+    "prompts": [
+      "The capital of France is",
+      "Explain in one sentence why the sky is blue."
+    ],
+    "probe_artifact_ref": "results\\optimization\\ar023_family_probe.json",
+    "cross_rep_deterministic": true,
+    "timestamp": "2026-10-17T09:49:03.095792+00:00"
+  }
+}

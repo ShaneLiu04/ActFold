@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, NamedTuple
 
 import torch
 import torch.nn.functional as F
@@ -66,6 +66,31 @@ class LLaDASamplerConfig(SamplerConfig):
             rule and CAN LOSE. ``False`` (the default) is byte-identical to
             the speculative-off state; ``True`` requires
             ``num_block_candidates > 0``.
+        speculative_sub_block_size: AR024 FR1 sub-block window size ``s``.
+            Blocks split into ``s``-sized windows (remainder tail); each
+            window runs one draft serial forward plus one ``[N, T]``
+            batched verification (the ``s == block_size`` degenerate is the
+            AR023 whole-block unit, bit-identical). ``None`` (the default)
+            normalizes to ``8`` and is the unvalidated default face — the
+            runtime window clamps to the block geometry (zero disturbance
+            for existing configs); an explicit ``s`` is user intent and
+            validates against the block geometry on the speculative path.
+        progressive_refill: AR024 FR2 two-phase refill (opt-in). After the
+            Core's partial top-k commit, one extra batch-1 serial forward
+            on the committed context fills the window's remaining masked
+            positions with the deterministic argmax (one extra forward per
+            window upper bound). Requires ``num_block_candidates > 0``.
+        refill_top_k: AR024 FR2 committed-position count ``k``.
+            ``None`` (the default) resolves to ``s // 2`` at the phase-two
+            entry; an explicit ``k`` wins. Validated in ``[1,
+            speculative_sub_block_size]`` whenever set (malformed values
+            are path-independent).
+        candidate_eos_aware: AR024 FR3 EOS-aware continuation row (default
+            ``True`` — the recommended AR024 stack). With ``N > 0``,
+            candidate row N-1 is the first non-EOS draft-pool entry per
+            position (pure device indexing; an EOS-absent pool degenerates
+            to the greedy value). ``False`` restores the AR023 semantics
+            exactly (the A/B anchor face).
     """
 
     block_size: int | None = None
@@ -80,8 +105,16 @@ class LLaDASamplerConfig(SamplerConfig):
     num_block_candidates: int = 0
     candidate_top_k: int = 10
     candidate_include_greedy: bool = False
+    speculative_sub_block_size: int | None = None
+    progressive_refill: bool = False
+    refill_top_k: int | None = None
+    candidate_eos_aware: bool = True
 
     def __post_init__(self) -> None:
+        sub_block = self.speculative_sub_block_size
+        self._sub_block_size_explicit = sub_block is not None
+        sub_block = 8 if sub_block is None else sub_block
+        self.speculative_sub_block_size = sub_block
         if self.num_block_candidates < 0:
             raise ValueError(f"num_block_candidates must be >= 0, got {self.num_block_candidates}")
         if self.candidate_top_k < 1:
@@ -92,6 +125,49 @@ class LLaDASamplerConfig(SamplerConfig):
                 " > 0 (greedy anchoring is defined only on the speculative"
                 f" path; got num_block_candidates={self.num_block_candidates})"
             )
+        if sub_block < 1:
+            raise ValueError(f"speculative_sub_block_size must be >= 1, got {sub_block}")
+        if self.progressive_refill and self.num_block_candidates == 0:
+            raise ValueError(
+                "progressive_refill=True requires num_block_candidates > 0 "
+                "(the two-phase refill is defined only on the speculative "
+                f"path; got num_block_candidates={self.num_block_candidates})"
+            )
+        if self.refill_top_k is not None and (
+            self.refill_top_k < 1 or self.refill_top_k > sub_block
+        ):
+            raise ValueError(
+                "refill_top_k must be in [1, speculative_sub_block_size="
+                f"{self.speculative_sub_block_size}] when set, got {self.refill_top_k}"
+            )
+        if (
+            self._sub_block_size_explicit
+            and self.num_block_candidates > 0
+            and self.block_size is not None
+            and sub_block > self.block_size
+        ):
+            raise ValueError(
+                f"speculative_sub_block_size ({self.speculative_sub_block_size}) "
+                f"must not exceed block_size ({self.block_size}) on the "
+                "speculative path"
+            )
+
+
+class _LLaDAJointWindow(NamedTuple):
+    """Per-chain prepared window entry for the joint lockstep loop (AR025).
+
+    One chain's segment-A output bundle for a single sub-block window: the
+    draft serial forward is done, the candidates are built, and the entry
+    waits for the ONE joint ``[sum_chains*N, T]`` verification call.
+    """
+
+    chain: int
+    masked_local: torch.Tensor
+    unit_forced: torch.Tensor
+    region_logits: torch.Tensor
+    draft_branch_id: str
+    cands: torch.Tensor
+    cand_branch_ids: list[str]
 
 
 class LLaDASampler(DiffusionSampler, SpeculativeCore):
@@ -135,6 +211,9 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
         )
         self._max_length = max_length
         self._block_size = block_size
+        sub_block = self.config.speculative_sub_block_size
+        assert sub_block is not None  # normalized in LLaDASamplerConfig.__post_init__
+        self._sub_block_size = sub_block
         self._mask_token_id = mask_token_id
         self._eos_token_id = eos_token_id
         return x
@@ -202,18 +281,27 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
 
         This overrides the base loop to implement the official LLaDA block-wise
         schedule and remasking strategy. With ``num_block_candidates > 0``
-        (AR023) each block instead becomes one speculative unit: a draft
-        serial forward plus one ``[N, T]`` batched-branch verification call
-        through the shared :class:`~actfold.models.speculative_core.SpeculativeCore`
-        (default off keeps the reference recipe byte-identical).
+        (AR023/AR024) each block instead becomes a sequence of ``s``-sized
+        sub-block speculative windows (``speculative_sub_block_size``; the
+        ``s == block_size`` degenerate is the AR023 whole-block unit): one
+        draft serial forward plus one ``[N, T]`` batched-branch verification
+        call per window through the shared
+        :class:`~actfold.models.speculative_core.SpeculativeCore`, with the
+        optional two-phase refill (``progressive_refill``) filling the
+        window remainder on the committed context (default off keeps the
+        reference recipe byte-identical).
 
         Raises:
             ValueError: If ``num_block_candidates > 0`` without a
                 ``folded_model``, with a folded model that does not support
                 the ``branch_ids`` kwarg, with a batch larger than 1 (the
                 ``[T, T]`` fold-context mask cannot express per-row padding),
-                or with ``cfg_scale > 0`` (the speculative path does not
-                implement classifier-free guidance; never a silent drop).
+                with ``cfg_scale > 0`` (the speculative path does not
+                implement classifier-free guidance; never a silent drop), or
+                with an explicit ``speculative_sub_block_size`` exceeding the
+                resolved ``block_size`` (the sample-entry resolved-geometry
+                validation — ``block_size=None`` resolves from the
+                generation geometry at entry, before any forward).
         """
         if self.config.seed is not None:
             torch.manual_seed(self.config.seed)
@@ -248,6 +336,16 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
         B, T = x.shape
         max_new_tokens = self.config.num_tokens
         block_size = self._block_size
+        if (
+            num_candidates > 0
+            and getattr(self.config, "_sub_block_size_explicit", True)
+            and self._sub_block_size > block_size
+        ):
+            raise ValueError(
+                f"speculative_sub_block_size ({self._sub_block_size}) must not "
+                f"exceed the resolved block_size ({block_size}) on the "
+                "speculative path"
+            )
         mask_token_id = self._mask_token_id
         eos_token_id = self._eos_token_id
 
@@ -300,10 +398,12 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
 
         for block_idx in range(num_blocks):
             if num_candidates > 0:
-                # AR023 FR2: one speculative unit per block — one draft
-                # serial forward plus one [N, T] batched verification call
-                # commits the whole block (skipping the block's remaining
-                # remasking iterations, AR021-isomorphic).
+                # AR024 FR1: blocks split into s-sized sub-block windows
+                # (remainder tail); one draft serial forward plus one
+                # [N, T] batched verification per WINDOW (the AR023
+                # whole-block unit is the s == block_size degenerate).
+                # The chain continues per window — each window's draft
+                # parent is the previous window's winner branch.
                 assert finished is not None  # gated: created when num_candidates > 0
                 if bool(finished.all()):
                     break
@@ -311,67 +411,109 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
                 region_end = min(region_start + block_size, prompt_lens[0] + max_new_tokens, T)
                 if region_start >= region_end:
                     continue
-                masked_local = (
-                    (x[0, region_start:region_end] == mask_token_id)
-                    .nonzero(as_tuple=False)
-                    .reshape(-1)
-                )
-                if int(masked_local.numel()) == 0:
-                    continue
-                ctx = self._spec_ctx_for(x, prompt_len=prompt_lens[0])
-                unit_forced = self._build_unit_forced(
-                    x,
-                    region_start=region_start,
-                    region_end=region_end,
-                    masked_local=masked_local,
-                )
-                draft_branch_id, draft_parent_id = self._next_folding_branch(
-                    f"llada_spec_b{block_idx}"
-                )
-                draft_logits = self._forward(
-                    x,
-                    branch_id=draft_branch_id,
-                    parent_branch_id=draft_parent_id,
-                    folded_model=folded_model,
-                    step_idx=block_idx,
-                    attention_mask=ctx.mask,
-                    position_embeddings=ctx.position,
-                    forced_divergent=unit_forced,
-                )
-                if suppress_ids is not None:
-                    draft_logits.index_fill_(-1, suppress_ids, float("-inf"))
-                if self.config.right_shift_logits:
-                    draft_logits = right_shift_logits(draft_logits)
-                if begin_suppress_ids is not None:
-                    draft_logits.index_fill_(-1, begin_suppress_ids, float("-inf"))
-                region_logits = draft_logits[:, region_start:region_end, :]
-
-                def _batched_forward(tokens: torch.Tensor, **kwargs: Any) -> torch.Tensor:
-                    return self._forward(
-                        tokens,
+                sub_block = self._sub_block_size
+                w_start, w_idx = region_start, 0
+                while w_start < region_end:
+                    if bool(finished.all()):
+                        break
+                    w_end = min(w_start + sub_block, region_end)
+                    masked_local = (
+                        (x[0, w_start:w_end] == mask_token_id).nonzero(as_tuple=False).reshape(-1)
+                    )
+                    if int(masked_local.numel()) == 0:
+                        # Window without masked positions: skipped with
+                        # zero forwards (w_idx still counts every window).
+                        w_start, w_idx = w_end, w_idx + 1
+                        continue
+                    ctx = self._spec_ctx_for(x, prompt_len=prompt_lens[0])
+                    unit_forced = self._build_unit_forced(
+                        x,
+                        region_start=w_start,
+                        region_end=w_end,
+                        masked_local=masked_local,
+                    )
+                    # Frozen branch tags (A/B anchor face): w_idx == 0
+                    # keeps the AR023 form; w_idx > 0 carries the window
+                    # index suffix.
+                    if w_idx == 0:
+                        tag = f"llada_spec_b{block_idx}"
+                    else:
+                        tag = f"llada_spec_b{block_idx}_w{w_idx}"
+                    # Frozen branch tags carry NO folding-counter suffix (the
+                    # design-pinned A/B anchor face) — the chain bookkeeping
+                    # mirrors ``_next_folding_branch`` (parent = the current
+                    # chain slot, then the draft owns the slot).
+                    draft_parent_id = self._folding_parent
+                    draft_branch_id = tag
+                    self._folding_parent = draft_branch_id
+                    draft_logits = self._forward(
+                        x,
+                        branch_id=draft_branch_id,
+                        parent_branch_id=draft_parent_id,
                         folded_model=folded_model,
                         step_idx=block_idx,
                         attention_mask=ctx.mask,
                         position_embeddings=ctx.position,
-                        **kwargs,
+                        forced_divergent=unit_forced,
                     )
+                    if suppress_ids is not None:
+                        draft_logits.index_fill_(-1, suppress_ids, float("-inf"))
+                    if self.config.right_shift_logits:
+                        draft_logits = right_shift_logits(draft_logits)
+                    if begin_suppress_ids is not None:
+                        draft_logits.index_fill_(-1, begin_suppress_ids, float("-inf"))
+                    region_logits = draft_logits[:, w_start:w_end, :]
 
-                self._speculative_commit(
-                    x=x,
-                    finished=finished,
-                    draft_logits_region=region_logits,
-                    region_start=region_start,
-                    masked_local=masked_local,
-                    draft_branch_id=draft_branch_id,
-                    ctx=ctx,
-                    unit_forced=unit_forced,
-                    folded_model=folded_model,
-                    unit_idx=block_idx,
-                    sub_idx=0,
-                    history=history,
-                    forward_fn=_batched_forward,
-                    stop_token_id=eos_token_id,
-                )
+                    def _batched_forward(tokens: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+                        return self._forward(
+                            tokens,
+                            folded_model=folded_model,
+                            step_idx=block_idx,
+                            attention_mask=ctx.mask,
+                            position_embeddings=ctx.position,
+                            **kwargs,
+                        )
+
+                    k_resolved: int | None = None
+                    if self.config.progressive_refill:
+                        k_resolved = (
+                            self.config.refill_top_k
+                            if self.config.refill_top_k is not None
+                            else sub_block // 2
+                        )
+                    self._speculative_commit(
+                        x=x,
+                        finished=finished,
+                        draft_logits_region=region_logits,
+                        region_start=w_start,
+                        masked_local=masked_local,
+                        draft_branch_id=draft_branch_id,
+                        ctx=ctx,
+                        unit_forced=unit_forced,
+                        folded_model=folded_model,
+                        unit_idx=block_idx,
+                        sub_idx=w_idx,
+                        history=history,
+                        forward_fn=_batched_forward,
+                        stop_token_id=eos_token_id,
+                        refill_top_k=k_resolved,
+                    )
+                    if k_resolved is not None:
+                        self._refill_phase_two(
+                            x,
+                            finished,
+                            w_start,
+                            w_end,
+                            block_idx,
+                            w_idx,
+                            ctx,
+                            folded_model,
+                            history,
+                            eos_token_id,
+                        )
+                        if self.config.return_history:
+                            history.append(x.clone())
+                    w_start, w_idx = w_end, w_idx + 1
                 continue
 
             # Determine which positions in this block are still masked.
@@ -455,6 +597,462 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
 
         decoded = self.decode_final(x)
         return SamplerOutput(sequences=decoded, history=history)
+
+    def sample_joint(
+        self,
+        prompt_ids_list: list[torch.Tensor],
+        folded_model: FoldedModel | None = None,
+    ) -> list[SamplerOutput]:
+        """W2 lockstep joint speculative sampling (AR025 DD8a, LLaDA face).
+
+        ONE sampler instance drives EVERY chain in a single-threaded
+        lockstep loop with per-chain canvas / ``finished`` / history /
+        folding-chain state. Per sub-block window: per-chain draft serial
+        forward (``[1, T]`` each, chain-qualified branch tags
+        ``llada_spec_j{c}_b{block}[_w{w}]``), per-chain candidate
+        construction (``_speculative_build`` — the frozen seed formula has
+        NO chain component, so per-chain candidates equal the solo build
+        bitwise), ONE joint ``[sum_chains*N, T]`` batched verification call
+        with per-row parents through the ``parent_branch_ids`` C4 form (the
+        F2 merged closure below rewrites the Core's frozen singular call
+        form defensively), then per-chain score/commit
+        (``_speculative_score_commit``). An EOS-finished chain is REMOVED
+        from the joint batch (C5) and the survivors continue alone. Because
+        the speculative path consumes no global RNG at ``temperature == 0``
+        (candidate draws replay the frozen seed formula on dedicated CPU
+        generators), each chain's output is BITWISE equal to a back-to-back
+        solo ``sample()`` on the same config — while the joint verification
+        costs one ``put_batch`` group per layer per window instead of one
+        per chain (#42).
+
+        The joint path is armed only when ALL preconditions hold:
+        ``num_block_candidates > 0``, a ``folded_model`` that supports
+        ``branch_ids``, and the folded model's ``multi_parent_batch``
+        instance switch (DD6) — otherwise this dispatches per chain
+        (``[self.sample(p, folded_model) for p in prompt_ids_list]``,
+        DD7-isomorphic off-switch) and the solo entry's frozen
+        validations/errors surface unchanged.
+
+        Args:
+            prompt_ids_list: Per-chain prompts, each ``[1, prompt_len]``
+                (batch-1) with EQUAL token lengths across chains (C2: the
+                chains share one fold-context key ``(T, prompt_len)``).
+            folded_model: The folded model (must carry
+                ``multi_parent_batch=True`` to arm the joint path).
+
+        Returns:
+            One :class:`~actfold.models.diffusion_sampler.SamplerOutput`
+            per chain, in ``prompt_ids_list`` order.
+
+        Raises:
+            ValueError: On the joint path (switch armed): an empty
+                ``prompt_ids_list``, a batch-2+ prompt (the ``[T, T]``
+                fold-context mask cannot express per-row padding), unequal
+                prompt token lengths (C2), ``cfg_scale > 0`` (frozen
+                mirror), ``temperature > 0`` or truthy
+                ``stochastic_transfer`` (F3 — the per-candidate
+                construction is deterministic only on the greedy path, and
+                an interleaved joint loop could not reproduce
+                back-to-back ``sample()`` draws at temperature > 0).
+        """
+        num_candidates = int(self.config.num_block_candidates)
+        joint_armed = (
+            num_candidates > 0
+            and folded_model is not None
+            and self._supports_branch_ids(folded_model)
+            and bool(getattr(folded_model, "multi_parent_batch", False))
+        )
+        if not joint_armed:
+            # Off-switch dispatch (DD7-isomorphic): per-chain solo runs;
+            # the solo entry's frozen validations/errors surface unchanged.
+            return [self.sample(prompt_ids, folded_model) for prompt_ids in prompt_ids_list]
+
+        # Joint-path entry validations (F3/C2 and the frozen cfg mirror).
+        if not prompt_ids_list:
+            raise ValueError(
+                "LLaDASampler.sample_joint requires at least one prompt "
+                "chain (got an empty list)."
+            )
+        for chain_idx, prompt_ids in enumerate(prompt_ids_list):
+            if prompt_ids.shape[0] > 1:
+                raise ValueError(
+                    "LLaDASampler.sample_joint supports batch-1 prompts only; "
+                    "the [T, T] fold-context mask cannot express per-row "
+                    f"padding (chain {chain_idx} got batch {prompt_ids.shape[0]})."
+                )
+        prompt_len_first = int(prompt_ids_list[0].shape[1])
+        for chain_idx, prompt_ids in enumerate(prompt_ids_list):
+            if int(prompt_ids.shape[1]) != prompt_len_first:
+                raise ValueError(
+                    "LLaDASampler.sample_joint requires equal prompt token "
+                    "lengths across chains (the shared fold-context key "
+                    f"(T, prompt_len) — chain 0 has {prompt_len_first}, "
+                    f"chain {chain_idx} has {int(prompt_ids.shape[1])})."
+                )
+        if self.config.cfg_scale > 0.0:
+            raise ValueError(
+                "sample_joint requires cfg_scale == 0.0 (the joint "
+                "speculative draft/batched path does not implement "
+                "classifier-free guidance; refusing to silently drop it)."
+            )
+        if self.config.temperature > 0.0:
+            raise ValueError(
+                "sample_joint requires temperature == 0.0 (F3: the "
+                "per-candidate construction is deterministic only on the "
+                "greedy path — an interleaved joint loop cannot reproduce "
+                "back-to-back sample() draws at temperature > 0)."
+            )
+        if self.config.stochastic_transfer:
+            raise ValueError(
+                "sample_joint requires stochastic_transfer == False (F3: "
+                "stochastic transfer schedules consume the global RNG and "
+                "would desynchronize the joint lockstep's per-chain parity)."
+            )
+
+        if self.config.seed is not None:
+            torch.manual_seed(self.config.seed)
+
+        self._reset_folding_chain()
+        xs = [self.initialize(prompt_ids) for prompt_ids in prompt_ids_list]
+        num_chains = len(xs)
+        T = int(xs[0].shape[1])
+        if any(int(x.shape[1]) != T for x in xs):
+            raise ValueError(
+                "LLaDASampler.sample_joint resolved unequal canvas lengths "
+                f"across chains ({[int(x.shape[1]) for x in xs]}); the chains "
+                "must share one fold-context key (T, prompt_len)."
+            )
+        max_new_tokens = self.config.num_tokens
+        block_size = self._block_size
+        if (
+            getattr(self.config, "_sub_block_size_explicit", True)
+            and self._sub_block_size > block_size
+        ):
+            raise ValueError(
+                f"speculative_sub_block_size ({self._sub_block_size}) must not "
+                f"exceed the resolved block_size ({block_size}) on the "
+                "speculative path"
+            )
+        mask_token_id = self._mask_token_id
+        eos_token_id = self._eos_token_id
+
+        # Per-chain prompt lengths (the solo vectorized block, batch-1 per
+        # canvas); C2 requires them equal — the chains share ONE ctx.
+        prompt_lens: list[int] = []
+        for x in xs:
+            is_mask = x == mask_token_id
+            any_mask = is_mask.any(dim=1)
+            any_non_eos = (x != eos_token_id).any(dim=1)
+            first_mask = torch.argmax(is_mask.to(torch.uint8), dim=1)
+            full_len = torch.full_like(first_mask, T)
+            zero = torch.zeros_like(first_mask)
+            prompt_lens_t = torch.where(
+                any_mask, first_mask, torch.where(any_non_eos, full_len, zero)
+            )
+            prompt_lens.append(int(prompt_lens_t[0].item()))
+        if len(set(prompt_lens)) != 1:
+            raise ValueError(
+                "LLaDASampler.sample_joint resolved unequal prompt lengths "
+                f"across chains ({prompt_lens}); the chains must share one "
+                "fold-context key (T, prompt_len)."
+            )
+        prompt_len = prompt_lens[0]
+        ctx = self._spec_ctx_for(xs[0], prompt_len=prompt_len)
+
+        # Suppression id tensors, precomputed once (the F10 solo form).
+        suppress_ids = (
+            torch.tensor(self.config.suppress_tokens, dtype=torch.long, device=xs[0].device)
+            if self.config.suppress_tokens
+            else None
+        )
+        begin_suppress_ids = (
+            torch.tensor(self.config.begin_suppress_tokens, dtype=torch.long, device=xs[0].device)
+            if self.config.begin_suppress_tokens
+            else None
+        )
+
+        finished = [torch.zeros(1, dtype=torch.bool, device=x.device) for x in xs]
+        histories: list[list[torch.Tensor]] = [
+            [x.clone()] if self.config.return_history else [] for x in xs
+        ]
+        # Per-chain folding-chain state (F1): the joint loop owns each
+        # chain's parent externally; segment B publishes the winner through
+        # the instance slot, which the loop reads back per chain.
+        parents: list[str | None] = [None] * num_chains
+
+        sub_block = self._sub_block_size
+        k_resolved: int | None = None
+        if self.config.progressive_refill:
+            k_resolved = (
+                self.config.refill_top_k if self.config.refill_top_k is not None else sub_block // 2
+            )
+
+        num_blocks = max(1, math.ceil(max_new_tokens / block_size))
+        for block_idx in range(num_blocks):
+            if all(bool(flags.all()) for flags in finished):
+                break
+            region_start = prompt_len + block_idx * block_size
+            region_end = min(region_start + block_size, prompt_len + max_new_tokens, T)
+            if region_start >= region_end:
+                continue
+            w_start, w_idx = region_start, 0
+            while w_start < region_end:
+                if all(bool(flags.all()) for flags in finished):
+                    break
+                w_end = min(w_start + sub_block, region_end)
+
+                # Per-chain window prep (segment A): draft serial forward +
+                # candidate build. Finished chains are REMOVED (C5); a
+                # window without masked positions costs zero forwards.
+                window: list[_LLaDAJointWindow] = []
+                for chain in range(num_chains):
+                    if bool(finished[chain].all()):
+                        continue
+                    masked_local = (
+                        (xs[chain][0, w_start:w_end] == mask_token_id)
+                        .nonzero(as_tuple=False)
+                        .reshape(-1)
+                    )
+                    if int(masked_local.numel()) == 0:
+                        continue
+                    unit_forced = self._build_unit_forced(
+                        xs[chain],
+                        region_start=w_start,
+                        region_end=w_end,
+                        masked_local=masked_local,
+                    )
+                    # Chain-qualified branch tags (the joint namespace):
+                    # the value semantics equal the solo tags — ids only key
+                    # the cache — and the two chains never collide (C4).
+                    if w_idx == 0:
+                        tag = f"llada_spec_j{chain}_b{block_idx}"
+                    else:
+                        tag = f"llada_spec_j{chain}_b{block_idx}_w{w_idx}"
+                    draft_parent_id = parents[chain]
+                    draft_branch_id = tag
+                    parents[chain] = draft_branch_id
+                    draft_logits = self._forward(
+                        xs[chain],
+                        branch_id=draft_branch_id,
+                        parent_branch_id=draft_parent_id,
+                        folded_model=folded_model,
+                        step_idx=block_idx,
+                        attention_mask=ctx.mask,
+                        position_embeddings=ctx.position,
+                        forced_divergent=unit_forced,
+                    )
+                    if suppress_ids is not None:
+                        draft_logits.index_fill_(-1, suppress_ids, float("-inf"))
+                    if self.config.right_shift_logits:
+                        draft_logits = right_shift_logits(draft_logits)
+                    if begin_suppress_ids is not None:
+                        draft_logits.index_fill_(-1, begin_suppress_ids, float("-inf"))
+                    region_logits = draft_logits[:, w_start:w_end, :]
+                    cands, cand_branch_ids = self._speculative_build(
+                        x=xs[chain],
+                        draft_logits_region=region_logits,
+                        region_start=w_start,
+                        masked_local=masked_local,
+                        draft_branch_id=draft_branch_id,
+                        unit_idx=block_idx,
+                        sub_idx=w_idx,
+                        stop_token_id=eos_token_id,
+                    )
+                    window.append(
+                        _LLaDAJointWindow(
+                            chain=chain,
+                            masked_local=masked_local,
+                            unit_forced=unit_forced,
+                            region_logits=region_logits,
+                            draft_branch_id=draft_branch_id,
+                            cands=cands,
+                            cand_branch_ids=cand_branch_ids,
+                        )
+                    )
+
+                if window:
+                    n = num_candidates
+                    joint_cands = torch.cat([entry.cands for entry in window], dim=0)
+                    joint_branch_ids = [bid for entry in window for bid in entry.cand_branch_ids]
+                    # Per-row parents (C4): chain i's N candidate rows hang
+                    # on chain i's OWN draft branch — never on another
+                    # chain's winner.
+                    joint_parent_ids = [entry.draft_branch_id for entry in window for _ in range(n)]
+                    joint_forced = torch.cat(
+                        [entry.unit_forced.unsqueeze(0).repeat(n, 1) for entry in window],
+                        dim=0,
+                    )
+
+                    def _joint_batched_forward(tokens: torch.Tensor, **kwargs: Any) -> torch.Tensor:
+                        # F2 (design rev 4): the merged closure face. The
+                        # Core's frozen composed call form threads the
+                        # SINGULAR ``parent_branch_id``; consume it and
+                        # rewrite it as the per-row plural (never forwarded
+                        # alongside it — the MFF mutex face), so a
+                        # frozen-form caller and the C4 joint form share ONE
+                        # closure. The plural form passes through unchanged.
+                        singular = kwargs.pop("parent_branch_id", None)
+                        if singular is not None:
+                            if "parent_branch_ids" in kwargs:
+                                raise ValueError(
+                                    "the joint merged forward accepts either "
+                                    "parent_branch_id (shared singular) or "
+                                    "parent_branch_ids (per-row plural), not "
+                                    "both."
+                                )
+                            kwargs["parent_branch_ids"] = [singular] * int(tokens.shape[0])
+                        # ``branch_id`` / ``parent_branch_id`` are consumed
+                        # positionally: the frozen form threads
+                        # ``parent_branch_id`` (popped and rewritten above),
+                        # the C4 form carries neither singular — both
+                        # resolve to None here (the MFF mutex face).
+                        return self._forward(
+                            tokens,
+                            kwargs.pop("branch_id", None),
+                            kwargs.pop("parent_branch_id", None),
+                            folded_model=folded_model,
+                            step_idx=block_idx,
+                            attention_mask=ctx.mask,
+                            position_embeddings=ctx.position,
+                            **kwargs,
+                        )
+
+                    joint_logits = _joint_batched_forward(
+                        joint_cands,
+                        branch_id=None,
+                        parent_branch_ids=joint_parent_ids,
+                        branch_ids=joint_branch_ids,
+                        forced_divergent=joint_forced,
+                    )
+
+                    # Per-chain segment B on the row-sliced joint logits;
+                    # the instance parent slot swaps in/out per chain (F1).
+                    for slot, entry in enumerate(window):
+                        chain_logits = joint_logits[slot * n : (slot + 1) * n]
+                        self._speculative_score_commit(
+                            x=xs[entry.chain],
+                            finished=finished[entry.chain],
+                            batched_logits=chain_logits,
+                            cands=entry.cands,
+                            cand_branch_ids=entry.cand_branch_ids,
+                            draft_logits_region=entry.region_logits,
+                            region_start=w_start,
+                            masked_local=entry.masked_local,
+                            history=histories[entry.chain],
+                            stop_token_id=eos_token_id,
+                            refill_top_k=k_resolved,
+                        )
+                        parents[entry.chain] = self._folding_parent
+                        if k_resolved is not None:
+                            # Phase two reads/writes the instance parent
+                            # slot — swap the chain's state in and out.
+                            self._folding_parent = parents[entry.chain]
+                            self._refill_phase_two(
+                                xs[entry.chain],
+                                finished[entry.chain],
+                                w_start,
+                                w_end,
+                                block_idx,
+                                w_idx,
+                                ctx,
+                                folded_model,
+                                histories[entry.chain],
+                                eos_token_id,
+                                branch_tag=(f"llada_spec_j{entry.chain}_b{block_idx}_w{w_idx}_r"),
+                            )
+                            parents[entry.chain] = self._folding_parent
+                            if self.config.return_history:
+                                histories[entry.chain].append(xs[entry.chain].clone())
+                w_start, w_idx = w_end, w_idx + 1
+
+        return [
+            SamplerOutput(sequences=self.decode_final(x), history=history)
+            for x, history in zip(xs, histories)
+        ]
+
+    def _refill_phase_two(
+        self,
+        x: torch.Tensor,
+        finished: torch.Tensor,
+        w_start: int,
+        w_end: int,
+        block_idx: int,
+        w_idx: int,
+        ctx: SpecCtx,
+        folded_model: FoldedModel | None,
+        history: list[torch.Tensor],
+        eos_token_id: int,
+        branch_tag: str | None = None,
+    ) -> None:
+        """Fill the window's still-masked remainder (AR024 FR2, design §4.1.4).
+
+        One extra batch-1 serial forward on the committed context (parent =
+        the Core-selected winner branch, published at batch 1 per #41): the
+        remaining window positions take the deterministic argmax of the
+        phase-two logits with the family semantic corrections applied in
+        the same form as the draft face. ``finished`` conjuncts the refill
+        fills; the chain slot switches to the phase-two branch. A window
+        with no remaining masked positions returns without any forward (the
+        ``k >= masked count`` clamp degenerates to FR1). The history list is
+        carried for the frozen signature only — the family loop appends the
+        per-window snapshot after this call (the Core never appends in
+        refill mode).
+
+        Args:
+            x: ``[1, T]`` canvas, mutated in place at the remaining masked
+                window positions.
+            finished: ``[1]`` bool finished flags, mutated in place.
+            w_start: Canvas start coordinate of the sub-block window.
+            w_end: Canvas end coordinate of the sub-block window.
+            block_idx: Block index (branch tag / step_idx cargo).
+            w_idx: Window index (the frozen ``_r`` tag suffix).
+            ctx: The family fold context (LRU-pinned; the same object the
+                window's draft/batched calls used).
+            folded_model: The folded model for the serial forward.
+            history: History list (signature cargo; the caller appends).
+            eos_token_id: The stop token (finished semantics).
+            branch_tag: AR025 joint-path override for the phase-two branch
+                id. ``None`` (the default) keeps the frozen solo tag
+                ``llada_spec_b{block_idx}_w{w_idx}_r``; the joint loop
+                passes the chain-qualified form
+                ``llada_spec_j{chain}_b{block_idx}_w{w_idx}_r`` so the two
+                chains' refill branches never collide in the shared cache.
+        """
+        remaining_local = (
+            (x[0, w_start:w_end] == self._mask_token_id).nonzero(as_tuple=False).reshape(-1)
+        )
+        if int(remaining_local.numel()) == 0:
+            return
+        r_branch = branch_tag if branch_tag is not None else f"llada_spec_b{block_idx}_w{w_idx}_r"
+        r_parent = self._folding_parent
+        self._folding_parent = r_branch
+        r_logits = self._forward(
+            x,
+            branch_id=r_branch,
+            parent_branch_id=r_parent,
+            folded_model=folded_model,
+            step_idx=block_idx,
+            attention_mask=ctx.mask,
+            position_embeddings=ctx.position,
+        )
+        if self.config.suppress_tokens:
+            r_logits.index_fill_(
+                -1,
+                torch.tensor(self.config.suppress_tokens, dtype=torch.long, device=x.device),
+                float("-inf"),
+            )
+        if self.config.right_shift_logits:
+            r_logits = right_shift_logits(r_logits)
+        if self.config.begin_suppress_tokens:
+            r_logits.index_fill_(
+                -1,
+                torch.tensor(self.config.begin_suppress_tokens, dtype=torch.long, device=x.device),
+                float("-inf"),
+            )
+        fill_pos = remaining_local + w_start
+        x[0, fill_pos] = r_logits[0, fill_pos, :].argmax(dim=-1)
+        finished |= (x[:, fill_pos] == eos_token_id).any(dim=1)
+        self._folding_parent = r_branch
 
     def _forward_with_cfg(
         self,

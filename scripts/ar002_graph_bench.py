@@ -18,6 +18,18 @@ Kernel-launch counts are recorded on CUPTI-capable hosts; Windows torch builds
 compiled with ``LIBKINETO_NOCUPTI`` cannot record CUDA profiler events, in
 which case the counts are ``null`` with an explicit note (never fabricated).
 
+Clock-state control (AR026-era stability erratum): short per-step benchmarks
+on shared-workstation GPUs measure whichever phase runs FIRST at ramp clocks.
+A Quadro RTX 5000 idle governor sits near 645 MHz SM (boost ~1.8 GHz); a
+~10 ms/step workload leaves gaps long enough for the governor to drop clocks
+between phases, so the second-measured path (historically the graph path)
+reads several times slower even though its GPU-busy time is lower. The bench
+therefore runs a fixed sustained-load warm-up (``_CLOCK_WARMUP_S``) before
+EACH measured phase and records ``clock_warmup_s`` / ``clock_state_note``
+in the artifact. The committed historical artifact predates this control and
+is not column-for-column comparable with reruns of this script (its numbers
+remain the AR002 evidence of record for that measurement session).
+
 Run::
 
     python -m scripts.ar002_graph_bench [--out PATH] [--steps N] [--warmup N]
@@ -47,6 +59,14 @@ _VOCAB = 1000
 _TAU = 0.95
 _EPS = 1e-8
 _CAPACITY_RATIO = 0.5
+#: Sustained-load warm-up before each measured phase (GPU clock-state control,
+#: see the module docstring).
+_CLOCK_WARMUP_S = 2.0
+_CLOCK_STATE_NOTE = (
+    "each measured phase is preceded by a sustained-load warm-up; shared-"
+    "workstation clock governors otherwise measure the first phase at ramp "
+    "clocks (the second-measured path reads artificially slower)"
+)
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +173,28 @@ def _profiled_cuda_launch_count(step_fn: Callable[[], Any]) -> int:
     )
 
 
+def _warm_gpu(seconds: float = _CLOCK_WARMUP_S) -> None:
+    """Sustain GPU load so the clock governor reaches a steady state.
+
+    Shared-workstation GPUs idle at low SM clocks (645 MHz observed vs a
+    ~1.8 GHz boost on a Quadro RTX 5000); without this warm-up the phase
+    measured first runs at ramp clocks and the phase measured second can be
+    read several times slower. The warm-up uses plain device-side matmuls
+    (no host readback: the renormalization is a device reduction) and never
+    touches the benchmark tensors.
+    """
+    torch.cuda.synchronize()
+    a = torch.randn(1024, 1024, device="cuda")
+    b = torch.randn(1024, 1024, device="cuda")
+    start = time.perf_counter()
+    while time.perf_counter() - start < seconds:
+        for _ in range(5):
+            a = a @ b
+        a = a / a.abs().amax()
+        torch.cuda.synchronize()
+    torch.cuda.synchronize()
+
+
 def _timed_step_ms(step_fn: Callable[[], Any]) -> float:
     """Wall-clock one step in milliseconds (device synchronized)."""
     torch.cuda.synchronize()
@@ -214,6 +256,8 @@ def run_bench(warmup_steps: int = 5, measured_steps: int = 20) -> dict[str, Any]
         prev_branch = "parent"
         prev_tokens = parent_tokens
         for step in range(warmup_steps + measured_steps):
+            if step == warmup_steps:
+                _warm_gpu()
             step_tokens = _next_child_tokens(prev_tokens, step)
             branch = f"eager_{step}"
             mff_call = _one_step(eager_mff, step_tokens, branch, prev_branch)
@@ -245,6 +289,8 @@ def run_bench(warmup_steps: int = 5, measured_steps: int = 20) -> dict[str, Any]
         prev_branch = "parent"
         prev_tokens = parent_tokens
         for step in range(warmup_steps + measured_steps):
+            if step == warmup_steps:
+                _warm_gpu()
             step_tokens = _next_child_tokens(prev_tokens, step)
             branch = f"graph_{step}"
             mff_call = _one_step(graph_mff, step_tokens, branch, prev_branch)
@@ -283,6 +329,8 @@ def run_bench(warmup_steps: int = 5, measured_steps: int = 20) -> dict[str, Any]
         "eager_kernel_launches": eager_launches,
         "graph_kernel_launches": graph_launches,
         "graph_validated_steps": validated_steps,
+        "clock_warmup_s": _CLOCK_WARMUP_S,
+        "clock_state_note": _CLOCK_STATE_NOTE,
         "kernel_launch_note": (
             "counts recorded via torch.profiler (CUPTI)"
             if counts_supported

@@ -482,16 +482,16 @@ def _run_batched_vs_serial_parity(
     return cache_b, cache_s, batched_profiles, serial_profiles, gate_b, after_parent_result
 
 
-def test_ut1401_cpu_varlen_parity() -> None:
-    """UT-1401 (FR1/FR4): CPU varlen batched branch forward matches serial.
+def test_ut1401_cpu_varlen_bitwise_parity() -> None:
+    """UT-1401 (FR1/FR4): CPU varlen batched branch forward parity vs serial.
 
     A parent ``[1, T_p]`` fills the cache via a serial forward; four candidates
     ``[1, T_p + 1]`` with mutually distinct appended tokens run once as a single
     ``branch_ids`` batch and once as four serial child forwards on two fresh
     setups. Logits, per-branch caches (``ffn_out`` plus the layer-0
     ``embedding``), and per-branch profiler statistics must match within
-    ``allclose(1e-6)`` — batched vs serial GEMM blocking differs in the last
-    bits across CPU builds.
+    allclose(1e-6): bit-exact CPU equality is not portable across torch builds
+    (batched and serial child GEMMs can choose different blocking/kernels).
     """
     device = "cpu"
     parent, candidates = _make_varlen_candidates(device, seed=4101)
@@ -721,11 +721,10 @@ def test_ut1407_layer_front_door_contract() -> None:
     ``branch_id`` and ``branch_ids`` raises ``ValueError`` at the layer and at
     the ``ManualFoldedForward`` entry; a parent cache entry with batch 2
     violates the expand contract and raises ``RuntimeError``. Two parity
-    branches must match serial semantics within ``allclose(1e-6)`` — batched
-    vs serial GEMM blocking differs in the last bits across CPU builds:
-    ``branch_ids`` without a parent (per-branch full recompute) and
-    ``branch_ids`` with a parent id whose cache is empty (the generation-loop
-    root shape, cache-miss full recompute).
+    branches must match serial semantics within allclose(1e-6): ``branch_ids``
+    without a parent (per-branch full recompute) and ``branch_ids`` with a
+    parent id whose cache is empty (the generation-loop root shape, cache-miss
+    full recompute).
     """
     torch.manual_seed(4107)
     x2 = torch.randn(2, _T_LAYER, _HIDDEN)
@@ -767,13 +766,13 @@ def test_ut1407_layer_front_door_contract() -> None:
     out_b = layer_b(x2, branch_id=None, branch_ids=["1407-na", "1407-nb"])
     out_s0 = layer_s(x2[0:1], branch_id="1407-sa")
     out_s1 = layer_s(x2[1:2], branch_id="1407-sb")
-    assert torch.allclose(out_b[0:1], out_s0, atol=1e-6)
-    assert torch.allclose(out_b[1:2], out_s1, atol=1e-6)
+    assert torch.allclose(out_b[0:1], out_s0, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_b[1:2], out_s1, rtol=1e-6, atol=1e-6)
     for bid, sid in (("1407-na", "1407-sa"), ("1407-nb", "1407-sb")):
         entry_b = cache_b.fetch(branch_id=bid, layer_idx=0)
         entry_s = cache_s.fetch(branch_id=sid, layer_idx=0)
-        assert torch.allclose(entry_b["ffn_out"], entry_s["ffn_out"], atol=1e-6)
-        assert torch.allclose(entry_b["embedding"], entry_s["embedding"], atol=1e-6)
+        assert torch.allclose(entry_b["ffn_out"], entry_s["ffn_out"], rtol=1e-6, atol=1e-6)
+        assert torch.equal(entry_b["embedding"], entry_s["embedding"])
 
     layer_m_b, cache_m_b = _build_layer_setup()
     layer_m_s, cache_m_s = _build_layer_setup()
@@ -785,13 +784,13 @@ def test_ut1407_layer_front_door_contract() -> None:
     )
     out_m_s0 = layer_m_s(x2[0:1], branch_id="1407-msa", parent_branch_id="1407-ghost")
     out_m_s1 = layer_m_s(x2[1:2], branch_id="1407-msb", parent_branch_id="1407-ghost")
-    assert torch.allclose(out_m_b[0:1], out_m_s0, atol=1e-6)
-    assert torch.allclose(out_m_b[1:2], out_m_s1, atol=1e-6)
+    assert torch.allclose(out_m_b[0:1], out_m_s0, rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_m_b[1:2], out_m_s1, rtol=1e-6, atol=1e-6)
     for bid, sid in (("1407-ma", "1407-msa"), ("1407-mb", "1407-msb")):
         entry_b = cache_m_b.fetch(branch_id=bid, layer_idx=0)
         entry_s = cache_m_s.fetch(branch_id=sid, layer_idx=0)
-        assert torch.allclose(entry_b["ffn_out"], entry_s["ffn_out"], atol=1e-6)
-        assert torch.allclose(entry_b["embedding"], entry_s["embedding"], atol=1e-6)
+        assert torch.allclose(entry_b["ffn_out"], entry_s["ffn_out"], rtol=1e-6, atol=1e-6)
+        assert torch.equal(entry_b["embedding"], entry_s["embedding"])
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
@@ -855,12 +854,10 @@ def test_ut1409_scheduler_disabled_layers_batched_parity() -> None:
     batched path (layer 2 — the final layer — is disabled by the scheduler's
     own rule). Layers that ``should_fold`` rejects must take the whole-batch
     ``_recompute_all`` + per-branch store branch, while the folding layer
-    reuses the dynamic-tau logic. Parity is ``allclose(1e-6)`` against a
-    serial run carrying the same scheduler (batched vs serial GEMM blocking
-    differs in the last bits across CPU builds); the per-branch profiles
-    record only the folding layer (index 0), and the disabled layer's cached
-    rows differ across branches (per-child recompute, not a shared parent
-    view).
+    reuses the dynamic-tau logic. Parity is allclose(1e-6) against a serial run
+    carrying the same scheduler; the per-branch profiles record only the
+    folding layer (index 0), and the disabled layer's cached rows differ
+    across branches (per-child recompute, not a shared parent view).
     """
     device = "cpu"
     sched = FoldingScheduler(
@@ -895,17 +892,21 @@ def test_ut1410_all_stable_fast_path_parity() -> None:
     branch **without any recompute** (pinned by a per-layer ``_recompute_all``
     spy — a mutation degrading the fast path to recompute stays value-identical
     for a true-prefix child, so only the call count makes "不重算" observable).
-    Parity is ``allclose(1e-6)`` against the serial fast path (batched vs
-    serial GEMM blocking differs in the last bits across CPU builds); every
-    per-branch profile reports ``stable_ratio == 1.0`` and every cached branch
-    FFN equals the parent's stored value.
+    Parity is allclose(1e-6) against the serial fast path; every per-branch profile
+    reports ``stable_ratio == 1.0`` and every cached branch FFN equals the
+    parent's stored value.
     """
     device = "cpu"
     parent, candidates = _make_all_stable_candidates(device, seed=4110)
-    cache_b, _cache_s, profiles_b, _profiles_s, _gate_b, recompute_counts = (
-        _run_batched_vs_serial_parity(
-            device, "1410", parent, candidates, atol=1e-6, after_parent=_spy_recompute_all
-        )
+    (
+        cache_b,
+        _cache_s,
+        profiles_b,
+        _profiles_s,
+        _gate_b,
+        recompute_counts,
+    ) = _run_batched_vs_serial_parity(
+        device, "1410", parent, candidates, atol=1e-6, after_parent=_spy_recompute_all
     )
 
     assert recompute_counts == [0] * _NUM_LAYERS
@@ -930,19 +931,22 @@ def test_ut1411_truncated_all_stable_parity() -> None:
     children: the batched gate activation and the cached parent FFN are both
     truncated before the all-stable fast path expands and stores them — the
     ``_recompute_all`` spy pins that the truncation fallback (shape-mismatch
-    recompute) never fires. Parity is ``allclose(1e-6)`` against the serial
-    truncated-prefix reuse (batched vs serial GEMM blocking differs in the
-    last bits across CPU builds); every profile reports
-    ``stable_ratio == 1.0``, and each cached branch FFN equals the parent's
-    truncated FFN.
+    recompute) never fires. Parity is allclose(1e-6) against the serial
+    truncated-prefix reuse, every profile reports ``stable_ratio == 1.0``,
+    and each cached branch FFN equals the parent's truncated FFN.
     """
     device = "cpu"
     child_len = 6
     parent, candidates = _make_truncated_candidates(device, child_len=child_len, seed=4111)
-    cache_b, _cache_s, profiles_b, _profiles_s, _gate_b, recompute_counts = (
-        _run_batched_vs_serial_parity(
-            device, "1411", parent, candidates, atol=1e-6, after_parent=_spy_recompute_all
-        )
+    (
+        cache_b,
+        _cache_s,
+        profiles_b,
+        _profiles_s,
+        _gate_b,
+        recompute_counts,
+    ) = _run_batched_vs_serial_parity(
+        device, "1411", parent, candidates, atol=1e-6, after_parent=_spy_recompute_all
     )
 
     assert recompute_counts == [0] * _NUM_LAYERS
@@ -965,11 +969,9 @@ def test_ut1412_truncated_mixed_merge_parity() -> None:
     Four 6-token children of an 8-token parent replace the last two tokens
     each, so every layer takes the mixed slow path and the batched merge must
     truncate the longer cached parent FFN to the child grid before the
-    expand-and-merge. Parity is ``allclose(1e-6)`` against the serial run
-    (batched vs serial GEMM blocking differs in the last bits across CPU
-    builds) and the per-branch profiles report a strictly mixed ratio
-    (neither 0.0 nor 1.0), proving the three-way split resolved to the slow
-    path.
+    expand-and-merge. Parity is allclose(1e-6) against the serial run and the
+    per-branch profiles report a strictly mixed ratio (neither 0.0 nor 1.0),
+    proving the three-way split resolved to the slow path.
     """
     device = "cpu"
     parent, candidates = _make_truncated_candidates(

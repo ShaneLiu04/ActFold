@@ -1,10 +1,14 @@
 # Development and quality-assurance dependencies.
 -r requirements.txt
 
-pytest>=7.3.0
+# Exact pins for the formatting/lint tools: the repository's formatting
+# contract is black 23.12.1 at line-length 100 + isort 5.x. Newer majors
+# (black >= 25's 2025 style, isort >= 6) reformat/reorder existing code and
+# would turn the CI quality gate red on an untouched tree.
+pytest>=7.3.0,<10
 pytest-cov>=4.1.0
 pytest-xdist>=3.3.0
-black>=23.0
-isort>=5.12.0
-mypy>=1.3.0
-pyflakes>=3.0.0
+black==23.12.1
+isort==5.13.2
+mypy==2.4.0
+pyflakes==4.0.0

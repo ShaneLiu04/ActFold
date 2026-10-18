@@ -147,6 +147,7 @@ class DiffusionSampler(ABC):
         position_ids: torch.Tensor | None = None,
         position_embeddings: Any | None = None,
         branch_ids: Any | None = None,
+        parent_branch_ids: Any | None = None,
         forced_divergent: torch.Tensor | None = None,
     ) -> torch.Tensor:
         """Helper to run ``model.forward`` with optional folding context.
@@ -167,7 +168,12 @@ class DiffusionSampler(ABC):
         (the Dream left-padded fold context threads a
         ``compute_position_ids`` payload; a ``None`` adds no kwarg so
         existing folded callers stay byte-for-byte unchanged), while the
-        raw-model branch keeps consuming it directly.
+        raw-model branch keeps consuming it directly. AR025:
+        ``parent_branch_ids`` (per-row batched parents, the W2 joint C4
+        form) follows the same attach-only-when-non-``None`` rule on the
+        folded branch — the MFF mutex face rejects a non-``None`` singular
+        alongside it, so joint callers pass ``parent_branch_id=None`` and
+        the plural list; the raw-model branch never sees it.
 
         Raises:
             ValueError: If ``forced_divergent`` is supplied and is not a
@@ -196,6 +202,8 @@ class DiffusionSampler(ABC):
                 fold_kwargs["position_embeddings"] = position_embeddings
             if branch_ids is not None:
                 fold_kwargs["branch_ids"] = branch_ids
+            if parent_branch_ids is not None:
+                fold_kwargs["parent_branch_ids"] = parent_branch_ids
             if forced_divergent is not None:
                 fold_kwargs["forced_divergent"] = forced_divergent
             out: torch.Tensor = folded_model(

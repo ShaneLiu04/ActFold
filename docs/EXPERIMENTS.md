@@ -459,6 +459,31 @@ honest ``blocked`` artifact with the probe cross-reference and zero
 fabricated numbers. Timing follows the pre-committed single-run discipline
 (#39: host `perf_counter` + `cuda.synchronize`, reps=30, no rerun fishing).
 
+### Multi-parent batch folding (synthetic face) — `scripts/ar025_multi_parent_bench.py`
+
+The committed synthetic face of AR025 (multi-parent batch folding): 16 shape
+points (chains × candidates-per-chain × seq_len) comparing the merged
+multi-parent forward `[sum(N), T]` (A, fold switch on) against per-chain
+forwards `[N, T]` (B, switch off), plus a report-only serial reference (C).
+
+```bash
+python -m scripts.ar025_multi_parent_bench   # CPU, minutes; --quick smoke
+```
+
+Artifact: ``results/optimization/ar025_multi_parent_bench.json`` (frozen S1/S2/S3
+verdict formulas in meta; `--quick` writes a separate ``_quick`` artifact).
+Frozen gates: **S1** parity (nonsplit bitwise `torch.equal`, split
+`allclose(1e-6)`; any FAIL blocks ALL verdicts), **S2** strict
+`write_op_count` reduction (ledger 4 vs 40–160), **S3** merged/serial
+engagement ratio (report-only, 0.9–0.975). Formal run: overall **supported**
+(S1/S2 supported, empty blocked list). DD8 erratum: the meta records
+`cache_budget_tokens_per_layer=65536` — at the historical default 8192, a
+`(parents+ΣN)·T` overflow evicts in-flight parents via the token-row LRU (a
+capacity confound, not a mechanism defect); the first-run blocked evidence is
+preserved verbatim in ``ar025_multi_parent_bench_eviction_blocked.json``.
+`--mode real` is the pending AR025 T006 delivery (depends on AR023 T006) and
+not yet available.
+
 ---
 
 ## 8. Programmatic Real Model Benchmark

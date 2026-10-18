@@ -1098,8 +1098,7 @@ def test_it_611_long_parent_true_prefix_end_to_end() -> None:
 
     An 8-token parent pass populates the cache; a 6-token child that is a
     true prefix of the parent folds with full reuse: the output matches the
-    eager full recompute within floating-point tolerance (the T=8 parent and
-    T=6 eager GEMMs can choose different kernels), every folded layer records
+    eager full recompute bit-for-bit, every folded layer records
     ``stable_ratio == 1.0`` in the global profiler, and the child branch is
     published into the cache at the child length.
     """
@@ -1118,7 +1117,7 @@ def test_it_611_long_parent_true_prefix_end_to_end() -> None:
     with torch.no_grad():
         folded_out = mff(child_tokens, branch_id="child", parent_branch_id="parent")
 
-    assert torch.allclose(folded_out, eager_out, atol=1e-6)
+    assert torch.equal(folded_out, eager_out)
     profile = GLOBAL_STABILITY_PROFILER.get_profile("child")
     assert profile is not None
     assert len(profile.layer_stats) == _LAYERS

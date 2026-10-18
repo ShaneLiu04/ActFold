@@ -811,6 +811,53 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 
 ---
 
+## 第三十一部分 AR024 提交粒度投机窗口：子块分解 + 渐进回填 + EOS 感知延续（P1-7 第十档实现，实机正式面待跑）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | AR023 跨族基准暴露的 llada 质量差距（整块一次性提交 vs 逐轮渐进去噪）的**提交粒度机理缓解**：把 AR023 的投机单元从整块拆成 `s` 大小的窗口，每窗一次 draft 串行前向 + 一次 `[N,T]` 批量验证；另加两条质量机制（渐进回填 / EOS 感知延续行）。`s == block_size` 退化为 AR023 整块单元（逐位同一，UT-2402 锚定） | ✅ 实现完成 |
+| 机理定案 | **窗口迭代**：`speculative_sub_block_size` 默认归一到 8，显式值在投机路径校验块几何；冻结种子公式携带窗口索引（`unit_idx=block_idx`、`sub_idx=w_idx`），宿主侧公式回放逐位钉死（UT-2401）——任何"每窗复用 sub_idx=0 / 槽位互换 / 逐块重播种"的实现变异都会被抓。**渐进回填**：`progressive_refill` + `refill_top_k`（默认 `s//2`）——Core 部分 top-k 提交后，在已提交上下文上多一次 batch-1 串行前向，用确定性 argmax 填满窗口剩余掩码位（每窗一次前向上界；要求 N>0）。**EOS 感知延续**：`candidate_eos_aware`（默认 True）——候选第 N-1 行取逐位置首个非 EOS 的 draft-pool 条目（纯设备索引零回读；全 EOS pool 退化为贪心值）；`False` 精确恢复 AR023 语义（A/B 锚，UT-2402 位级对拍） | ✅ 实现完成 |
+| 生产改动 | `llada_sampler.py`（config 字段 + 窗口循环 + 校验）、`speculative_core.py`（窗口索引进入冻结种子公式）、`configs/per_model/llada_8b.yaml`（YAML 面）；基准脚本 `scripts/ar024_granularity_bench.py`（GPU A/B） | ✅ 实现完成 |
+| 新测试 | `tests/test_llada_granularity.py` 23 函数：窗口计数（每窗一对 draft/批量）、种子窗口索引回放、A/B 锚位级同一、EOS 感知延续公式、回填语义；UT-2401 辅助函数设备对齐（host 生成 + 区域设备 gather——CUDA fixture 下修正） | ✅ 全绿 |
+| 质量门 | 全量 1098 passed / 4 skipped / 0 failed（维护轮树）；black/isort/pyflakes/mypy(strict,68) 全清 | ✅ 完成 |
+| 实机面 | T005/T006 待 GPU 窗口：真实 LLaDA-8B 上 A/B 锚（s==block 逐位）+ 窗口/回填/EOS 三面正式判定；跑法与资源见 `docs/RERUN_CHECKLIST.md` §7 | ⏳ 待实机 |
+
+**语义要点**：(1) 窗口粒度是**采样语义**改变而非仅速度旋钮——每窗提交更少 token、更多轮循环，质量/速度取舍由正式面判定，不预设；(2) EOS 感知行与贪心行（AR022）同构：只影响候选构造、不特判选择/提交/链延续；(3) `s` 默认值归一化保证既有配置零扰动（未显式提供时窗口几何由运行时钳制）。
+
+---
+
+## 第三十二部分 AR026 真实 checkpoint 端到端图路径：捕获根因保真 + 探针生产面 + 四模式图基准（P1-7 第十一档，T006 首验 PASS）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | AR023 探针的图面失败签名（llada `captures_underway.empty() INTERNAL ASSERT`；dream `[64 vs 4]` dim-2 广播）来自**裸前向 ad-hoc 捕获代理**，从未在生产 `FoldedGraphRunner` 路径上演练。本 AR 做三件事：捕获失败根因保真（不再让二次失败掩蔽 primary）、把探针图面生产化、以四模式基准在真实 checkpoint 上给出图路径的质量/速度判定 | ✅ T001–T005 + T006 首验 |
+| 机理定案 | **safe_capture + CaptureDiagnostics**：捕获失败时沿 `__context__` 链取最深异常为 primary、保留 crossing 错误为 secondary、best-effort 复位与 VRAM 快照，然后**重抛原异常**（调用点 `except` 语义逐字节不变）；三捕获点（serial/batched/自适应重捕获）统一路由并带 stage 标签；`graph_pool_stats` 暴露 `capture_diagnostics` / overflow 探针键。**探针生产化**：graph 面 = AR023 锚 MFF（split_layers=False、cosine gate、图旋钮）+ 家族 sampler mini 投机窗口（`ok = captures>0 且零失败诊断`）；原裸捕获降级为 `graph_raw` 诊断面并纳入子进程隔离元组；`graph_enabled` 只依据生产面。**四模式图基准**：baseline / folded-batched（AR023 eager 锚）/ graph-fixed / graph-adaptive，模式间仅图旋钮差异（单旋钮纪律）；冻结 `h1_graph_parity_verdict`（机制置换不变性 + **参与度门**：零捕获 = inconclusive 永不冒充奇偶通过；三面：vs 锚 posthoc ≤1e-6、decode-length 相等、block-grid 全中=1.0；优先级 refuted>inconclusive>supported）；h2/h4/复现/blocked 语义恒等复用（h2 角色映射 aligned=graph-adaptive；H4 canary 升级为真实面：timed 窗 degradation fallback 增量==0）；VRAM 余量面 + 几何继承豁免注记（16GB 为绑定约束，EVR≥4 形状面显式豁免） | ✅ 完成 |
+| 生产改动 | `cuda_graph.py`（safe_capture/CaptureDiagnostics + 进程级探针）、`architecture_utils.py`（三捕获点路由 + 探针键）、`scripts/ar023_family_probe.py`（graph 生产化 + graph_raw）、`scripts/ar026_real_graph_bench.py`（新） | ✅ 完成 |
+| 新测试 | UT-2601/2602 捕获安全 10 函数（CPU mock，含 OOM/复位失败变体、3 链 deepest-walk 变异加固）；UT-2603/2604 元组解包（静态体 CPU 位级对拍 + CUDA 门生产重放）；UT-2605/2606 基准合同 14 函数（奇偶判定规格钉经 3 变异全杀 + 1 幸存者加固为近全中 999/1000 fixture）；AGENTS #45 caveat 修正 | ✅ 全绿 |
+| 实机首验（T006 Step 1，2026-10-18，AR019 venv，真实 checkpoint） | **两族生产捕获均 PASS**：llada `graph_captures=2`、零失败诊断、零降级回退；dream `graph_captures=2`、捕获成本 513.1MB、零诊断。AR023 裸捕获的两类失败签名**未在生产路径复现**——生产 MFF + 家族 sampler 窗口路径在真实 8B/0.7B checkpoint 上可捕获。VRAM：16GB 卡载 8B bf16 后余量 0MB（headroom 门保守保持 graph_enabled=False；捕获可用性与余量门是两个独立面）。证据：`results/optimization/ar026_probe_graph_faces.json` | ✅ 首验 PASS |
+| 四模式基准 | llada quick 冒烟与 T007 正式面待安静 GPU 窗口（16GB 卡三 MFF + 图池并存 VRAM 风险；dream quick 曾因 WDDM 桌面 + 外部负载占满 GPU（99%/15.8GB/645MHz）终止留痕）。协议与决策树见 `specs/changes/AR026-real-graph-e2e/tasks.md` Runbook | ⏳ 待实机 |
+| 质量门 | 全量 1098 passed / 4 skipped / 0 failed；black/isort/pyflakes/mypy(strict,68) 全清 | ✅ 完成 |
+
+**语义要点**：(1) **失败面归因诚实**——AR023 的图面结论是裸代理的签名，不能推出"生产路径不可用"；AR026 首验把"生产面可捕获"钉在实机证据上，同时保留 `graph_raw` 作为诊断对照；(2) **参与度门是诚实性核心**——图未捕获时 eager 回退会让质量面假绿，冻结判定因此把零捕获强制为 inconclusive；(3) **AR023 h1 阈值语义不可迁移**——0.5-gap-shrink 前提是质量机制，图重放是机制置换，AR026 定义奇偶判定并保留 AR023 h1 仅作跨工件对账面；(4) **WDDM 测量条件性**（AGENTS #46）——小内核图在 WDDM 下不消除提交延迟（AR002 同代码二分确证 ~4.5x 反转），图路径正式时延结论应在 Linux/TCC 取得。
+
+---
+
+## 第三十三部分 AR025 多 parent 批量折叠 + 双链 lockstep 并行投机：跨链候选共享一次前向（P1-7 第十二档，合成面 16/16 supported，真实面接线交付）
+
+| 项 | 内容 | 状态 |
+|---|---|---|
+| 主题 | AR015 批量契约限定**同父**：双链投机只能逐链各发一次 `[N,T]` 批量前向——写账本随链数线性放大（合成面 40–160 ops vs 合并 4）、跨链候选从不共享一次前向、逐链交错路径的缓存 LRU 行为还不对称（DD8 erratum 实证）。本 AR 分机制/采样/基准三面拆除该限制 | ✅ T001–T007 |
+| 机理定案 | **机制面**：`ManualFoldedForward.forward` 尾参 `parent_branch_ids`——`[sum(N_c), T]` 每行 gather 自己的父激活，行级降级（父缺失/形状失配整行重算，绝不炸批），逐行 gate/merge #41 语义逐字相同；与单数互斥（双传 `ValueError`）、`None` 不附加 kwarg（既有调用逐字节不变）；发布走 #42 `put_batch` 冲刷语义（能力每次发布重探）。**采样面**：`sample_joint` W2 lockstep——单实例双链（per-chain 画布/折叠链状态/链限定 cache tag，双实例禁令入口 `ValueError`=branch id 碰撞），共享投机 ctx，双窗循环 per-chain draft+build → joint C4 单次 `[2N,T]` 前向（`branch_ids=链序×候选序`、`parent_branch_ids=[p1]*N+[p2]*N`、`forced_divergent`）→ per-chain score/commit → refill 换入换出；`_speculative_commit` 按 forward 接缝拆分 `_speculative_build`/`_speculative_score_commit`（组合入口逐字节同，solo 零扰动由 96 冻结面哨兵钉死）。**等价构造前提**：冻结种子公式无链分量——joint 与 solo 画布逐位相同，A/B 差异构造性归零到「一次前向 vs 两次前向」本身 | ✅ 完成 |
+| 生产改动 | `diffusion_sampler.py`（`_forward` 尾参 `parent_branch_ids`，attach-only-when-non-None）、`speculative_core.py`（两段拆分 + AR025 节 docstring）、`llada_sampler.py`/`dream_sampler.py`（`sample_joint` + `_LLaDAJointWindow`/`_DreamJointWindow` + `_refill_phase_two(branch_tag=)`）、`scripts/ar025_multi_parent_bench.py`（`--mode real` 接线 + `--real-dtype`/`--real-num-tokens` 冒烟逃生门） | ✅ 完成 |
+| 新测试 | `tests/test_ar025_sample_joint.py` 13 例（sample_joint vs 逐链逐位相等、写账本严格小、joint 守卫面：空列表/[T,T] 措辞/prompt 不等/cfg/温度/stochastic、UT-2436 spy 合同：drafts==3/batched==2/rows 2N→N/互斥/链 id 不相交、UT-2440 Dream joint call 携 position_ids）+ 冻结面哨兵 96 例 | ✅ 全绿 |
+| 合成面（预承诺单次 + erratum 重跑） | **16/16 全过**（8 形状点 chains∈{2,4}×N∈{4,8}×T∈{256,1024}，双构造）：S1 supported（nonsplit `torch.equal` / split `allclose(1e-6)`）；S2 supported（A=4 严格 < B=40–160，每点每构造）；S3 0.9–0.975 report-only。**DD8 erratum**：首跑 8192 行/层预算 5 点 FAIL——A 侧 burst `put_batch` LRU 逐出在飞父条目（先于子条目写入故最旧）→ L1+ 取父 miss 整批重算（值正确、折叠丢失），FAIL ⟺ (chains+chains·N)·T>8192 完全吻合；预算按最坏人口取 65536、冻结判定式零改动重跑全过；blocked 首跑工件独立保全。证据：`results/optimization/ar025_multi_parent_bench.json` | ✅ supported |
+| 真实面（T006 接线） | AR023 模板（probe 结论门 degraded→blocked、复现双跑 strict 失配全 blocked、#39 round-robin 计时、warmup 弃）+ DD8 冻结判定式（H1 逐位硬门 + `_h1_attribution_replay` logits allclose 归因、H2 严格 p50(B)/p50(A)>1.0、交付线 ≥10% 不过→FR7 冻结降级 blocked 注记、H4 账本严格小、canary graph-off null note）；A=一次 `sample_joint` 双链总时长 vs B=两次 `sample()` 串行（同 prompt 对同 seed，B 侧开关钉死 off）；C2 prompt 对截断公共长度；缓存预算 4096 行/层（峰值 1280 行 3.2× 余量，DD8 erratum 纪律）。**本机 16GB WDDM 冒烟 4 次尝试均环境限制止损**（bf16 15.8GB+缓存触顶硬崩无 traceback；int8 逃生门 bitsandbytes 量化在驱动坏态停滞，fresh 重启复现）；管线验证到的证据：模型加载进入+C2 截断生效+四 lint 门过。正式 reps=30 按 RERUN 步骤 16 在高速算力机执行后回填 | ⏳ 待实机（接线交付） |
+| 质量门 | 全量 1106 passed / 7 failed（全 ⊆ 既有环境集 triton×5+lm-eval×2）/ 5 skipped；sampler 冻结面哨兵 96 passed；actfold 四 lint 门 exit 0；demo 三锚点 85.5%/2.35e-03/93.75% 不动 | ✅ 完成 |
+
+**语义要点**：(1) **等价构造是设计核心**——种子公式无链分量使 A/B 差异构造性归零，「合并批量更快」的任何测量差异只能来自前向合并本身，与选择准则/随机性无关；(2) **容量混淆因子的教训**（DD8 erratum）——合批写路径的 LRU 驱逐语义与逐链交错路径不对称，比较类基准的缓存预算必须按**网格最坏人口**取值而非"经验够用"，否则 FAIL 的是基准不是机制；(3) **冒烟逃生门与正式纪律分离**——`--real-dtype`/`--real-num-tokens` 只为低配主机冒烟，正式跑一条 dtype 纪律贯穿到底（工件 meta 的 `dtype_choice_requested`/`num_tokens_override` 诚实记录）；(4) **诚实止损**——本机 4 次冒烟尝试（~2.5h）全部环境限制（VRAM 触顶/驱动坏态），不伪造管线通过证据，正式数字待实机。
+
+---
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

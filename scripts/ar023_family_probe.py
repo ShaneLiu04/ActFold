@@ -77,6 +77,20 @@ _SMOKE_NUM_STEPS = 16
 _GRAPH_BATCH_ROWS = 4
 _GRAPH_SEQ_LEN = 64
 
+# AR026 production-graph-face knobs: the AR023 bench anchor construction
+# (``split_layers=False``, cosine gate tau=0.95 — the ``_make_bench_mff``
+# shape) plus the graph knobs the bench's graph modes set (fixed capacity
+# 0.5, AR021 shape-keyed pool ON so a second ``(T, prompt_len)`` key never
+# hits the pool=0 warn-once degrade). The mini speculative window is two
+# candidates at probe scale (16 tokens).
+_PROBE_GRAPH_GATE_TAU = 0.95
+_PROBE_GRAPH_CANDIDATES = 2
+_PROBE_GRAPH_TOP_K = 10
+_PROBE_GRAPH_CAPACITY_RATIO = 0.5
+_PROBE_GRAPH_POOL_SIZE = 4
+_PROBE_GRAPH_CACHE_BUDGET = 64
+_PROBE_GRAPH_SEED = 2026
+
 
 # ---------------------------------------------------------------------------
 # Pure-logic surface (CI-tested, no GPU / network / weights)
@@ -172,7 +186,14 @@ def run_faces_with_isolation(
 # LLaDA prompt face and every Dream GPU face with the identical error), so
 # these faces must run in fresh subprocesses — exception isolation alone
 # cannot contain CUDA-state corruption.
-CUDA_FACE_NAMES: tuple[str, ...] = ("bf16", "int8", "smoke", "graph", "prompt")
+CUDA_FACE_NAMES: tuple[str, ...] = (
+    "bf16",
+    "int8",
+    "smoke",
+    "graph",
+    "graph_raw",
+    "prompt",
+)
 
 # Worker protocol: the single-face worker prints its result as this
 # sentinel-prefixed line so stray library prints on stdout cannot corrupt it.
@@ -623,14 +644,123 @@ def make_smoke_face(ctx: _FamilyContext) -> Callable[[], dict[str, Any]]:
     return run
 
 
+def _drive_production_graph_capture(ctx: _FamilyContext) -> dict[str, Any]:
+    """Production graph-face driver (AR026 T004, design.md §4.2.2 point 4).
+
+    Builds the AR023-anchor MFF over the loaded checkpoint with the graph
+    knobs on (fixed capacity + AR021 shape-keyed pool) and drives ONE mini
+    speculative window through the family sampler, so the #37 preconditions
+    (batch-1 parent cache, same-shape ``[N, T]`` ``branch_ids`` call,
+    mask/pe/position_ids object pinning) thread natively — the face observes
+    the PRODUCTION capture path, never a raw-model proxy. ``graph_enabled``
+    conclusions read only this face; the pre-AR026 raw capture survives as
+    the ``graph_raw`` diagnostic. The CUDA check happens FIRST, before any
+    model load.
+    """
+    import torch
+
+    if not torch.cuda.is_available():
+        return {
+            "ok": False,
+            "capture_delta_mb": None,
+            "headroom_mb": None,
+            "diagnostics": [],
+            "error": "CUDA unavailable",
+        }
+    from actfold.core import ActivationCache, SimilarityGate
+    from actfold.core.cuda_graph import capture_diagnostics_snapshot
+    from actfold.models.architecture_utils import ManualFoldedForward
+    from actfold.models.dream_sampler import DreamSampler, DreamSamplerConfig
+    from actfold.models.llada_sampler import LLaDASampler, LLaDASamplerConfig
+
+    model, dtype = _load_probe_model(ctx)
+    try:
+        free_before, _total = torch.cuda.mem_get_info()
+        cache = ActivationCache(max_entries_per_layer=_PROBE_GRAPH_CACHE_BUDGET, device="cuda")
+        gate = SimilarityGate(tau=_PROBE_GRAPH_GATE_TAU, metric="cosine")
+        mff = ManualFoldedForward(
+            model.model,
+            cache=cache,
+            gate=gate,
+            scheduler=None,
+            split_layers=False,
+            use_cuda_graph=True,
+            graph_capacity_ratio=_PROBE_GRAPH_CAPACITY_RATIO,
+            graph_runner_pool_size=_PROBE_GRAPH_POOL_SIZE,
+        )
+        sampler: Any
+        if ctx.family == "llada":
+            config: Any = LLaDASamplerConfig(
+                num_steps=_SMOKE_NUM_STEPS,
+                num_tokens=_SMOKE_NUM_TOKENS,
+                seed=_PROBE_GRAPH_SEED,
+                num_block_candidates=_PROBE_GRAPH_CANDIDATES,
+                candidate_top_k=_PROBE_GRAPH_TOP_K,
+            )
+            sampler = LLaDASampler(model, config=config)
+        else:
+            config = DreamSamplerConfig(
+                num_steps=_SMOKE_NUM_TOKENS,
+                num_tokens=_SMOKE_NUM_TOKENS,
+                seed=_PROBE_GRAPH_SEED,
+                speculative_steps=8,
+                num_block_candidates=_PROBE_GRAPH_CANDIDATES,
+                candidate_top_k=_PROBE_GRAPH_TOP_K,
+            )
+            sampler = DreamSampler(model, config=config)
+        prompt_ids = model.tokenizer(PROBE_PROMPTS[0], return_tensors="pt").input_ids.cuda()
+        sampler.sample(prompt_ids, folded_model=mff)
+
+        stats = mff.graph_pool_stats
+        diagnostics = capture_diagnostics_snapshot()
+        free_after, _total = torch.cuda.mem_get_info()
+        capture_delta_mb = (free_before - free_after) / (1024 * 1024)
+        headroom_mb = free_after / (1024 * 1024)
+        captures = 0
+        for section in ("serial", "batched"):
+            for key, entry in stats.get(section, {}).items():
+                if key == "pool_size":
+                    continue
+                captures += int(entry.get("captures", 0))
+        return {
+            "ok": captures > 0 and not diagnostics,
+            "capture_delta_mb": round(capture_delta_mb, 1),
+            "headroom_mb": round(headroom_mb, 1),
+            "dtype": dtype,
+            "graph_captures": captures,
+            "degradation_fallback_count": stats.get("degradation_fallback_count", 0),
+            "structural_eager_count": stats.get("structural_eager_count", 0),
+            "capture_diagnostics_overflow": stats.get("capture_diagnostics_overflow", 0),
+            "diagnostics": diagnostics,
+            "note": (
+                "production path: AR023-anchor MFF (split_layers=False, cosine "
+                "gate) + graph knobs + one family-sampler mini speculative "
+                "window (AR026 T004)"
+            ),
+        }
+    finally:
+        _free_probe_model(model)
+
+
 def make_graph_face(ctx: _FamilyContext) -> Callable[[], dict[str, Any]]:
-    """One CUDA-graph capture of a batched ``[N, T]`` forward at the viable dtype.
+    """Production-path graph face (AR026): routes to the production driver."""
+
+    def run() -> dict[str, Any]:
+        return _drive_production_graph_capture(ctx)
+
+    return run
+
+
+def make_graph_raw_face(ctx: _FamilyContext) -> Callable[[], dict[str, Any]]:
+    """Raw-model ad-hoc capture — DIAGNOSTIC face (the pre-AR026 graph face).
 
     Measures ``capture_delta_mb`` (VRAM consumed by the capture) and
-    ``headroom_mb`` (free VRAM after the capture — the ``graph_enabled``
-    threshold input). A raw-model capture is the honest proxy for the MFF
-    batched-capture VRAM cost (pool cost dominates); capture-unsafe remote
-    code records ``ok: False`` without failing the probe.
+    ``headroom_mb`` (free VRAM after the capture). A raw-model capture
+    isolates REMOTE-CODE capture unsafety from the production machinery (the
+    AR023 probe failure signatures were recorded here); it never gates the
+    ``graph_enabled`` conclusion (AR026 — conclusions read only the
+    production ``graph`` face). Capture-unsafe remote code records
+    ``ok: False`` without failing the probe.
     """
 
     def run() -> dict[str, Any]:
@@ -756,6 +886,7 @@ def build_family_faces(ctx: _FamilyContext) -> dict[str, Callable[[], dict[str, 
         "int8": make_int8_face(ctx),
         "smoke": make_smoke_face(ctx),
         "graph": make_graph_face(ctx),
+        "graph_raw": make_graph_raw_face(ctx),
         "prompt": make_prompt_face(ctx),
     }
 
