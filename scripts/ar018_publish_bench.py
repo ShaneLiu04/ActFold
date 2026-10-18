@@ -393,7 +393,9 @@ def _run_config(
     h3 = (
         "supported"
         if probe_share is not None and publish_share < probe_share
-        else "refuted" if probe_share is not None else "no_reference"
+        else "refuted"
+        if probe_share is not None
+        else "no_reference"
     )
     h4 = "supported" if (parity and adaptive_close and profiler_ok) else "refuted"
 

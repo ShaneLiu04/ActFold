@@ -231,11 +231,7 @@ def _build_step_fns(
     model: nn.Module,
     num_candidates: int,
     seq_len: int,
-) -> tuple[
-    dict[str, Callable[[], Any]],
-    dict[str, ManualFoldedForward],
-    torch.Tensor,
-]:
+) -> tuple[dict[str, Callable[[], Any]], dict[str, ManualFoldedForward], torch.Tensor,]:
     """Build the four per-step callables (one verification of N candidates)."""
     mffs: dict[str, ManualFoldedForward] = {
         "folded_serial_eager": _make_mff(model, use_cuda_graph=False),

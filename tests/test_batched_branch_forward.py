@@ -117,13 +117,7 @@ def _build_setup(
     split_min_tokens: int = 512,
     seed: int = _SEED,
     scheduler: FoldingScheduler | None = None,
-) -> tuple[
-    nn.Module,
-    FastDLLMAdapter,
-    ManualFoldedForward,
-    ActivationCache,
-    SimilarityGate,
-]:
+) -> tuple[nn.Module, FastDLLMAdapter, ManualFoldedForward, ActivationCache, SimilarityGate,]:
     """Build a fresh causal model plus its manual folded stack on ``device``.
 
     Two setups built with the same ``seed`` share identical weights but carry
