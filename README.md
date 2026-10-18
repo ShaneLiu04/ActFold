@@ -21,7 +21,7 @@
 </div>
 
 <p align="center">
-  <img src="docs/assets/cover-v6.png" alt="ActFold — 面向 Diffusion LLM 投机解码的跨分支激活复用" width="100%">
+  <img src="docs/assets/cover-v7.png" alt="ActFold — 面向 Diffusion LLM 投机解码的跨分支激活复用" width="100%">
 </p>
 
 ---
@@ -84,7 +84,8 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 9 | **position_embeddings 线程化 + 真实 checkpoint 端到端**（AR019） | 前三代墙钟证据全部来自合成 LLaMA-layout 模型；探针实测确证 remote 层必须收 rotary——`ManualFoldedForward` 不透传 `position_embeddings` 则 Fast-dLLM parent prefill 即 `TypeError` | `forward` 末位 `position_embeddings=(cos, sin)` 新参线程化**四构建面**（串行/批量 eager、graph 捕获静态体 by-reference 烘焙、AR017 自适应重捕获），镜像 attention_mask 契约（入口 ValueError 校验 + 重放期 `is` 对象恒一静默回退）；层接口零改动（`**kwargs` 通道）；`None` 不附加 kwarg，既有调用逐字节不变 | Fast-dLLM-v2-1.5B 真实块验证三路径 **2.44–2.62×**（p50，n=30）+ 逐位一致（maxdiff=0.0、argmax 一致率 1.0）+ 完美块二分（stable ratio 精确 = K_PROMPT/T） |
 | 10 | **发布路径 cache put 批量化**（AR020） | AR018 压缩后小几何发布相位仍占自适应全步 45.3–50.9%，剩余主体 = L·N+N 次逐条 `cache.put` 的宿主 launch 开销（WDDM 实测 ~30–40µs/次）；foreach 探针实测 L·N=224 条 bf16 宿主入队 **27.8×** | `BatchedPutCapable` 结构化协议 + 三 cache `put_batch`（**冲刷语义**：写入序恒=条目序，消除对 foreach 组内顺序的依赖）+ `_foreach_copy_` 单点封装（(device,dtype) 分组，旧 torch 逐对降级）+ 发布路径**每次发布能力探测分流**（无能力 cache 逐字节走原循环）+ `mff.cache` property 传播 | 真实 checkpoint 发布窗口 p50 **1.77–1.97×**（−43.4%~−49.2%）；主机调用账本 **116/232/116 → 1**；正确性门全 bit-equal；端到端 adaptive(batch) vs baseline **2.40–2.67×**；H1–H4 全 supported |
 | 11 | **生产生成回路折叠接线**（AR021） | AR015–020 批量验证栈**零生产调用方**（sampler 不传 pe 则真实 remote 必崩、掩码对象不钉则图捕获一次后永不重放、`[N,T]` 批量验证形态在生产回路不存在）；AR019 P5 实证 tau=0.95 gate 会把同块未翻位置误判 stable（parity 92.9% 先例）——链折叠直接上 gate 不精确 | sampler **(T,prompt_len) 键控折叠供给**（块因果∧pad 排除 `[T,T]` 掩码 + rotary pe + forced 三件套对象钉定，跨 sample 存续）+ **强制散度活跃块**（当前块整区不进 gate 判定面、全量重算——parity 由构造保证，P5 构造级绕开）+ **形状键控 runner 池**（opt-in `graph_runner_pool_size`，跨块增长每形状窗捕获/重放，LRU+cuBLAS workspace 回收）+ **批量投机块验证**（opt-in `num_block_candidates`：top-k 起草→单次 `[N,T]` 批量验证→min-prob 选定提交；AR016/017/018/020 批量面首次被生产回路行使） | 真实 generate() 三模式：**H1 supported（真实 checkpoint bit-exact）**；H2 inconclusive（Δ=−107.5ms 未越 2σ=265.3ms，小形状串行折叠开销>收益）；**H3 supported（batched vs serial 2.47× / vs baseline 2.38×，p50 1193.9 vs 2948.3/2840.7ms）**；H4 supported（池计数逐位对账、账本 c=4 界内、canary 真） |
-| 12 | **贪心锚定候选：批量投机质量对齐**（AR022） | AR021 批量投机 2.38× 但**质量面与 baseline 分叉**：块级 exact-match 0.0、post-hoc 置信 0.2897/0.1064 vs baseline 0.3697/0.5703、解码长度 160/77 vs baseline 早停 34/66（非贪心提交不命中 stop token）——速度-质量权衡是 AR021 的如实遗留 | `candidate_include_greedy`（opt-in）：候选**行 0 = 贪心假设**（draft top-k 有序集首位，srs 冻结 argmax 定义；确定性构建、零设备回读、零 generator 消费）；N 总数不变、随机行 j=1..N-1 在冻结种子公式中保持行号；贪心行进入 **min-prob 公平竞争、可落败**（UT-2203 后验陷阱构造级钉死，选定零特判）；`greedy_win_stats` 只读观测面 + `ActFoldConfig` YAML 消费面；四模式基准 MFF_C 与 MFF_B 同构独立实例——速度变量构造性清零 | 四模式 H1-H4 **全 supported**：posthoc 0.369661/0.570341 逐位==baseline（gap=0.0）、长度 34/66 早停**完全恢复**、块级 exact 4/4=1.0 vs batched 0.0；p50 440.9ms——**7.0236× vs baseline / 2.9498× vs batched**；复现自检 strict PASS（batched 逐位==AR021 先验） |
+| 12 | **贪心锚定候选：批量投机质量对齐**（AR022） | AR021 批量投机 2.38× 但**质量面与 baseline 分叉**：块级 exact-match 0.0、post-hoc 置信 0.3697→0.2897 / 0.5703→0.1064、解码长度 160/77 vs baseline 早停 34/66（非贪心提交不命中 stop token）——速度-质量权衡是 AR021 的如实遗留 | `candidate_include_greedy`（opt-in）：候选**行 0 = 贪心假设**（draft top-k 有序集首位，srs 冻结 argmax 定义；确定性构建、零设备回读、零 generator 消费）；N 总数不变、随机行 j=1..N-1 在冻结种子公式中保持行号；贪心行进入 **min-prob 公平竞争、可落败**（UT-2203 后验陷阱构造级钉死，选定零特判）；`greedy_win_stats` 只读观测面 + `ActFoldConfig` YAML 消费面；四模式基准 MFF_C 与 MFF_B 同构独立实例——速度变量构造性清零 | 四模式 H1-H4 **全 supported**：posthoc 0.369661/0.570341 逐位==baseline（gap=0.0）、长度 34/66 早停**完全恢复**、块级 exact 4/4=1.0 vs batched 0.0；p50 440.9ms——**7.0236× vs baseline / 2.9498× vs batched**；复现自检 strict PASS（batched 逐位==AR021 先验） |
+| 13 | **多 parent 批量折叠 + 双链 lockstep 并行投机**（AR025） | AR015 批量契约限定**同父**：双链投机只能逐链各发一次 `[N,T]` 批量前向——写账本随链数线性放大（合成面实测 chains=2/4 时 40–160 ops vs 合并 4 ops），跨链候选永不共享一次前向；逐链交错路径还让缓存 LRU 行为不对称（DD8 erratum 实证） | ①机制面：`ManualFoldedForward.parent_branch_ids` 尾参——per-row 父装配（gather + 行级降级，OQ1）+ 逐行 gate/merge，`[sum(N_c), T]` 单次折叠前向服务多链候选；②采样面：`sample_joint` W2 lockstep（单实例双链、per-chain 画布/折叠链状态/链限定 cache tag，双实例禁令=branch id 碰撞）；`_speculative_commit` 按 forward 接缝拆分 `_speculative_build`/`_speculative_score_commit`，合并闭包重写单数→复数 parent 参数；**种子公式无链分量**（同 unit/sub/j per chain ⇒ A/B 逐位等价构造前提）；③基准面：`--mode real` AR023 模板接线 + DD8 冻结判定式（H1 逐位硬门+logits 归因回放、H2 严格 p50(B)/p50(A)>1.0、交付线 ≥10%、H4 账本严格小） | 合成面 **16/16 全过**（8 形状点×双构造：S1 supported——nonsplit 逐位/split allclose 1e-6；S2 supported——写账本 4 < 40–160 严格；S3 0.9–0.975 report-only）；UT 13 例（逐位相等+账本严格小+守卫面）+ 冻结面哨兵 96 绿；真实面 reps=30 接线交付、按 RERUN 步骤 16 待高速算力机执行回填 |
 
 ### 机理详解（按创新演进顺序）
 
@@ -303,11 +304,106 @@ folded-batched sidecar 同时充当 AR021 复现自检，strict 失配则四 ver
 在本工作负载上不再是对立面。greedy_win_rate 1.0（2/2）是本负载的观测值
 （机制允许落败），不是普适断言。
 
+#### 12. 多 parent 批量折叠与双链 lockstep 并行投机（AR025）：跨链候选共享一次前向
+
+AR015 的批量契约限定**同父**——多条投机链（如双 prompt 并行投机）只能
+逐链各发一次 `[N,T]` 批量前向，写账本与 launch 随链数线性放大，跨链候选
+从不共享一次前向。AR025 分三面拆除该限制：
+
+- **机制面（`parent_branch_ids`）**：`ManualFoldedForward.forward` 新尾参
+  接受 per-row 父 id 序列——`[sum(N_c), T]` 的每一行 gather 自己的父激活，
+  行级降级（父缺失/形状失配的行整行重算，绝不炸批），逐行 gate/merge 与
+  #41 语义逐字相同；与单数 `parent_branch_id` 互斥（双传 `ValueError`），
+  `None` 不附加 kwarg——既有调用逐字节不变。写发布走 #42 `put_batch` 冲刷
+  语义（能力探测每次发布重探，无能力 cache 逐字节走原循环）。
+- **采样面（`sample_joint` W2 lockstep）**：单实例同时驱动双链——per-chain
+  画布/折叠链状态/链限定 cache tag（`llada_spec_j{c}_b{block}` /
+  `dream_spec_j{c}_u{unit}`），双实例禁令（branch id 碰撞）在入口 `ValueError`
+  封死；共享投机 ctx（`(T, prompt_len)` 键），双窗循环：per-chain
+  draft+build → **joint C4 单次 `[2N, T]` 折叠前向**（`branch_ids=链序×
+  候选序`、`parent_branch_ids=[p1]*N+[p2]*N`、`forced_divergent`）→
+  per-chain score/commit → refill 换入换出。`_speculative_commit` 按
+  forward 接缝拆分为 `_speculative_build`（段A：batch-1 守卫、候选构造、
+  冻结种子公式、EOS-aware 行）与 `_speculative_score_commit`（段B：region
+  切片、min-prob、j_star、`_folding_parent` 写、commit），组合入口语义
+  逐字节同——solo 路径零扰动由冻结面哨兵（96 例）钉死。
+- **等价构造前提**：冻结种子公式**无链分量**——同 (unit, sub, j) 在两链上
+  取同一种子 ⇒ joint 与逐链 solo 的候选画布逐位相同，A/B 差异被构造性
+  归零到「一次前向 vs 两次前向」本身。入口守卫（仅 armed 路径）：空列表/
+  batch>1/prompt 长度不等（截断到公共长度由基准层做）/cfg_scale>0/
+  temperature>0/stochastic transfer 全部 `ValueError`。
+
+合成面基准（8 形状点 = chains∈{2,4} × N∈{4,8} × T∈{256,1024}，双构造，
+CPU 逐位纪律）定案：**16/16 全过**——S1 supported（nonsplit
+`torch.equal` 逐位 / split `allclose(1e-6)`，#41 分档容差）；S2 supported
+（写账本 A=4 **严格小于** B=40–160，每点每构造）；S3 账本缩减比
+0.9–0.975 report-only。**DD8 erratum 留档**：首跑 8192 行/层预算下 A 侧
+burst `put_batch` 按 token 行数 LRU 逐出在飞父条目（先于子条目写入故最旧）
+→ 高人口点整批重算（值正确、折叠丢失）——容量混淆因子非机制缺陷，预算
+按网格最坏人口取 65536 后冻结判定式零改动 16/16 全过；真实面几何
+（~2560 行/层）不触发该边界。真实面基准（LLaDA/Dream 双链 A/B，reps=30
+预承诺单次）与判定式（H1 逐位硬门+logits allclose 归因回放、H2 严格
+p50(B)/p50(A)>1.0、交付线 ≥10%、H4 账本严格小、canary graph-off）已随
+T006 接线交付（`--mode real`，AR023 模板），正式数字待高速算力机按
+RERUN 步骤 16 执行回填——16GB WDDM 本机实测 bf16 权重 15.8GB+折叠缓存
+即触顶硬崩、int8 逃生门在驱动坏态下量化停滞，均如实注记于 RERUN。
+
 ---
 
 ## 最新实验结果
 
-### 四模式投机质量对齐基准（AR022）：贪心锚定 7.02× 且质量逐位对齐 baseline（最新头条）
+### 多 parent 批量折叠合成基准（AR025）：跨链候选共享一次前向，16/16 全过（最新头条，机制面交付）
+
+**工作负载**：合成因果 cumsum decoder（L=4/H=64/V=128，prefix-stable
+scan + 可探测 FFN 链），`SimilarityGate` cosine τ=0.95，CPU 逐位纪律
+（#41），seed 2026，确定性单发（无计时——墙钟统计属真实面专有）。
+**三方对照**（每形状点×每构造）：**A** = 合并多 parent 批量
+（`multi_parent_batch` 开，单次 `[sum(N_c), T]` 折叠调用 + per-row
+`parent_branch_ids` + `put_batch` 发布）/ **B** = 逐链单 parent 批量
+（开关关，每链一次 `[N,T]` `branch_ids` 调用——AR025 前的形态）/
+**C** = 串行逐候选（report-only 上下文）。
+
+**网格**：8 形状点（chains∈{2,4} × N∈{4,8} × T∈{256,1024}）× 双构造
+（nonsplit / split FFN）= 16 面；缓存预算 65536 行/层（按网格最坏人口
+(4+32)·1024=36864 取值——DD8 erratum，见下）。
+
+**判定（预承诺，判定式全文冻结于工件 meta；S1/S2 supported、S3
+report-only）**：
+
+| 面 | 判定 | 结果 |
+|----|------|------|
+| S1 奇偶 | A vs B logits：nonsplit `torch.equal` 逐位 / split `allclose(1e-6)` | **supported（16/16）** |
+| S2 写账本 | `ops(A) < ops(B)` **严格**（每点每构造） | **supported**：A=4 vs B=40（2 链）–160（4 链 N=8） |
+| S3 缩减比 | `1 − ops(A)/ops(B)` report-only | **0.9–0.975**（写账本 10–40× 缩减） |
+
+**DD8 erratum（诚实留档）**：首跑 8192 行/层预算下 5 点 S1 FAIL——
+根因不是机制而是**容量混淆因子**：A 侧 L0 burst `put_batch` 按 token
+行数 LRU 逐出在飞父条目（先于子条目写入故最旧）→ L1+ 取父 miss → 整批
+重算（值正确、折叠丢失），与逐链交错路径（每层 fetch 刷新幸存）不对称；
+FAIL ⟺ (chains+chains·N)·T>8192 与 5 点完全吻合。按网格最坏人口取
+65536 后**冻结判定式零改动**重跑 16/16 全过；blocked 首跑工件独立保全
+（`ar025_multi_parent_bench_eviction_blocked.json`）。机制级逐出边界入
+design DD10（真实面几何 ~2560 行/层不触发）。
+
+**真实面（T006 接线已交付，正式数字待实机）**：LLaDA-8B/Dream-7B 双链
+lockstep A/B（A=`sample_joint`×1 双链总时 / B=`sample()`×2 串行，同
+prompt 对同 seed，AR023 测量同构）——DD8 冻结判定式（H1 逐位硬门 +
+logits allclose 归因回放、H2 严格 p50(B)/p50(A)>1.0、交付线 ≥10%、H4
+账本严格小、canary graph-off）与 AR023 模板（probe 结论门、复现双跑、
+#39 round-robin 计时）已冻结入 `scripts/ar025_multi_parent_bench.py
+--mode real`；本机 16GB WDDM 实测 bf16 权重 15.8GB+折叠缓存即触顶硬崩
+（int8 逃生门在驱动坏态下量化停滞）——正式 reps=30 按
+[`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) 第 16 步在高速算力
+机执行后回填，勿以冒烟替代。
+
+工件：`results/optimization/ar025_multi_parent_bench.json`（判定式全文 +
+erratum 注记 + quick 冒烟独立工件
+`ar025_multi_parent_bench_quick.json`）；复现
+`python -m scripts.ar025_multi_parent_bench --mode synth`（CPU，分钟级；
+`--quick` 单点）。UT：`tests/test_ar025_sample_joint.py` 13 例（sample_joint
+vs 逐链逐位相等 + 账本严格小 + joint 守卫面）+ 冻结面哨兵 96 例。
+
+### 四模式投机质量对齐基准（AR022）：贪心锚定 7.02× 且质量逐位对齐 baseline
 
 **工作负载**：Fast-dLLM-v2-1.5B bf16（H=1536/L=28/V=151936，remote code）
 真实 `sample` 生成回路——AR021 协议全承（seed 2026、P=2 prompt padded
@@ -698,6 +794,19 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
 # 四模式投机质量对齐基准（AR022，P1-7 第八档；同 venv/权重）
 <venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
     --model-path <本地权重目录> --reps 30               # --quick 冒烟
+
+# 跨族投机四模式基准（AR023，P1-7 第九档；LLaDA-8B-Base + Dream-v0-Base-7B
+# 真实 checkpoint，~30GB 权重，探针自带 curl 下载清单 + SHA256 校验）
+<venv目录>\Scripts\python -m scripts.ar023_family_probe \
+    --models-root <权重根目录> --hf-home <HF缓存目录>   # 前置探针（必跑）
+<venv目录>\Scripts\python -m scripts.ar023_cross_family_bench \
+    --family llada --models-root <权重根目录> --reps 30  # 全程 ~4-5h（8B 单卡）
+<venv目录>\Scripts\python -m scripts.ar023_cross_family_bench \
+    --family dream --models-root <权重根目录> --reps 30  # 全程 ~6-8h
+
+# 多 parent 批量折叠合成面基准（AR025，合成模型 CPU 即可、分钟级；
+# --mode real 为 AR025 T006 交付，未开放）
+python -m scripts.ar025_multi_parent_bench
 ```
 
 完整报告：[`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md)、
@@ -757,6 +866,26 @@ pip install -e .                       # 可编辑安装
 > AR019 venv（`--system-site-packages` 继承 torch）。
 
 ---
+
+## 综合框架优越性总表（Framework-vs-Baseline Ladder）
+
+> 每一档创新都以**官方家族 baseline**（同一模型 / prompt / seed / 环境）为固定参照，
+> 从对应工件 JSON 回填（禁止手输）；「状态」列区分**已交付**与**待实机**——
+> 待实机档的数字不得当作已交付结论引用。
+
+| # | 创新档 | 交付配置 vs 官方 baseline | 质量面 | p50 加速 | 证据工件 | 状态 |
+|---|---|---|---|---|---|---|
+| 1 | AR018 发布成本压缩（批量稳定度归约 + 快照发布，P1-7 第四档） | 合成验证回路，4 形状点（T=512, N∈{4,8}） | H2/H3/H4 supported；H1 inconclusive（(256,8,4) 欠功效先例，诚实留档） | adaptive vs baseline **2.40/2.67/2.66/2.95×** | `ar018_publish_bench.json` | 已归档 |
+| 2 | AR019 真实 checkpoint 端到端（Fast-dLLM-v2-1.5B） | 真实块验证三路径 | 位级对拍 + CUPTI 注记 | **1.35–1.97×** | `ar019_real_e2e_bench.json` | 已归档 |
+| 3 | AR020 批量 cache put（发布路径写放大消除） | 真实 checkpoint A/B | state-equivalence 面逐项 PASS | **1.77–1.97×** | `ar020_publish_put_bench.json` | 已归档 |
+| 4 | AR021 生产生成回路折叠（folded supply + forced-divergent + 池化） | 真实 `generate()` 底盘 | canary 零降级 + 账本 | batched **2.38×** | `ar021_generation_loop_bench.json` | 已归档 |
+| 5 | AR022 贪心锚定投机候选 | 四模式质量对齐 | **质量差距归零**（posthoc/length/block-exact 全恢复）+ 复现自检 PASS | **7.02×** vs baseline | `ar022_speculative_quality_bench.json` | 已归档 |
+| 6 | AR023 跨族投机（LLaDA-8B-Base / Dream-v0-Base-7B） | 真实 8B/7B 四模式 | **诚实负结果**：llada formal h1 refuted（投机质量差距真实）、h4 supported；quick 面与探针结论工件齐全 | llada formal h2 **1.49×** | `ar023_llada_bench.json`（formal）、`ar023_*_bench_quick.json`、`ar023_family_probe.json` | 正式面部分交付（dream formal 未跑）；归档进行中 |
+| 7 | AR024 提交粒度子块窗口（子块分解 + 渐进回填 + EOS 感知延续） | LLaDA 8B 投机链 | UT 23 例全绿（位级锚定/后验陷阱/EOS 延续） | 待实机 | `specs/changes/AR024-commit-granularity/` | **待实机**（GPU 窗口） |
+| 8 | AR025 多 parent 批量折叠 + 双链 lockstep 并行投机 | 合成面 16 形状点；真实面接线（LLaDA/Dream，判定式冻结） | S1 合并奇偶 16/16 / S2 写账本 4<40–160 严格 / S3 0.9–0.975（DD8 预算 erratum 留档）；UT 13 例 + 哨兵 96 绿 | 待真实面（H1 逐位+归因 / H2 p50 / 交付线 ≥10% / H4 账本） | `ar025_multi_parent_bench.json` | 合成面+真实面接线交付；正式 reps=30 待高速算力机（RERUN 步骤 16，本机 16GB 限制如实注记） |
+| 9 | AR026 真实 checkpoint 端到端图路径（生产捕获 + 四模式图基准） | LLaDA-8B / Dream-7B 生产捕获 | **T006 首验 PASS**：两族生产捕获 `graph_captures=2`、零失败诊断、零降级回退（AR023 裸捕获断言/广播断裂未复现）；四模式奇偶判定冻结 | 待正式面 | `ar026_probe_graph_faces.json` | 首验 PASS；正式面待跑 |
+
+**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
 
 ## 快速上手
 
@@ -905,6 +1034,14 @@ print(sampler.greedy_win_stats)        # {"greedy_wins": ..., "speculative_calls
 # 四模式投机质量对齐基准（AR022；同 venv/权重，峰值 ~5.8GB）
 <venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
     --model-path <本地权重目录> --reps 30               # --quick 冒烟 ≤5min
+
+# 多 parent 批量折叠基准（AR025）——合成面 CPU 分钟级、无需 GPU/权重：
+python -m scripts.ar025_multi_parent_bench --mode synth  # 8 形状点×双构造
+python -m scripts.ar025_multi_parent_bench --mode synth --quick  # 单点冒烟
+# 真实面（LLaDA/Dream 双链 lockstep A/B，reps=30 预承诺单次）——16GB 级
+# 主机不可行（bf16 权重 15.8GB 触顶），按 RERUN 第 16 步在 ≥24GiB 主机执行：
+# python -m scripts.ar025_multi_parent_bench --mode real --family llada \
+#     --models-root <权重根> --probe-artifact results/optimization/ar023_family_probe.json --reps 30
 ```
 
 ### 6. 端到端折叠生成
@@ -1050,13 +1187,18 @@ bash scripts/run_ablation.sh --synthetic
 ## 质量保障
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
-- **mypy**（`--ignore-missing-imports`，67 文件）clean
-- **pytest** 快速套件 **951 passed / 4 skipped / 0 failed**（943 AR021 基线 +
-  AR022 UT-2201~2207 贪心锚定：默认零扰动/贪心行构建/后验陷阱可落败/
-  greedy_win 观测面/构造期校验/YAML 消费面/停止与链延续，CUDA 实测；skip =
-  1 CUPTI + 3 evalplus-unix 平台面；环境注记：开发机 `lm_eval` 缺失致 2 例
-  eval 后端测试失败——stash 基线复跑证实先在、与 AR022 无关，验收以
-  deselect 排除留档）
+- **mypy**（`--ignore-missing-imports`，68 文件）clean
+- **pytest** 快速套件 **1106 passed / 7 failed / 5 skipped**（AR025 轮次更新：
+  +AR025 sample_joint 13 例（UT-2430~2443：逐链逐位相等+写账本严格小+
+  joint 守卫面）+ AR024/AR026 并行轮新增；7 failed 全 ⊆ 既有环境失败集
+  ——triton×5（本机无 CUDA toolkit）+ lm-eval×2（未安装），与代码无关；
+  skip = 1 CUPTI + evalplus-unix 平台面等；BS-007 图重放性能判定在
+  Windows WDDM 小内核主机上按实测数字诚实 skip——同一份 AR002 代码在该类
+  主机上图重放慢于 eager 已经版本二分确证为平台特性，历史工件保持证据
+  效力）
+- 工具链钉版：`requirements-dev.txt`（black==23.12.1 / isort==5.13.2 /
+  pyflakes==4.0.0 / mypy==2.4.0），`requirements.txt` 限 `transformers<5`
+  （remote-code 5.x 不兼容）；换机后按同版本安装即可复现质量门
 - 每个机制的验收面：Red/Green 分离 TDD + **mutation 测试**（删机制必红，
   SHA256 逐字节还原）+ 跨工件墙钟基准（声明与判定分离，2σ 判据，
   inconclusive 诚实照收）+ 严格复现自检（AR022：batched 面对 AR021 工件
@@ -1082,33 +1224,48 @@ python demo.py
 - [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **29 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
-- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令，第 12 步 = AR022）
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR022）
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；§7 = 高算力服务器复现路径）
+- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule 与 #46 真实 checkpoint 运维法规）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR026）
 
 ---
 
 ## 当前限制与路线图
 
-1. **P1-7 端到端证据链八档收官：速度与质量双面闭环**。批量前向（AR015）→
-   批量图捕获（AR016）→ 自适应容量（AR017）→ 发布压缩（AR018）→ 真实
-   checkpoint 复测（AR019）→ 发布 put 批量化（AR020）→ 生产生成回路折叠
-   接线（AR021）→ **贪心锚定质量对齐（AR022）**：真实 checkpoint 端到端
-   **2.40–2.67×**（AR020 四路径）、发布窗口 **1.77–1.97×**、主机调用账本
-   **L·N+N → 1**、合成基准 2.40–2.95×；AR021 把整栈接入生产 `generate()`
-   （folded-serial parity bit-exact + folded-batched 2.38×）；AR022 把批量
-   投机的质量面对齐 baseline——**posthoc 逐位==baseline（gap=0.0）+ 早停
-   恢复（34/66）+ 7.02× vs baseline（H1-H4 全 supported，复现自检 strict
-   PASS）**。保留判定：AR019 (256,4) 首配置 H1 因 WDDM 热身方差欠功效
+1. **P1-7 端到端证据链：AR018–AR022 已归档，AR023–AR026 逐档推进中**。
+   已归档档见[综合框架优越性总表](#综合框架优越性总表framework-vs-baseline-ladder)：
+   批量前向（AR015）→ 批量图捕获（AR016）→ 自适应容量（AR017）→ 发布压缩
+   （AR018）→ 真实 checkpoint 复测（AR019）→ 发布 put 批量化（AR020）→
+   生产生成回路折叠接线（AR021）→ **贪心锚定质量对齐（AR022）**：真实
+   checkpoint 端到端 **2.40–2.67×**（AR020 四路径）、发布窗口
+   **1.77–1.97×**、主机调用账本 **L·N+N → 1**、合成基准 2.40–2.95×；
+   AR021 把整栈接入生产 `generate()`（folded-serial parity bit-exact +
+   folded-batched 2.38×）；AR022 把批量投机的质量面对齐 baseline——
+   **posthoc 逐位==baseline（gap=0.0）+ 早停恢复（34/66）+ 7.02× vs
+   baseline（H1-H4 全 supported，复现自检 strict PASS）**。AR023 跨族投机
+   已交付实现与 quick/探针工件，llada 正式面为**诚实负结果**（h1 refuted：
+   投机质量差距在 T=128 下真实存在；h2 1.49×、h4 supported；dream formal
+    待跑）；AR024（提交粒度窗口）、AR026（真实 checkpoint 图路径，T006
+    首验两族生产捕获均 PASS）的正式数字待实机工件
+    回填；AR025（多 parent 批量折叠+双链 lockstep 并行投机）合成面
+    16/16 supported + 真实面接线与判定式冻结交付（T006），正式 reps=30
+    按 RERUN 步骤 16 待高速算力机执行回填（本机 16GB WDDM 实测 bf16 权重
+    15.8GB+折叠缓存触顶硬崩、int8 逃生门在驱动坏态下量化停滞，均如实
+    留档）。保留判定：AR019 (256,4) 首配置 H1 因 WDDM 热身方差欠功效
    （方向压倒性）、AR021 H2 inconclusive（见第 4 条）——均按预承诺单次
    运行纪律如实记录。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
-   图缓冲不可行——机制对其同样适用，待更大 GPU 按同法扩展；真实模型两阶段
-   实验（TFLOPs 削减与逐层结论）已在[最新实验结果](#最新实验结果)覆盖。
-   AR021 折叠接线与 AR022 贪心锚定目前仅覆盖 Fast-dLLM v2 sampler
-   （LLaDA/Dream remote 代码各异，同类接线为后续独立条目）。
-3. **批量路径要求同父、等长、parent-batch==1**。变长/多父批量仍是串行回退
-   （变长步已在前缀折叠下获益，AR003/AR007）；多祖先激活树是路线图主体
-   （AR016 遗留）。
+   图缓冲为紧约束（AR026 生产捕获首验在此跑通，但四模式正式面建议 ≥24GiB）；
+   真实模型两阶段实验（TFLOPs 削减与逐层结论）已在
+   [最新实验结果](#最新实验结果)覆盖。AR023 已交付 LLaDA/Dream 两族的
+   speculative 接线（共享 `SpeculativeCore` + 族适配器）；AR026 已把探针
+   graph 面生产化并在两族真实 checkpoint 上首验通过（裸捕获代理的失败签名
+   不再出现在生产路径）。
+ 3. **批量路径要求等长、parent-batch==1**。变长步仍是串行回退（已在前缀
+    折叠下获益，AR003/AR007）；**多父批量已由 AR025 交付**（`parent_branch_ids`
+    per-row 父装配 + `sample_joint` 双链 lockstep，合成面 16/16 supported，
+    真实面待实机）；多祖先激活树（>2 链、树状分支结构）是路线图主体
+    （AR016 遗留）。
 4. **串行折叠的小形状开销（AR021 H2 inconclusive，如实入限制）**。
    num_tokens=128（4 个形状窗）下 folded-serial 比 baseline 慢 107.5ms
    （Δ=−107.5181ms，未越 2σ=265.3231ms 预注册噪声界；两 prompt 方向
