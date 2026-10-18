@@ -52,7 +52,7 @@ class CausalLMDiffusionLLM(DiffusionLLM):
             device_map=device_map,
             **load_kwargs,
         )
-        self.tokenizer = AutoTokenizer.from_pretrained(
+        self.tokenizer = AutoTokenizer.from_pretrained(  # type: ignore[no-untyped-call]
             model_name_or_path,
             trust_remote_code=trust_remote_code,
             use_fast=use_fast_tokenizer,
