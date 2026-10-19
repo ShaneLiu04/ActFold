@@ -598,7 +598,13 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
         # the instance slot, which the loop reads back per chain.
         parents: list[str | None] = [None] * num_chains
 
-        unit_idx = 0
+        # Per-chain speculative-unit counters mirroring the solo loop's
+        # semantics EXACTLY (solo increments only on a built window — a
+        # zero-budget window ``continue``s without incrementing): a shared
+        # counter desynchronizes the frozen seed formula's ``unit_idx``
+        # component against solo whenever the two chains' zero-budget
+        # windows differ, breaking the joint-vs-solo bit-equality premise.
+        unit_counts = [0] * num_chains
         step = 0
         while step < effective_steps:
             # Per-chain super-step prep (segment A): draft serial forward +
@@ -620,7 +626,8 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
                 # Chain-qualified branch tags (the joint namespace): value
                 # semantics equal the solo counter-suffixed ids — ids only
                 # key the cache — and the two chains never collide (C4).
-                draft_branch_id = f"dream_spec_j{chain}_u{unit_idx}"
+                chain_unit = unit_counts[chain]
+                draft_branch_id = f"dream_spec_j{chain}_u{chain_unit}"
                 draft_parent_id = parents[chain]
                 parents[chain] = draft_branch_id
                 draft_logits = self._forward(
@@ -662,7 +669,7 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
                     region_start=0,
                     masked_local=selected,
                     draft_branch_id=draft_branch_id,
-                    unit_idx=unit_idx,
+                    unit_idx=chain_unit,
                     sub_idx=0,
                     stop_token_id=eos_token_id,
                 )
@@ -677,6 +684,10 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
                         cand_branch_ids=cand_branch_ids,
                     )
                 )
+                # Solo-mirror increment: only a BUILT window advances the
+                # chain's unit counter (zero-budget/finished chains were
+                # ``continue``d above without incrementing).
+                unit_counts[chain] = chain_unit + 1
 
             if window:
                 n = num_candidates
@@ -753,7 +764,6 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
                     )
                     parents[entry.chain] = self._folding_parent
             step += s
-            unit_idx += 1
             if all(bool(flags[0]) for flags in finished):
                 break
 

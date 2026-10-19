@@ -136,7 +136,7 @@ def _sha256_of(path: Path, chunk: int = 1 << 20) -> str:
 
 def _load_model(model_path: Path) -> tuple[Any, Any, dict[str, Any]]:
     """Load the remote-code checkpoint in bf16 on CUDA (eval mode)."""
-    model = AutoModelForCausalLM.from_pretrained(
+    model: Any = AutoModelForCausalLM.from_pretrained(
         str(model_path), trust_remote_code=True, torch_dtype=torch.bfloat16
     )
     model = model.cuda().eval()
@@ -154,7 +154,9 @@ def _load_model(model_path: Path) -> tuple[Any, Any, dict[str, Any]]:
     return model, tokenizer, meta
 
 
-def _build_context(model: Any, seq_len: int) -> tuple[torch.Tensor, tuple]:
+def _build_context(
+    model: Any, seq_len: int
+) -> tuple[torch.Tensor, tuple[torch.Tensor, torch.Tensor]]:
     """Build the block-causal mask and rotary embeddings for one T.
 
     Both objects are constructed ONCE and reused for every call of every
@@ -375,7 +377,10 @@ def _run_config(
     # zero timing pollution; ``budget_exceeded`` / the pinned object are
     # host-side state already resolved by the replay's single readback.
     samples: dict[str, list[float]] = {name: [] for name in _PATH_ORDER}
-    budget_violation_flags = {"graph_fixed": [], "graph_adaptive": []}
+    budget_violation_flags: dict[str, list[bool]] = {
+        "graph_fixed": [],
+        "graph_adaptive": [],
+    }
     pe_identity_mismatches = {"graph_fixed": 0, "graph_adaptive": 0}
     capacity_trajectory: list[int] = []
     divergence_samples: list[int] = []

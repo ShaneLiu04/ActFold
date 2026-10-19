@@ -85,6 +85,8 @@ def main() -> int:
     model = load_model(spec["repo"], model_family=spec["family"], torch_dtype=torch.bfloat16)
     model.to("cuda")
     model.eval()
+    raw_model = model.model
+    assert raw_model is not None, "loaded model exposes no underlying module"
 
     prompt = encode_prompt(model.tokenizer, PROMPTS[0], "cuda", max_len=96)
     children = {}
@@ -110,7 +112,7 @@ def main() -> int:
 
     # Fixed threshold sweep.
     folded = FoldedModel(
-        model.model,
+        raw_model,
         cache=VectorizedActivationCache(max_entries_per_layer=65536, device="cuda"),
         gate=SimilarityGate(tau=0.95),
     )
@@ -137,7 +139,7 @@ def main() -> int:
 
     # Adaptive target sweep.
     folded = FoldedModel(
-        model.model,
+        raw_model,
         cache=VectorizedActivationCache(max_entries_per_layer=65536, device="cuda"),
         gate=AdaptiveQuantileGate(target_stable_ratio=0.97),
     )

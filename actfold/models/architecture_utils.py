@@ -20,6 +20,13 @@ import torch.nn as nn
 
 _T = TypeVar("_T", bound=nn.Module)
 
+# AR025 DD1: the single frozen message for the parent_branch_id /
+# parent_branch_ids mutual exclusion (both singular and plural given).
+_MULTI_PARENT_MSG = (
+    "ManualFoldedForward accepts either parent_branch_id "
+    "(shared) or parent_branch_ids (per-row), not both."
+)
+
 
 def _clear_cublas_workspaces() -> None:
     """Release torch's per-stream cuBLAS workspace cache (device memory).
@@ -778,10 +785,7 @@ class ManualFoldedForward(nn.Module):
                 )
         if parent_branch_ids is not None:
             if parent_branch_id is not None:
-                raise ValueError(
-                    "ManualFoldedForward accepts either parent_branch_id "
-                    "(shared) or parent_branch_ids (per-row), not both."
-                )
+                raise ValueError(_MULTI_PARENT_MSG)
             if branch_ids is None:
                 raise ValueError(
                     "parent_branch_ids (per-row parents) requires branch_ids "

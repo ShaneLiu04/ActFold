@@ -11,7 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import torch
@@ -35,7 +35,7 @@ def _load_benchmark_results(results_dir: Path) -> dict[str, Any]:
     if not benchmark_path.exists():
         return {}
     with benchmark_path.open("r", encoding="utf-8") as f:
-        return json.load(f)
+        return cast(dict[str, Any], json.load(f))
 
 
 def _load_ablation_results(results_dir: Path) -> dict[str, pd.DataFrame]:
@@ -71,7 +71,7 @@ def _generate_demo_data() -> tuple[dict[str, Any], dict[str, pd.DataFrame]]:
             x = self.embedding(tokens)
             for layer in self.layers:
                 x = layer(x)
-            return self.head(x)
+            return cast(torch.Tensor, self.head(x))
 
     vocab_size = 1000
     hidden_dim = 128

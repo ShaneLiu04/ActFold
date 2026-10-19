@@ -114,14 +114,19 @@ _CONSTRUCTIONS: tuple[tuple[str, bool], ...] = (
 
 # ---------------------------------------------------------------------------
 # Real-face constants (DD8, delivered with AR025 T006): the AR023 aligned-mode
-# configuration verbatim (N=4 / top_k=10 / greedy anchoring on), the AR023
-# seed discipline, and the real-face cache budget. The budget is sized to the
-# joint population peak (chains + chains*N) * T = (2 + 8) * 128 = 1280 token
-# rows per layer with 3.2x headroom — the DD8 erratum lesson (a burst
-# put_batch under an undersized budget evicts the in-flight parents and
-# silently disables folding, a capacity confound); at the 8B checkpoints
-# (H=4096, bf16 activations) 4096 rows cost ~32 MB per layer (~1 GB over 32
-# layers).
+# anchor pinned explicitly (N=4 / top_k=10 / greedy anchoring on; LLaDA
+# sub-block = the WHOLE block and EOS-aware OFF — the AR023 semantics against
+# the AR024 defaults), the AR023 seed discipline, and the real-face cache
+# budget. The budget is sized against the joint population peak
+# (chains + chains*N) * T = 10 * T token rows per layer, where T is the CANVAS
+# length (prompt_len + num_tokens), NOT num_tokens alone — e.g. the frozen
+# quick/formal geometry at a 128-token prompt gives 10*256 = 2560 rows, so the
+# 4096-row budget carries ~1.6x headroom and the DD8-erratum eviction
+# predicate (population > budget) would need prompt_len > 281 at
+# num_tokens=128 to trip. The erratum lesson: a burst put_batch under an
+# undersized budget evicts the in-flight parents and silently disables
+# folding (a capacity confound); at the 8B checkpoints (H=4096, bf16
+# activations) 4096 rows cost ~32 MB per layer (~1 GB over 32 layers).
 # ---------------------------------------------------------------------------
 _REAL_SEED = 2026
 _REAL_REPS = 30
@@ -637,22 +642,35 @@ def _make_real_mff(raw_model: Any, multi_parent_batch: bool) -> Any:
 
 
 def _make_real_sampler(family: str, llm: Any, num_tokens: int) -> Any:
-    """Family sampler in the AR023 aligned-mode configuration (verbatim)."""
+    """Family sampler in the AR023 aligned-mode configuration.
+
+    The AR023 anchor is pinned EXPLICITLY against the AR024 defaults: the
+    LLaDA speculative unit stays the WHOLE block
+    (``speculative_sub_block_size=block_size`` — the ``s == block_size``
+    degenerate is bit-identical to AR023, UT-2402) and candidate rows carry
+    no EOS-aware continuation (``candidate_eos_aware=False`` — the AR023
+    build semantics). Without these pins the AR024 defaults (window 8 /
+    EOS-aware True) would silently shift the speculative unit against the
+    DD8 "AR023 aligned-mode" wording and the AR023 cross-ref comparability.
+    """
     from actfold.models.dream_sampler import DreamSampler, DreamSamplerConfig
     from actfold.models.llada_sampler import LLaDASampler, LLaDASamplerConfig
     from scripts.ar023_cross_family_bench import FAMILY_RECIPES
 
     recipe = FAMILY_RECIPES[family]
     if family == "llada":
+        block_size = int(recipe["block_size"])
         config: Any = LLaDASamplerConfig(
             num_steps=int(recipe["num_steps"]),
             num_tokens=num_tokens,
-            block_size=int(recipe["block_size"]),
+            block_size=block_size,
             remasking=str(recipe["remasking"]),
             seed=_REAL_SEED,
             num_block_candidates=_REAL_NUM_CANDIDATES,
             candidate_top_k=_REAL_CANDIDATE_TOP_K,
             candidate_include_greedy=True,
+            speculative_sub_block_size=block_size,
+            candidate_eos_aware=False,
         )
         return LLaDASampler(llm, config=config)
     config = DreamSamplerConfig(
@@ -979,10 +997,14 @@ def run_real_bench(
         "switch_states": {"A_merged": "on", "B_per_chain": "off (pinned)"},
         "cache_budget_tokens_per_layer": _REAL_CACHE_BUDGET_TOKENS,
         "cache_budget_note": (
-            "sized to the joint population peak (chains + chains*N)*T = "
-            "1280 token rows with 3.2x headroom — the DD8 erratum lesson "
-            "(a burst put_batch under an undersized budget evicts the "
-            "in-flight parents)"
+            "sized against the joint population peak "
+            f"(chains + chains*N)*T = 10*{common_len + num_tokens} = "
+            f"{10 * (common_len + num_tokens)} token rows per layer at the "
+            f"actual canvas length T = prompt_len({common_len}) + "
+            f"num_tokens({num_tokens}) — "
+            f"{_REAL_CACHE_BUDGET_TOKENS / (10 * (common_len + num_tokens)):.2f}x "
+            "headroom; the DD8 erratum lesson (a burst put_batch under an "
+            "undersized budget evicts the in-flight parents)"
         ),
         "prompt_pair": [prompt["text"] for prompt in prompts],
         "prompt_pair_truncated_to_equal_len": truncated,

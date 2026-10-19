@@ -1,4 +1,4 @@
-"""Red-phase tests for AR025 T006: W2 lockstep joint speculative sampling (UT-2430..UT-2444).
+"""Red→Green tests for AR025 T006: W2 lockstep joint speculative sampling (UT-2430..UT-2445).
 
 Contract: ``specs/changes/AR025-multi-parent-batch-folding/design.md`` DD8a
 (W2 lockstep joint loop ``sample_joint``) — ``LLaDASampler`` and
@@ -46,6 +46,10 @@ verification forward with per-row parents -> per-chain min-prob score/commit:
 * UT-2437: ``greedy_win_stats`` AGGREGATES across both chains on the joint
   path (single instance drives both; 1 + 2 per-chain windows -> 3 counts on
   the early-finish fixture, > 1 and moved vs before);
+* UT-2438: LLaDA joint + ``progressive_refill`` parity — the AR024 two-phase
+  refill inside the joint loop (segment B partial commit + the chain-scoped
+  ``_r`` refill tag + the F1 instance-slot swap) equals back-to-back solo
+  bitwise, histories included (the T009 coverage-gap fix);
 * UT-2440: Dream parity (DreamSampler, two equal-length prompts,
   ``speculative_steps`` default; the Dream ctx carries position_ids);
 * UT-2441: Dream off-switch dispatch;
@@ -55,7 +59,11 @@ verification forward with per-row parents -> per-chain min-prob score/commit:
   Dream speculative ``sample()`` smoke each (the existing composed
   single-chain ``_speculative_commit`` path must be unchanged by the
   refactor; outputs are tensors of the expected shape with the
-  finished/decoded semantics intact).
+  finished/decoded semantics intact);
+* UT-2445: Dream C2/shape entry ValueErrors — an empty ``prompt_ids_list``,
+  a prompt with batch 2, prompts of unequal token length, and
+  ``cfg_scale > 0`` all raise on the Dream joint path (the UT-2435 mirror,
+  the T009 coverage-gap fix).
 
 Red state (why every test fails today) — each failure is a production-missing
 face, never a test-own bug:
@@ -1252,3 +1260,95 @@ def test_ut2444_composed_solo_zero_drift_smoke(device: str) -> None:
     assert out_dream.sequences.dtype == torch.long
     assert torch.equal(out_dream.sequences[0, :3], prompt[0]), "prompt region preserved"
     assert bool((out_dream.sequences[0, 3:11] != _MASK_ID).all()), "generation fully denoised"
+
+
+# ---------------------------------------------------------------------------
+# UT-2438: LLaDA joint + progressive_refill parity (the T009 coverage gap)
+# ---------------------------------------------------------------------------
+
+
+def test_ut2438_llada_joint_refill_parity_bitwise(device: str) -> None:
+    """UT-2438: joint + ``progressive_refill`` equals back-to-back solo bitwise.
+
+    The AR024 two-phase refill runs INSIDE the joint window loop (segment B's
+    partial commit + ``_refill_phase_two`` with the chain-scoped ``_r``
+    branch tag and the F1 instance-slot swap). A wrong chain continuation
+    (the refill writing through the WRONG chain's parent slot or an
+    unqualified ``_r`` tag colliding across chains) would silently break the
+    C6/H1 premise — this test pins the joint path against the per-chain solo
+    reference bit-for-bit (torch.equal, never allclose).
+    """
+    inner = _build_mini(device)
+    llm = _MiniDiffusionLLM(inner)
+    p1, p2 = _prompts2(device)
+    cfg_kwargs: dict[str, Any] = {
+        "num_steps": 4,
+        "num_tokens": 8,
+        "block_size": 4,
+        "speculative_sub_block_size": 4,
+        "num_block_candidates": 3,
+        "candidate_top_k": 3,
+        "candidate_include_greedy": True,
+        "candidate_eos_aware": True,
+        "progressive_refill": True,
+        "refill_top_k": 2,
+        "seed": 2438,
+        "return_history": True,
+    }
+
+    mff_joint = _make_mff(inner, device, multi_parent_batch=True)
+    outs = LLaDASampler(llm, config=_llada_config(**cfg_kwargs)).sample_joint([p1, p2], mff_joint)
+    mff_solo = _make_mff(inner, device, multi_parent_batch=True)
+    sampler_b = LLaDASampler(llm, config=_llada_config(**cfg_kwargs))
+    ref1 = sampler_b.sample(p1, folded_model=mff_solo)
+    ref2 = sampler_b.sample(p2, folded_model=mff_solo)
+
+    assert torch.equal(outs[0].sequences, ref1.sequences), "chain 0 refill parity"
+    assert torch.equal(outs[1].sequences, ref2.sequences), "chain 1 refill parity"
+    assert len(outs[0].history) == len(ref1.history), "chain 0 history length parity"
+    assert len(outs[1].history) == len(ref2.history), "chain 1 history length parity"
+    for j, (h_joint, h_ref) in enumerate(zip(outs[0].history, ref1.history)):
+        assert torch.equal(h_joint, h_ref), f"chain 0 history snapshot {j} parity"
+    for j, (h_joint, h_ref) in enumerate(zip(outs[1].history, ref2.history)):
+        assert torch.equal(h_joint, h_ref), f"chain 1 history snapshot {j} parity"
+
+
+# ---------------------------------------------------------------------------
+# UT-2445: Dream joint entry shape/validation ValueErrors (the T009 gap)
+# ---------------------------------------------------------------------------
+
+
+def test_ut2445_dream_joint_shape_valueerrors(device: str) -> None:
+    """UT-2445: Dream joint entry shape/validation ValueErrors (C2 and friends).
+
+    Mirrors UT-2435 on the Dream family: an empty ``prompt_ids_list``, a
+    prompt with batch 2, prompts of UNEQUAL token length (C2: the joint
+    fold ctx must be shared), and ``cfg_scale > 0`` all raise ValueError on
+    the joint path.
+    """
+    inner = _build_mini(device)
+    llm = _MiniDiffusionLLM(inner)
+    p1, p2 = _prompts2(device)
+    p_short = torch.tensor([[4, 5]], device=device)
+    p_batch2 = torch.tensor([[1, 2, 3], [7, 8, 9]], device=device)
+    mff_joint = _make_mff(inner, device, multi_parent_batch=True)
+    cfg_kwargs: dict[str, Any] = {
+        "num_steps": 8,
+        "num_tokens": 8,
+        "num_block_candidates": 2,
+        "candidate_top_k": 2,
+        "candidate_include_greedy": True,
+        "seed": 2445,
+    }
+    sampler = DreamSampler(llm, config=_dream_config(**cfg_kwargs))
+
+    with pytest.raises(ValueError):
+        sampler.sample_joint([], mff_joint)
+    with pytest.raises(ValueError):
+        sampler.sample_joint([p_batch2, p2], mff_joint)
+    with pytest.raises(ValueError):
+        sampler.sample_joint([p1, p_short], mff_joint)
+    with pytest.raises(ValueError, match=r"cfg_scale"):
+        DreamSampler(llm, config=_dream_config(**cfg_kwargs, cfg_scale=1.5)).sample_joint(
+            [p1, p2], mff_joint
+        )

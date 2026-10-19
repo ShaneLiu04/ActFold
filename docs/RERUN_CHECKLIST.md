@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1098 passed / 4 skipped / 3 deselected（slow 默认跳过）
+# 4) 整仓质量门：期望 1179 passed / 4 skipped / 3 deselected（slow 默认跳过）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -29,6 +29,16 @@ python -m venv --system-site-packages .venv-hf
 
 # 6) 冒烟 → 正式：任何真实实验先跑 --quick，正式跑为预承诺单次（§7 有逐实验命令）
 python -m scripts.<实验名> --quick ... # 分钟到小时级
+
+# 7) 一键正式跑执行器（AR027，推荐在服务器上使用）：
+python -m scripts.run_formal_queue --list          # 先看 7 面队列与工件路径
+python -m scripts.run_formal_queue --quick         # 全部七面 quick 冒烟（不写正式工件）
+python -m scripts.run_formal_queue --models-root /data/ar023_models
+#    执行器会做六项硬 preflight（transformers 4.53.1 / CUDA / 24GiB 或 quick 16GiB /
+#    权重文件 / AR023 probe 工件 / GPU 静默），失败即拒绝启动；失败即停、不重试；
+#    日志与结构化摘要写入 results/optimization/formal_runs/<UTC>/（queue.log + queue.json）；
+#    退出码 0=全通过 2=工件校验不一致 3=preflight/参数错误 4=实验失败。
+#    存在正式工件时须 --force --force-reason "<理由>" 才允许覆盖（理由入审计日志）。
 ```
 
 - 评测类实验另装 `requirements-bench.txt`（lm-eval / evalplus；evalplus 需 Unix-like）。
@@ -240,13 +250,21 @@ python demo.py
 #     --family llada --quick --models-root <权重根目录>
 # <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
 #     --family dream --quick --models-root <权重根目录> \
-#     --out results/optimization/ar026_dream_graph_quick.json
+#     --out results/optimization/ar026_real_graph_bench_dream_quick.json
 #     工件（quick）：results/optimization/ar026_real_graph_bench_quick.json
+#     （dream quick）：results/optimization/ar026_real_graph_bench_dream_quick.json
 #     c) 正式面（预承诺单次；reps=30/P=2/128 token，与 AR023 同协议；
 #        本机 16GB WDDM 上 AR023 llada 正式跑实测 ≈29.2h → 须排多日窗口）：
 # <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
-#     --family llada --models-root <权重根目录> --reps 30
-#     工件：results/optimization/ar026_real_graph_bench.json
+#     --family llada --models-root <权重根目录> --reps 30 \
+#     --out results/optimization/ar026_real_graph_bench.json
+# <venv目录>\Scripts\python -m scripts.ar026_real_graph_bench \
+#     --family dream --models-root <权重根目录> --reps 30 \
+#     --out results/optimization/ar026_real_graph_bench_dream.json
+#     工件（llada）：results/optimization/ar026_real_graph_bench.json
+#     （dream）：results/optimization/ar026_real_graph_bench_dream.json
+#     注意：--out 必须显式给出——脚本默认输出路径不按 family 分键，
+#     省略 --out 会让 dream 正式面覆写 llada 正式面
 #     （schema=ar026_real_graph_bench；四模式 baseline 官方配方 /
 #      folded-batched eager 锚 / graph-fixed / graph-adaptive —— 模式间
 #      仅图旋钮差异（capacity 0.5 / pool 4 / adaptive on|off）；
@@ -363,3 +381,25 @@ python demo.py
 6. **产物回填**：新机工件落到同一 `results/optimization/` 路径后，按 README
    优越性总表口径从工件回填（禁止手输数字；跨机数字须在工件 meta 注明
    GPU/时钟状态）。
+7. **一键执行器（AR027，推荐）**：`scripts/run_formal_queue.py` 按固定顺序执行
+   七个正式面（AR023-llada/dream → AR024 → AR025-real-llada/dream →
+   AR026-llada/dream），自动完成 §1 的环境/显存/权重/probe/GPU 静默检查、逐面
+   子进程隔离、工件 schema 与冻结判定重算校验、结构化日志。命令：
+
+   ```bash
+   # 队列预览（不执行）
+   python -m scripts.run_formal_queue --list
+   # 冒烟（全部七面 quick，工件 *_quick.json，永不碰正式路径）
+   python -m scripts.run_formal_queue --quick --models-root /data/ar023_models
+   # 正式（预承诺单次；建议先 --only 校验单面再全量）
+   python -m scripts.run_formal_queue --models-root /data/ar023_models
+   # 子集 / 覆盖审计
+   python -m scripts.run_formal_queue --only ar026-llada,ar026-dream --models-root /data/ar023_models
+   python -m scripts.run_formal_queue --force --force-reason "server rerun after env fix"
+   ```
+
+   退出码 `0` 全通过（含合法 blocked）/ `2` 工件校验不一致 / `3` preflight 或
+   参数错误 / `4` 实验失败或覆盖保护拒绝；每次运行在
+   `results/optimization/formal_runs/<UTC>/` 下生成 `queue.log` 与 `queue.json`
+   （逐面 argv、耗时、退出码、工件路径、校验结论）。失败即停、不重试、不续跑。
+   `--allow-busy` 仅覆盖 GPU 静默一项且写入日志（其它 preflight 项不可豁免）。

@@ -97,7 +97,9 @@ def main() -> int:
     print("loading LLaDA for layer-level sweep", flush=True)
     model = load_model(args.repo, model_family="llada", torch_dtype=torch.bfloat16)
     model.to("cuda")
-    profile = detect_architecture(model.model)
+    raw_model = model.model
+    assert raw_model is not None, "loaded model exposes no underlying module"
+    profile = detect_architecture(raw_model)
     layer = profile.layers[0]
     gate = FixedMaskGate()
     split_layer = SplitFoldedTransformerLayer(

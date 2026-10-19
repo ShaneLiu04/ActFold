@@ -1,5 +1,7 @@
 {
   "meta": {
+    "cache_budget_note": "sized to the grid's worst-case layer population ((chains + chains*N)*T = 36864 rows at the (4,8,1024) point) so no in-flight eviction occurs \u2014 the DD8 erratum: the original 8192 budget let the A side's burst put_batch evict the in-flight parents (LRU-oldest at store time) and silently disable folding at deeper layers, an asymmetric capacity confound vs the per-chain interleave (evidence: ar025_multi_parent_bench_eviction_blocked.json)",
+    "cache_budget_tokens_per_layer": 65536,
     "command": "python -m scripts.ar025_multi_parent_bench --mode synth --quick",
     "constructions": [
       "nonsplit",
@@ -17,7 +19,7 @@
       ]
     ],
     "model": "synthetic causal cumsum decoder L=4 H=64 V=128 (prefix-stable scan + detectable post_attention_layernorm->mlp chain)",
-    "run_date_utc": "2026-10-17T06:32:42.496514+00:00",
+    "run_date_utc": "2026-10-18T15:04:09.318121+00:00",
     "seed": 2026,
     "seed_formula": "SEED + 1000*chains + 10*N + T//256 + 5*split (frozen arithmetic, never Python hash)",
     "switch_states": {

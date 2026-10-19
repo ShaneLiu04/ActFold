@@ -584,7 +584,7 @@ def run_bench(warmup: int = 5, reps: int = 30, quick: bool = False) -> dict[str,
                     "declared confound carried by the 2-sigma criterion"
                 ),
                 "ar017_run_date_utc": (
-                    anchor["meta"]["run_date_utc"] if anchor_available else None
+                    anchor["meta"]["run_date_utc"] if anchor is not None else None
                 ),
                 "anchor_values_embedded": (
                     "per-config h1/h2 verdicts are computed against the AR017 "

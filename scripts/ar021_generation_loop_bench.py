@@ -83,7 +83,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scripts._hf_env import add_hf_env_arguments, apply_hf_env
 
@@ -182,11 +182,20 @@ class _BenchDiffusionLLM(DiffusionLLM):
 
     def __init__(self, model: Any, tokenizer: Any) -> None:
         super().__init__("fast-dllm-v2-1.5B-ar021-bench")
-        self.model = model
+        # The remote-code wrapper is duck-typed (nn.Module at runtime); the base
+        # annotation is ``nn.Module | None``, so narrow it once here.
+        self.model = cast(torch.nn.Module, model)
         self.tokenizer = tokenizer
         self.block_timer = _BlockTimer()
         self.recording = False
         self.records: list[torch.Tensor] = []
+
+    @property
+    def _raw(self) -> Any:
+        """The loaded remote-code module (narrowed from ``nn.Module | None``)."""
+        model = self.model
+        assert model is not None, "bench wrapper always holds a loaded model"
+        return model
 
     def forward(
         self,
@@ -197,31 +206,31 @@ class _BenchDiffusionLLM(DiffusionLLM):
         self.block_timer.note(int(kwargs.pop("step_idx", 0)))
         kwargs.pop("branch_id", None)
         kwargs.pop("parent_branch_id", None)
-        outputs = self.model(input_ids=tokens, attention_mask=attention_mask)
+        outputs = self._raw(input_ids=tokens, attention_mask=attention_mask)
         logits: torch.Tensor = outputs.logits
         if self.recording:
             self.records.append(logits[:, -BLOCK:].detach().to("cpu"))
         return logits
 
     def embed(self, tokens: torch.Tensor) -> torch.Tensor:
-        embed_fn = self.model.get_input_embeddings()
-        return embed_fn(tokens)
+        embed_fn = self._raw.get_input_embeddings()
+        return cast(torch.Tensor, embed_fn(tokens))
 
     @property
     def num_layers(self) -> int:
-        return int(self.model.config.num_hidden_layers)
+        return int(self._raw.config.num_hidden_layers)
 
     @property
     def hidden_dim(self) -> int:
-        return int(self.model.config.hidden_size)
+        return int(self._raw.config.hidden_size)
 
     @property
     def num_heads(self) -> int:
-        return int(self.model.config.num_attention_heads)
+        return int(self._raw.config.num_attention_heads)
 
     @property
     def vocab_size(self) -> int:
-        return int(self.model.config.vocab_size)
+        return int(self._raw.config.vocab_size)
 
 
 class _BenchMFF(ManualFoldedForward):
@@ -291,7 +300,7 @@ def _sha256_of(path: Path, chunk: int = 1 << 20) -> str:
 
 
 def _load_model(model_path: Path) -> tuple[Any, Any, dict[str, Any]]:
-    model = AutoModelForCausalLM.from_pretrained(
+    model: Any = AutoModelForCausalLM.from_pretrained(
         str(model_path), trust_remote_code=True, torch_dtype=torch.bfloat16
     )
     model = model.cuda().eval()
@@ -353,7 +362,7 @@ def _prepare_prompts(tokenizer: Any, quick: bool) -> list[dict[str, Any]]:
     return prompts
 
 
-def _sampler_config(num_tokens: int, num_block_candidates: int):
+def _sampler_config(num_tokens: int, num_block_candidates: int) -> FastDLLMSamplerConfig:
     return FastDLLMSamplerConfig(
         num_tokens=num_tokens,
         block_size=BLOCK,
@@ -578,9 +587,9 @@ def _snapshot_pool(mff: _BenchMFF) -> dict[str, Any]:
     return snap
 
 
-def _window_forwards(window_calls: list[tuple[int, int, str]]) -> dict[str, dict]:
+def _window_forwards(window_calls: list[tuple[int, int, str]]) -> dict[str, dict[str, int]]:
     """Per-window forward counts (serial/batched) from one generation."""
-    counts: dict[str, dict] = {}
+    counts: dict[str, dict[str, int]] = {}
     for step_idx, seq_len, kind in window_calls:
         prompt_len = seq_len - BLOCK * (step_idx + 1)
         label = f"p{prompt_len}_block{step_idx}_T{seq_len}"
@@ -658,7 +667,12 @@ def _generate(
         mff.branches_seen = []
     GLOBAL_STABILITY_PROFILER.reset()
     with torch.no_grad():
-        out = sampler.sample(prompt["ids"], folded_model=mff)
+        out = sampler.sample(
+            prompt["ids"],
+            # Duck-typed instrumented MFF (the production folded face); the
+            # sampler's annotation names the concrete FoldedModel type.
+            folded_model=cast(Any, mff),
+        )
     timer.finalize()
     record: dict[str, Any] = {
         "blocks": list(timer.blocks),
@@ -739,7 +753,7 @@ def run_bench(
     # -- sidecar (untimed, instrumented) ------------------------------------
     sidecar: dict[str, Any] = {"h1": [], "quality": [], "ledger": {}}
     base_sequences: list[torch.Tensor] = []
-    window_counts: dict[str, dict[str, dict]] = {
+    window_counts: dict[str, dict[int, dict[str, dict[str, int]]]] = {
         "folded-serial": {},
         "folded-batched": {},
     }
@@ -941,7 +955,7 @@ def run_bench(
         ("folded-serial", windows_serial),
         ("folded-batched", windows_batched),
     ):
-        sidecar_counts: dict[str, dict] = {}
+        sidecar_counts: dict[str, dict[str, int]] = {}
         for pi in range(len(prompts)):
             for label, counts in window_counts[mode][pi].items():
                 entry = sidecar_counts.setdefault(label, {"serial": 0, "batched": 0})

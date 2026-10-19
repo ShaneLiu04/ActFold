@@ -31,7 +31,7 @@ import platform
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Sequence
+from typing import Any, Callable, Sequence, cast
 
 from scripts._hf_env import add_hf_env_arguments, apply_hf_env
 
@@ -109,7 +109,7 @@ def encode_prompt(tokenizer: Any, text: str, device: str, max_len: int = 96) -> 
         ids = tokenizer(text, return_tensors="pt").input_ids
     if ids.shape[1] > max_len:
         ids = ids[:, :max_len]
-    return ids.to(device)
+    return cast(torch.Tensor, ids.to(device))
 
 
 def make_child(
@@ -254,14 +254,22 @@ def time_forward(fn: Any, warmup: int = 3, reps: int = 10) -> TimingStats:
         for _ in range(warmup):
             fn()
         torch.cuda.synchronize()
-        starts = [torch.cuda.Event(enable_timing=True) for _ in range(reps)]
-        ends = [torch.cuda.Event(enable_timing=True) for _ in range(reps)]
+        starts = [
+            torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
+            for _ in range(reps)
+        ]
+        ends = [
+            torch.cuda.Event(enable_timing=True)  # type: ignore[no-untyped-call]
+            for _ in range(reps)
+        ]
         for i in range(reps):
-            starts[i].record()
+            starts[i].record()  # type: ignore[no-untyped-call]
             fn()
-            ends[i].record()
+            ends[i].record()  # type: ignore[no-untyped-call]
         torch.cuda.synchronize()
-    samples = [starts[i].elapsed_time(ends[i]) for i in range(reps)]
+    samples = [
+        starts[i].elapsed_time(ends[i]) for i in range(reps)  # type: ignore[no-untyped-call]
+    ]
     return stats_from_samples(samples)
 
 
@@ -337,7 +345,7 @@ def exp_similarity(
     np.savez(
         outdir / "similarity.npz",
         tokens=prompt_tokens.cpu().numpy(),
-        **{f"flip{nf}": sims[nf] for nf in sims},
+        **cast(dict[str, Any], {f"flip{nf}": sims[nf] for nf in sims}),
     )
     summary = {}
     for num_flips, matrix in sims.items():

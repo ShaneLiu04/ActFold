@@ -48,6 +48,7 @@ def bench_model(key: str, dtype: torch.dtype = torch.bfloat16) -> dict[str, Any]
     model.to("cuda")
     model.eval()
     raw = model.model
+    assert raw is not None, "loaded model exposes no underlying module"
     tokens = encode_prompt(model.tokenizer, PROMPTS[0], "cuda", max_len=96)
 
     profile = detect_architecture(raw)

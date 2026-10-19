@@ -805,8 +805,14 @@ python -m scripts.ar018_publish_bench --quick  # 冒烟
     --family dream --models-root <权重根目录> --reps 30  # 全程 ~6-8h
 
 # 多 parent 批量折叠合成面基准（AR025，合成模型 CPU 即可、分钟级；
-# --mode real 为 AR025 T006 交付，未开放）
+# --mode real 已随 T006 接线交付——真实面命令见上文第 5 节与 RERUN 步骤 16）
 python -m scripts.ar025_multi_parent_bench
+
+# 服务器一键正式跑执行器（AR027）：七面固定队列 + 六项硬 preflight +
+# 冻结判定重算校验 + 结构化日志（results/optimization/formal_runs/<UTC>/）
+python -m scripts.run_formal_queue --list            # 队列预览
+python -m scripts.run_formal_queue --quick           # 七面冒烟（不写正式工件）
+python -m scripts.run_formal_queue --models-root <权重根目录>  # 正式（预承诺单次）
 ```
 
 完整报告：[`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md)、
@@ -882,7 +888,7 @@ pip install -e .                       # 可编辑安装
 | 5 | AR022 贪心锚定投机候选 | 四模式质量对齐 | **质量差距归零**（posthoc/length/block-exact 全恢复）+ 复现自检 PASS | **7.02×** vs baseline | `ar022_speculative_quality_bench.json` | 已归档 |
 | 6 | AR023 跨族投机（LLaDA-8B-Base / Dream-v0-Base-7B） | 真实 8B/7B 四模式 | **诚实负结果**：llada formal h1 refuted（投机质量差距真实）、h4 supported；quick 面与探针结论工件齐全 | llada formal h2 **1.49×** | `ar023_llada_bench.json`（formal）、`ar023_*_bench_quick.json`、`ar023_family_probe.json` | 正式面部分交付（dream formal 未跑）；归档进行中 |
 | 7 | AR024 提交粒度子块窗口（子块分解 + 渐进回填 + EOS 感知延续） | LLaDA 8B 投机链 | UT 23 例全绿（位级锚定/后验陷阱/EOS 延续） | 待实机 | `specs/changes/AR024-commit-granularity/` | **待实机**（GPU 窗口） |
-| 8 | AR025 多 parent 批量折叠 + 双链 lockstep 并行投机 | 合成面 16 形状点；真实面接线（LLaDA/Dream，判定式冻结） | S1 合并奇偶 16/16 / S2 写账本 4<40–160 严格 / S3 0.9–0.975（DD8 预算 erratum 留档）；UT 13 例 + 哨兵 96 绿 | 待真实面（H1 逐位+归因 / H2 p50 / 交付线 ≥10% / H4 账本） | `ar025_multi_parent_bench.json` | 合成面+真实面接线交付；正式 reps=30 待高速算力机（RERUN 步骤 16，本机 16GB 限制如实注记） |
+| 8 | AR025 多 parent 批量折叠 + 双链 lockstep 并行投机 | 合成面 16 形状点；真实面接线（LLaDA/Dream，判定式冻结） | S1 合并奇偶 16/16 / S2 写账本 4<40–160 严格 / S3 0.9–0.975（DD8 预算 erratum 留档）；UT 15 例 + 哨兵 96 绿 | 待真实面（H1 逐位+归因 / H2 p50 / 交付线 ≥10% / H4 账本） | `ar025_multi_parent_bench.json` | 已归档（`specs/archive/AR025-multi-parent-batch-folding/`，ST Go）；正式 reps=30 待高速算力机（RERUN 步骤 16，本机 16GB 限制如实注记） |
 | 9 | AR026 真实 checkpoint 端到端图路径（生产捕获 + 四模式图基准） | LLaDA-8B / Dream-7B 生产捕获 | **T006 首验 PASS**：两族生产捕获 `graph_captures=2`、零失败诊断、零降级回退（AR023 裸捕获断言/广播断裂未复现）；四模式奇偶判定冻结 | 待正式面 | `ar026_probe_graph_faces.json` | 首验 PASS；正式面待跑 |
 
 **读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
@@ -1187,15 +1193,17 @@ bash scripts/run_ablation.sh --synthetic
 ## 质量保障
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
-- **mypy**（`--ignore-missing-imports`，68 文件）clean
-- **pytest** 快速套件 **1106 passed / 7 failed / 5 skipped**（AR025 轮次更新：
-  +AR025 sample_joint 13 例（UT-2430~2443：逐链逐位相等+写账本严格小+
-  joint 守卫面）+ AR024/AR026 并行轮新增；7 failed 全 ⊆ 既有环境失败集
-  ——triton×5（本机无 CUDA toolkit）+ lm-eval×2（未安装），与代码无关；
-  skip = 1 CUPTI + evalplus-unix 平台面等；BS-007 图重放性能判定在
-  Windows WDDM 小内核主机上按实测数字诚实 skip——同一份 AR002 代码在该类
-  主机上图重放慢于 eager 已经版本二分确证为平台特性，历史工件保持证据
-  效力）
+- **mypy**（`--ignore-missing-imports`）：`actfold` 68 文件 0 错 +
+  `scripts` 26 文件 0 错（`--explicit-package-bases`，命名空间包口径；
+  维护轮已清 29 项既有债务）
+- **pytest** 快速套件 **1179 passed / 4 skipped / 3 deselected**（零失败）
+  （AR027 轮次实测 ~85s；含 AR025 sample_joint 15 例、AR024/AR026 并行轮
+  新增、AR027 合同测试 66 例（UT-2701~2764：队列冻结/preflight/执行/校验/
+  覆盖审计/异常面）；lm-eval×2 bench-backend 用例已随 `pytest addopts`
+  默认 deselect（3 deselected，与代码无关）；skip = CUPTI + evalplus-unix
+  平台面等；BS-007 图重放性能判定在 Windows WDDM 小内核主机上按实测数字
+  诚实 skip——同一份 AR002 代码在该类主机上图重放慢于 eager 已经版本二分
+  确证为平台特性，历史工件保持证据效力）
 - 工具链钉版：`requirements-dev.txt`（black==23.12.1 / isort==5.13.2 /
   pyflakes==4.0.0 / mypy==2.4.0），`requirements.txt` 限 `transformers<5`
   （remote-code 5.x 不兼容）；换机后按同版本安装即可复现质量门
@@ -1247,11 +1255,13 @@ python demo.py
    投机质量差距在 T=128 下真实存在；h2 1.49×、h4 supported；dream formal
     待跑）；AR024（提交粒度窗口）、AR026（真实 checkpoint 图路径，T006
     首验两族生产捕获均 PASS）的正式数字待实机工件
-    回填；AR025（多 parent 批量折叠+双链 lockstep 并行投机）合成面
-    16/16 supported + 真实面接线与判定式冻结交付（T006），正式 reps=30
-    按 RERUN 步骤 16 待高速算力机执行回填（本机 16GB WDDM 实测 bf16 权重
-    15.8GB+折叠缓存触顶硬崩、int8 逃生门在驱动坏态下量化停滞，均如实
-    留档）。保留判定：AR019 (256,4) 首配置 H1 因 WDDM 热身方差欠功效
+    回填；AR025（多 parent 批量折叠+双链 lockstep 并行投机）**已归档**
+    （`specs/archive/AR025-multi-parent-batch-folding/`，ST Go：合成面
+    16/16 supported + 真实面接线与判定式冻结交付 + 15 例 UT + 12 项审查
+    修复闭环），正式 reps=30 按 RERUN 步骤 16 待高速算力机执行回填（本机
+    16GB WDDM 实测 bf16 权重 15.8GB+折叠缓存触顶硬崩、int8 逃生门在驱动
+    坏态下量化停滞，均如实留档）。保留判定：AR019 (256,4) 首配置 H1 因
+    WDDM 热身方差欠功效
    （方向压倒性）、AR021 H2 inconclusive（见第 4 条）——均按预承诺单次
    运行纪律如实记录。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加

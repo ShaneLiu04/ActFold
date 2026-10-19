@@ -16,7 +16,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 from scripts._hf_env import add_hf_env_arguments, apply_hf_env
 
@@ -48,7 +48,7 @@ def encode_long(tokenizer: Any, target: int, device: str) -> torch.Tensor:
         reps = (target // ids.shape[1]) + 1
         ids = ids.repeat(1, reps)
     ids = ids[:, :target]
-    return ids.to(device)
+    return cast(torch.Tensor, ids.to(device))
 
 
 def main() -> int:
@@ -92,10 +92,12 @@ def main() -> int:
         "conditions": {},
     }
 
+    raw_model = model.model
+    assert raw_model is not None, "loaded model exposes no underlying module"
     for split in (False, True):
         name = "split" if split else "nosplit"
         folded = FoldedModel(
-            model.model,
+            raw_model,
             cache=VectorizedActivationCache(max_entries_per_layer=65536, device="cuda"),
             gate=SimilarityGate(tau=0.99),
             split_layers=split,

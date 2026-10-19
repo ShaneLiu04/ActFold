@@ -241,7 +241,7 @@ class SpeculativeCore:
         """
         if x.shape[0] != 1:
             raise ValueError(
-                "SpeculativeCore._speculative_commit supports batch 1 only; "
+                "SpeculativeCore speculative units support batch 1 only; "
                 f"the family fold-context mask cannot express per-row padding "
                 f"(got batch {x.shape[0]})."
             )
@@ -353,6 +353,16 @@ class SpeculativeCore:
         """
         masked_local = masked_local.reshape(-1)
         num_masked = int(masked_local.shape[0])
+        if num_masked == 0:
+            # Segment A's defensive twin: the composed entry raises on an
+            # empty masked_local BEFORE the forward; segment B keeps the
+            # same guard so a direct (joint-loop) caller gets the ValueError
+            # contract instead of a min() over an empty reduction dim.
+            raise ValueError(
+                "SpeculativeCore._speculative_score_commit requires a "
+                "non-empty masked_local (the family adapter skips empty "
+                "units before calling)."
+            )
         region_len = int(draft_logits_region.shape[1])
         fill_positions = masked_local + region_start  # [M] canvas coordinates
 
