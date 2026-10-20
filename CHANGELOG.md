@@ -4,6 +4,27 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR029: Edge Bounded-Memory Pyramid Activation Cache — Per-Layer Budgets, Block Pages, Sentinel Availability Guard (mechanism delivery; real-checkpoint A/B BLOCKED-DEFERRED)
+
+Spec: `specs/changes/AR029-edge-pyramid-cache/` (srs.md / design.md / tasks.md; requirements gate PASS round 3, design gate PASS round 6). Motivation: edge devices cannot retain every layer's full activation for every branch — `ActivationCache` uses one uniform per-layer budget and evicts whole entries, so a tight budget disables folding and a loose one grows linearly with depth. AR029 makes residency a first-class, planable object.
+
+#### Added
+
+- **Planning (`actfold/core/pyramid_plan.py`)**: frozen `PyramidPlan` + `build_pyramid_plan(depth, total_tokens, block_size, max_ratio, min_ratio, schedule, recent_blocks, anchor_blocks, anchor_stride)`. A plan-wide `total_tokens` is normalized into per-layer weights (linear/geometric), floored to blocks, reclaimed from the deepest layer until the sum fits, and rejected with `ValueError` when `depth*block_size > total_tokens`. `retained_blocks(layer, seq_len)` is deterministic (leading anchors + stride) and clamped to the block count.
+- **Storage (`actfold/core/pyramid_cache.py`)**: `PyramidActivationCache` — block-page storage, per-layer hard budgets, per-layer global write order with anchor/recent protection and oldest-block fallback, entry deletion when empty, NaN missing sentinel (`missing_value=nan`), `fetch`/`get_all`/`get`/`fetch_masked` with exact hole semantics, `availability(parent, layer, seq_len, step_idx=0)`, six-key `stats()`, `bytes_used`, `iter_block_tensors()`, atomic `put_batch`, `graph_incompatible=True`, and the legacy cache surface (`put`, `contains`, `clear_*`, `num_entries`, `write_op_count`).
+- **Safety guard (`actfold/core/folded_transformer.py`)**: `_apply_cache_availability` ANDs the **target layer's** availability into `stable_mask` after the `forced_divergent` AND and before the profiler record / count consumption / fast paths. Required because the gate reads parent L-1 while the merge uses parent L: per-layer budgets can leave L-1 resident and L missing. 1-D masks stay 1-D (AR028 per-row path), and the fused-gate count buffer is invalidated (`stable_count_buf=None`) so `stable_mask.sum()` re-derives it. Wired into serial, same-parent batched, and multi-parent per-row paths. Caches without `availability` are a no-op.
+- **Graph exclusion (`actfold/models/architecture_utils.py`)**: `ManualFoldedForward` validates graph × pyramid at `__init__` and in the `cache` property setter (validation before propagation; `use_cuda_graph` moved ahead of the check), so a failed swap never half-propagates.
+- **Wiring**: `make_activation_cache(use_pyramid=...)` (highest priority over vectorized/chunked), `ActFoldConfig.use_pyramid_cache` + nine `pyramid_*` fields, `actfold.core` exports, and `BenchmarkRunner._resolve_pyramid_depth` / `_pyramid_cache_kwargs` (real depth from config / `num_layers` / `config.num_hidden_layers`, never a guessed 32; `use_cuda_graph` conflict raises `ValueError`).
+- **Mechanism benchmark (`scripts/ar029_pyramid_cache_bench.py`)**: real small decoder (real attention/FFN), frozen E1-E4 verdicts, full face vs `ActivationCache`, pressure face vs `_HoleMaskedDense` (per-layer NaN oracle) on a **non-uniform** linear pyramid `[4·block, 1·block]`, quick artifact only (`--quick`), formal face returns exit 3 (BLOCKED-DEFERRED). Artifact: `results/optimization/ar029_pyramid_cache_bench_quick.json`.
+- **Tests**: plan 20 / cache 35 / integration 27 / bench verdicts 12 = **94 AR029 tests** (UT-2901–2978 including 2905b/2963b), covering budgets, eviction, sentinels, guard ranks, graph/setter rejection, factory precedence, YAML keys, runner depth resolution, verdict mutation and the guard-off refutation.
+
+#### Results (mechanism, CPU, single-shot)
+
+- E1 exactness: full `0.0` / pressure `0.0`; E2 per-layer bound + independent byte ledger PASS on both faces; E3 reuse `40/64 = 0.625`; E4 all outputs/stats finite and non-negative → **E1-E4 supported**, `overall="supported"`, `evidence_level="mechanism"`, `baseline_claim=false`.
+- Full suite: **1273 passed / 4 skipped / 3 deselected**; `black` / `isort` / `pyflakes` clean; `mypy actfold` 0 in 70 files and `mypy scripts` 0 in 27 files.
+- Design erratum recorded in `design.md` §4.2.3: the originally frozen uniform-budget pressure face is not executable (the guard is redundant when the gate layer is also missing, and the child's layer-0 write evicts the parent layer-0 entry, forcing an unrelated full recompute), so the pressure face uses a genuine pyramid plus a per-layer hole oracle.
+
+
 ### Maintenance: script-side mypy debt cleared (29 findings → 0) on the archived tree
 
 A code-quality pass triggered by the standing "no large experiments, deepen the code" directive; no behavior change (type-level annotations, narrowing assertions, `cast`s only).

@@ -45,6 +45,41 @@ _GATHER_SELECT_MIN_HIDDEN = 4096
 _GATHER_SELECT_REQUIRE_CUDA = True
 
 
+def _apply_cache_availability(
+    layer: "FoldedTransformerLayer",
+    parent_branch_id: str,
+    stable_mask: torch.Tensor,
+) -> tuple[torch.Tensor, bool]:
+    """AND the target-layer availability of a sentinel cache into ``stable_mask``.
+
+    Caches without ``availability`` (every legacy cache) are a no-op.  Folding
+    stores/reads entries at step 0, so the query uses the same key as
+    ``put``/``fetch``.  A 1-D mask (AR028 per-row path) stays 1-D.
+
+    Returns:
+        ``(mask, applied)``; ``applied`` tells the caller to invalidate any
+        fused-gate count buffer derived from the pre-guard mask.
+    """
+    availability = getattr(layer.cache, "availability", None)
+    if availability is None:
+        return stable_mask, False
+    avail = availability(parent_branch_id, layer.layer_idx, int(stable_mask.shape[-1]), 0)
+    if avail is None:
+        return stable_mask, False
+    avail = avail.to(device=stable_mask.device)
+    if stable_mask.ndim == 1:
+        if avail.ndim != 1:
+            avail = avail.reshape(-1)
+        return stable_mask & avail, True
+    if avail.ndim == 1:
+        avail = avail.view(1, -1)
+    if avail.shape[0] == 1 and stable_mask.shape[0] > 1:
+        avail = avail.expand(stable_mask.shape[0], -1)
+    elif avail.shape[0] != stable_mask.shape[0]:
+        avail = avail.expand(stable_mask.shape[0], -1)
+    return stable_mask & avail, True
+
+
 class FoldedTransformerLayer(nn.Module):
     """A wrapped Transformer layer that reuses parent activations where stable.
 
@@ -334,6 +369,14 @@ class FoldedTransformerLayer(nn.Module):
             stable_mask &= ~forced_divergent
             stable_count_buf = None
 
+        # AR029: a sentinel cache (pyramid) may have evicted rows of the
+        # TARGET layer while the gate read layer L-1.  AND the target-layer
+        # availability before the profiler/count/fast paths so a hole always
+        # recomputes.  Legacy caches are a no-op.
+        stable_mask, cache_guarded = _apply_cache_availability(self, parent_branch_id, stable_mask)
+        if cache_guarded:
+            stable_count_buf = None
+
         # Record real layer-wise stability statistics for downstream consumers.
         GLOBAL_STABILITY_PROFILER.record(
             branch_id=branch_id,
@@ -609,6 +652,9 @@ class FoldedTransformerLayer(nn.Module):
             # region in before the per-row profiler records and the batch
             # stable-count readback.
             stable_mask &= ~forced_divergent
+
+        # AR029 target-layer availability guard (same-parent batch: one mask).
+        stable_mask, _cache_guarded = _apply_cache_availability(self, parent_branch_id, stable_mask)
 
         for row_idx, bid in enumerate(branch_ids):
             GLOBAL_STABILITY_PROFILER.record(
@@ -921,6 +967,19 @@ class FoldedTransformerLayer(nn.Module):
         if forced_divergent is not None:
             # AR021 FR2 single ordering (batched face), unchanged.
             stable_mask &= ~forced_divergent
+
+        # AR029 per-row target-layer availability guard (each row uses its
+        # own parent id; rows without a usable parent stay all-False).  The
+        # shared helper keeps the rank/availability contract single-sourced.
+        if getattr(self.cache, "availability", None) is not None:
+            for row_idx, (pid, valid) in enumerate(zip(parent_branch_ids, row_valid)):
+                if not valid:
+                    stable_mask[row_idx] = False
+                    continue
+                row_mask, _ = _apply_cache_availability(
+                    self, pid, stable_mask[row_idx : row_idx + 1]
+                )
+                stable_mask[row_idx] = row_mask[0]
 
         for row_idx, bid in enumerate(branch_ids):
             GLOBAL_STABILITY_PROFILER.record(

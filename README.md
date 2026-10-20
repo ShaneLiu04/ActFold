@@ -41,9 +41,14 @@ ActFold 用 **Branch Folding（分支折叠）** 攻击这一冗余：在每一�
 
 > **目标影响**：验证阶段 TFLOPs 削减 21%–62%，精度损失极小。
 >
-> **最新交付（AR022）**：Fast-dLLM-v2-1.5B 真实生成回路，贪心锚定批量投机
-> **7.02×** 于 baseline，且质量面与 baseline **逐位对齐**（post-hoc 置信
-> gap = 0.0、解码长度/早停完全恢复）。
+> **最新交付（AR029）**：端侧有界内存**金字塔激活缓存**——逐层差异化预算 +
+> 块页存储 + NaN 缺失哨兵 + 目标层可用性守卫；机制基准 E1-E4 全 supported
+> （full/pressure 两面逐位一致），真实 checkpoint A/B 按范围裁定
+> **BLOCKED-DEFERRED**（机制交付，不声明 baseline 加速）。
+>
+> **最强 baseline 证据（AR022）**：Fast-dLLM-v2-1.5B 真实生成回路，贪心锚定
+> 批量投机 **7.02×** 于 baseline，且质量面与 baseline **逐位对齐**（post-hoc
+> 置信 gap = 0.0、解码长度/早停完全恢复）。
 
 ### 核心思想
 
@@ -86,6 +91,7 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 11 | **生产生成回路折叠接线**（AR021） | AR015–020 批量验证栈**零生产调用方**（sampler 不传 pe 则真实 remote 必崩、掩码对象不钉则图捕获一次后永不重放、`[N,T]` 批量验证形态在生产回路不存在）；AR019 P5 实证 tau=0.95 gate 会把同块未翻位置误判 stable（parity 92.9% 先例）——链折叠直接上 gate 不精确 | sampler **(T,prompt_len) 键控折叠供给**（块因果∧pad 排除 `[T,T]` 掩码 + rotary pe + forced 三件套对象钉定，跨 sample 存续）+ **强制散度活跃块**（当前块整区不进 gate 判定面、全量重算——parity 由构造保证，P5 构造级绕开）+ **形状键控 runner 池**（opt-in `graph_runner_pool_size`，跨块增长每形状窗捕获/重放，LRU+cuBLAS workspace 回收）+ **批量投机块验证**（opt-in `num_block_candidates`：top-k 起草→单次 `[N,T]` 批量验证→min-prob 选定提交；AR016/017/018/020 批量面首次被生产回路行使） | 真实 generate() 三模式：**H1 supported（真实 checkpoint bit-exact）**；H2 inconclusive（Δ=−107.5ms 未越 2σ=265.3ms，小形状串行折叠开销>收益）；**H3 supported（batched vs serial 2.47× / vs baseline 2.38×，p50 1193.9 vs 2948.3/2840.7ms）**；H4 supported（池计数逐位对账、账本 c=4 界内、canary 真） |
 | 12 | **贪心锚定候选：批量投机质量对齐**（AR022） | AR021 批量投机 2.38× 但**质量面与 baseline 分叉**：块级 exact-match 0.0、post-hoc 置信 0.3697→0.2897 / 0.5703→0.1064、解码长度 160/77 vs baseline 早停 34/66（非贪心提交不命中 stop token）——速度-质量权衡是 AR021 的如实遗留 | `candidate_include_greedy`（opt-in）：候选**行 0 = 贪心假设**（draft top-k 有序集首位，srs 冻结 argmax 定义；确定性构建、零设备回读、零 generator 消费）；N 总数不变、随机行 j=1..N-1 在冻结种子公式中保持行号；贪心行进入 **min-prob 公平竞争、可落败**（UT-2203 后验陷阱构造级钉死，选定零特判）；`greedy_win_stats` 只读观测面 + `ActFoldConfig` YAML 消费面；四模式基准 MFF_C 与 MFF_B 同构独立实例——速度变量构造性清零 | 四模式 H1-H4 **全 supported**：posthoc 0.369661/0.570341 逐位==baseline（gap=0.0）、长度 34/66 早停**完全恢复**、块级 exact 4/4=1.0 vs batched 0.0；p50 440.9ms——**7.0236× vs baseline / 2.9498× vs batched**；复现自检 strict PASS（batched 逐位==AR021 先验） |
 | 13 | **多 parent 批量折叠 + 双链 lockstep 并行投机**（AR025） | AR015 批量契约限定**同父**：双链投机只能逐链各发一次 `[N,T]` 批量前向——写账本随链数线性放大（合成面实测 chains=2/4 时 40–160 ops vs 合并 4 ops），跨链候选永不共享一次前向；逐链交错路径还让缓存 LRU 行为不对称（DD8 erratum 实证） | ①机制面：`ManualFoldedForward.parent_branch_ids` 尾参——per-row 父装配（gather + 行级降级，OQ1）+ 逐行 gate/merge，`[sum(N_c), T]` 单次折叠前向服务多链候选；②采样面：`sample_joint` W2 lockstep（单实例双链、per-chain 画布/折叠链状态/链限定 cache tag，双实例禁令=branch id 碰撞）；`_speculative_commit` 按 forward 接缝拆分 `_speculative_build`/`_speculative_score_commit`，合并闭包重写单数→复数 parent 参数；**种子公式无链分量**（同 unit/sub/j per chain ⇒ A/B 逐位等价构造前提）；③基准面：`--mode real` AR023 模板接线 + DD8 冻结判定式（H1 逐位硬门+logits 归因回放、H2 严格 p50(B)/p50(A)>1.0、交付线 ≥10%、H4 账本严格小） | 合成面 **16/16 全过**（8 形状点×双构造：S1 supported——nonsplit 逐位/split allclose 1e-6；S2 supported——写账本 4 < 40–160 严格；S3 0.9–0.975 report-only）；UT 13 例（逐位相等+账本严格小+守卫面）+ 冻结面哨兵 96 绿；真实面 reps=30 接线交付、按 RERUN 步骤 16 待高速算力机执行回填 |
+| 14 | **端侧有界内存金字塔激活缓存**（AR029） | 端侧 GPU/边缘设备无法为每个分支保留整层全量激活：`ActivationCache` 逐层同预算整条 LRU，长序列/多层时驻留量随层数线性增长；现有缓存要么全量驻留、要么整条淘汰，缺少**逐层差异化预算 + 块页 + 缺失哨兵**的统一机制 | ①`PyramidPlan`：plan 级总预算归一化为逐层块对齐预算（linear/geometric，floor 后从最深回收，`depth*block>total` 显式拒绝）；②`PyramidActivationCache`：块页存储 + 逐层硬预算 + 确定性锚点/近期窗口 + NaN 缺失哨兵 + `availability` + 六键 `stats()` + 原子 `put_batch`；③安全核心：门读 L-1、合并用 L，仅靠 NaN 会错配逐层预算——`_apply_cache_availability` 在 forced AND 之后、profiler/计数/快速路径之前把**目标层**可用性 AND 进 mask，1-D（AR028 逐行）绝不扩维；④graph×pyramid 在 MFF init+setter 双校验拒绝（图静态父缓冲看不到运行时淘汰） | 机制面 quick 工件 **E1-E4 全 supported**：全量预算 vs `ActivationCache` 与逐层洞 oracle **逐位一致（diff=0.0）**、逐层预算/独立字节账本成立、压力面复用率 0.625、输出与统计全有限非负；AR029 套件 **94 passed**（plan 20 / cache 35 / integration 27 / bench 12）；真实 checkpoint A/B 按范围裁定 **BLOCKED-DEFERRED**（`baseline_claim=false`） |
 
 ### 机理详解（按创新演进顺序）
 
@@ -348,11 +354,90 @@ T006 接线交付（`--mode real`，AR023 模板），正式数字待高速算�
 RERUN 步骤 16 执行回填——16GB WDDM 本机实测 bf16 权重 15.8GB+折叠缓存
 即触顶硬崩、int8 逃生门在驱动坏态下量化停滞，均如实注记于 RERUN。
 
+#### 13. 端侧有界内存金字塔激活缓存（AR029）：逐层预算 + 块页 + 缺失哨兵
+
+Branch Folding 的收益以「父激活可复用」为前提，但端侧设备没有足够显存把每个
+分支的每层激活全量留住。旧的 `ActivationCache` 用**逐层同预算、整条 LRU**
+兜底：预算一紧就整条淘汰父条目，后续层全部退化为重算；预算一松又随层数线性
+吃内存。AR029 把「留住多少」变成**可规划、可逐层差异化**的一等对象：
+
+- **`PyramidPlan`（冻结、可复现）**：`build_pyramid_plan(depth, total_tokens,
+  block_size, max_ratio, min_ratio, schedule, ...)` 把 plan 级总预算归一化为
+  逐层权重（linear/geometric），floor 到 block 后若总和超限则从最深层层层
+  回收一个 block；`depth*block_size > total_tokens` 直接 `ValueError`（每层
+  至少一页的硬前提）。`retained_blocks(layer, seq_len)` 给出确定性锚点
+  （首块 + 固定 stride），运行期最近窗口不进入 plan。
+- **`PyramidActivationCache`（块页存储）**：激活按 `block_size` 切页，
+  逐层 `budget_tokens(layer)` 硬上界；淘汰顺序 = 全局写入序，先跳过锚点与
+  「刚写入 entry 的 recent 块」，仍超限时按硬边界回收最旧块；条目删空即从
+  层表移除。读路径 `fetch/get_all/fetch_masked` 对缺失 token 返回 **NaN
+  哨兵**（`missing_value=nan`），`availability(parent, layer, seq_len, step)`
+  返回精确的可用位图；`stats()` 冻结六键（tokens/blocks/bytes/evictions/
+  requests/missing_tokens），`put_batch` 先全量校验再顺序写（原子性），
+  `bytes_used` 与 `iter_block_tensors()` 的独立字节和一致。
+- **安全核心：目标层可用性守卫**。门控读的是父 **L-1** 的 `ffn_out`
+  （layer 0 读 `embedding`），而合并用的是父 **L** 的 `ffn_out`。逐层预算
+  不同（金字塔的本意）时，L-1 可能仍在而 L 已缺失；单靠 NaN 只会让门把该行
+  判为不稳定，无法表达「L-1 可用、L 缺失」。`_apply_cache_availability`
+  在 `forced_divergent` AND 之后、profiler/计数/快速路径之前，把目标层
+  `availability` AND 进 `stable_mask`，使缺失行**必然重算**；返回的
+  `cache_guarded` 让 fused-gate 的陈旧计数失效，回落 `stable_mask.sum()`。
+  1-D 逐行 mask（AR028 风格）保持 1-D，绝不扩成 `[T,T]`。
+- **互斥与接线**：CUDA graph 的静态父缓冲看不到运行时淘汰，因此
+  `ManualFoldedForward` 在 `__init__` 与 `cache` setter **双点**校验
+  `graph × pyramid`（先校验后传播，失败不半传播，`use_cuda_graph` 赋值前移）；
+  `PyramidActivationCache.graph_incompatible=True` 是显式声明。
+  `make_activation_cache(use_pyramid=...)` 优先级最高（压过 vectorized/
+  chunked），`ActFoldConfig.pyramid_*` 消费 YAML 键，`BenchmarkRunner`
+  用 `_resolve_pyramid_depth` 从真实模型取层数（显式 `pyramid_depth` 优先，
+  其次 `num_layers` / `config.num_hidden_layers`，绝不猜 32），
+  `use_cuda_graph` 同开直接 `ValueError`。
+- **证据面**：机制基准 `scripts/ar029_pyramid_cache_bench.py` 用真实小型
+  decoder（真 `nn.Linear`/softmax attention/FFN）在 CPU 上跑两面——
+  **full**（无淘汰）对 `ActivationCache` 逐位比较；**pressure**（线性金字塔
+  `[4·block, 1·block]`，父 L0 常驻、目标 L1 尾部缺失）对逐层 NaN-oracle
+  逐位比较。quick 工件 E1-E4 全 supported；正式真实 checkpoint A/B 按用户
+  「不做大型实验」范围裁定为 **BLOCKED-DEFERRED**（`baseline_claim=false`，
+  未来正式面须先在 `run_formal_queue` 增加 FaceSpec）。
+
 ---
 
 ## 最新实验结果
 
-### 多 parent 批量折叠合成基准（AR025）：跨链候选共享一次前向，16/16 全过（最新头条，机制面交付）
+### 端侧金字塔缓存机制基准（AR029）：E1-E4 全 supported（最新头条，机制面交付）
+
+**证据等级**：`evidence_level="mechanism"`、`baseline_claim=false`——这是**机制/
+基础设施**工件，不是「比官方 baseline 更快」的声明；真实 checkpoint A/B 按用户
+「不做大型实验」范围裁定为 **BLOCKED-DEFERRED**。
+
+**工作负载**：真实小型 decoder（L=2/H=32/V=64，真 `nn.Linear` 注意力与 FFN），
+`SimilarityGate` cosine τ=0.9，CPU 逐位纪律，`T=32`、`block_size=16`，确定性
+单发（seed 1234）。工件：
+`results/optimization/ar029_pyramid_cache_bench_quick.json`。
+
+**两面设计**：
+
+- **full**（`total=4·T·depth`，无淘汰）：金字塔缓存必须与 `ActivationCache`
+  **逐位一致**（同一 root 写入后折叠同一 child）；
+- **pressure**（线性金字塔 `[4·block, 1·block]`）：父 L0 全量常驻、目标 L1
+  尾部 16 token 被逐出——这是唯一能行使「目标层守卫」的几何。参考实现是
+  `_HoleMaskedDense`：真实 `ActivationCache` 的完整父激活按金字塔的**逐层**
+  `availability` 注入 NaN 哨兵，存储实现独立但门/守卫输入逐位等价。
+
+**冻结判定与实测**：
+
+| 判定 | 条件 | 实测 | 结果 |
+|---|---|---|---|
+| **E1 exactness** | full 与 pressure 两个 `max_abs_diff` 均 `== 0.0` | `0.0` / `0.0` | **supported** |
+| **E2 memory bound** | 每层 `tokens ≤ budget` 且 `stats["bytes"] == Σ block tensor bytes`（full 与 pressure 两面） | 两面均成立 | **supported** |
+| **E3 reuse** | `reuse_tokens > 0` 且 `reuse/valid ≥ 0.01` | 40/64 = **0.625** | **supported** |
+| **E4 honesty** | 全部输出有限、全部统计有限非负 | 全部 PASS | **supported** |
+
+压力面统计：`tokens_stored=80`、`cache_bytes=18432`、`evictions=4`、
+`missing_ratio=0.2`。判定优先级冻结为 **blocked（不诚实）> supported >
+refuted**，`--quick` 只写 `_quick.json`，正式路径不生成。
+
+### 多 parent 批量折叠合成基准（AR025）：跨链候选共享一次前向，16/16 全过（机制面交付）
 
 **工作负载**：合成因果 cumsum decoder（L=4/H=64/V=128，prefix-stable
 scan + 可探测 FFN 链），`SimilarityGate` cosine τ=0.95，CPU 逐位纪律
@@ -890,8 +975,9 @@ pip install -e .                       # 可编辑安装
 | 7 | AR024 提交粒度子块窗口（子块分解 + 渐进回填 + EOS 感知延续） | LLaDA 8B 投机链 | UT 23 例全绿（位级锚定/后验陷阱/EOS 延续） | 待实机 | `specs/changes/AR024-commit-granularity/` | **待实机**（GPU 窗口） |
 | 8 | AR025 多 parent 批量折叠 + 双链 lockstep 并行投机 | 合成面 16 形状点；真实面接线（LLaDA/Dream，判定式冻结） | S1 合并奇偶 16/16 / S2 写账本 4<40–160 严格 / S3 0.9–0.975（DD8 预算 erratum 留档）；UT 15 例 + 哨兵 96 绿 | 待真实面（H1 逐位+归因 / H2 p50 / 交付线 ≥10% / H4 账本） | `ar025_multi_parent_bench.json` | 已归档（`specs/archive/AR025-multi-parent-batch-folding/`，ST Go）；正式 reps=30 待高速算力机（RERUN 步骤 16，本机 16GB 限制如实注记） |
 | 9 | AR026 真实 checkpoint 端到端图路径（生产捕获 + 四模式图基准） | LLaDA-8B / Dream-7B 生产捕获 | **T006 首验 PASS**：两族生产捕获 `graph_captures=2`、零失败诊断、零降级回退（AR023 裸捕获断言/广播断裂未复现）；四模式奇偶判定冻结 | 待正式面 | `ar026_probe_graph_faces.json` | 首验 PASS；正式面待跑 |
+| 10 | AR029 端侧有界内存金字塔激活缓存（逐层预算 + 块页 + 缺失哨兵守卫） | 机制基准：真实小型 decoder，full/pressure 两面（CPU 逐位） | E1-E4 **全 supported**（两面 diff=0.0、逐层预算/字节账本、复用 0.625、诚实性 PASS） | 机制面（无 baseline 速度声明） | `ar029_pyramid_cache_bench_quick.json` | 机制交付；真实 checkpoint A/B **BLOCKED-DEFERRED**（`baseline_claim=false`） |
 
-**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
+**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
 
 ## 快速上手
 
@@ -1050,7 +1136,28 @@ python -m scripts.ar025_multi_parent_bench --mode synth --quick  # 单点冒烟
 #     --models-root <权重根> --probe-artifact results/optimization/ar023_family_probe.json --reps 30
 ```
 
-### 6. 端到端折叠生成
+### 6. 端侧有界内存缓存（AR029）
+
+```python
+from actfold.core import make_activation_cache
+from actfold.core.pyramid_plan import build_pyramid_plan
+
+# 逐层差异化预算：浅层宽、深层窄（线性的真实金字塔几何）
+plan = build_pyramid_plan(depth=32, total_tokens=32768, block_size=16,
+                          max_ratio=1.0, min_ratio=0.25, schedule="linear")
+cache = make_activation_cache(use_pyramid=True, pyramid_depth=32,
+                              pyramid_total_tokens=32768)
+
+# 或者直接交给工厂的默认参数（深度必须真实，绝不猜）
+cache = make_activation_cache(use_pyramid=True, pyramid_depth=model.num_layers)
+# mff = ManualFoldedForward(model, cache=cache, gate=gate)  # 自动启用缺失哨兵守卫
+```
+
+约束：`use_pyramid` 与 `use_cuda_graph` 互斥（构造期 `ValueError`）；缺失
+token 以 NaN + `availability` 表达，目标层缺失必然重算；机制基准
+`python -m scripts.ar029_pyramid_cache_bench --quick` 产出 E1-E4 工件。
+
+### 7. 端到端折叠生成
 
 ```python
 from actfold.speculative.folded_generation import folded_generate
@@ -1066,7 +1173,7 @@ print(result.stable_ratio)    # 实测逐层平均 stable ratio
 print(result.acceptance_rate) # 真接受率（AR004）
 ```
 
-### 7. 运行评测
+### 8. 运行评测
 
 ```bash
 bash scripts/run_real_model_benchmark.sh
@@ -1193,17 +1300,18 @@ bash scripts/run_ablation.sh --synthetic
 ## 质量保障
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
-- **mypy**（`--ignore-missing-imports`）：`actfold` 68 文件 0 错 +
-  `scripts` 26 文件 0 错（`--explicit-package-bases`，命名空间包口径；
+- **mypy**（`--ignore-missing-imports`）：`actfold` 70 文件 0 错 +
+  `scripts` 27 文件 0 错（`--explicit-package-bases`，命名空间包口径；
   维护轮已清 29 项既有债务）
-- **pytest** 快速套件 **1179 passed / 4 skipped / 3 deselected**（零失败）
-  （AR027 轮次实测 ~85s；含 AR025 sample_joint 15 例、AR024/AR026 并行轮
-  新增、AR027 合同测试 66 例（UT-2701~2764：队列冻结/preflight/执行/校验/
-  覆盖审计/异常面）；lm-eval×2 bench-backend 用例已随 `pytest addopts`
-  默认 deselect（3 deselected，与代码无关）；skip = CUPTI + evalplus-unix
-  平台面等；BS-007 图重放性能判定在 Windows WDDM 小内核主机上按实测数字
-  诚实 skip——同一份 AR002 代码在该类主机上图重放慢于 eager 已经版本二分
-  确证为平台特性，历史工件保持证据效力）
+- **pytest** 快速套件 **1273 passed / 4 skipped / 3 deselected**（零失败）
+  （最新实测 ~73s；含 AR025 sample_joint 15 例、AR024/AR026 并行轮新增、
+  AR027 合同测试 66 例（UT-2701~2764）、**AR029 套件 94 例**（UT-2901~2978：
+  计划 20 / 缓存 35 / 集成 27 / 机制基准判定 12；user-authorized quick 面）；
+  lm-eval×2 bench-backend 用例已随 `pytest addopts` 默认 deselect
+  （3 deselected，与代码无关）；skip = CUPTI + evalplus-unix 平台面等；
+  BS-007 图重放性能判定在 Windows WDDM 小内核主机上按实测数字诚实 skip——
+  同一份 AR002 代码在该类主机上图重放慢于 eager 已经版本二分确证为平台特性，
+  历史工件保持证据效力）
 - 工具链钉版：`requirements-dev.txt`（black==23.12.1 / isort==5.13.2 /
   pyflakes==4.0.0 / mypy==2.4.0），`requirements.txt` 限 `transformers<5`
   （remote-code 5.x 不兼容）；换机后按同版本安装即可复现质量门
@@ -1229,12 +1337,12 @@ python demo.py
 - [`docs/ALGORITHM.md`](docs/ALGORITHM.md) — Branch Folding 形式化描述
 - [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — 复现工作流
 - [`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md) — 两阶段深度实验报告（诊断 + 优化，真实模型实测）
-- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **29 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
+- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **30 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
-- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；§7 = 高算力服务器复现路径）
-- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule 与 #46 真实 checkpoint 运维法规）
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR026）
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；第 17 步 = AR029 机制 quick 面（BLOCKED-DEFERRED）；§7 = 高算力服务器复现路径）
+- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule、#46 真实 checkpoint 运维法规与 #48 AR029 金字塔缓存契约）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR029）
 
 ---
 
@@ -1262,8 +1370,12 @@ python demo.py
     16GB WDDM 实测 bf16 权重 15.8GB+折叠缓存触顶硬崩、int8 逃生门在驱动
     坏态下量化停滞，均如实留档）。保留判定：AR019 (256,4) 首配置 H1 因
     WDDM 热身方差欠功效
-   （方向压倒性）、AR021 H2 inconclusive（见第 4 条）——均按预承诺单次
-   运行纪律如实记录。
+    （方向压倒性）、AR021 H2 inconclusive（见第 4 条）——均按预承诺单次
+    运行纪律如实记录。**AR027** 已把七个正式面收敛到单一执行器
+    `python -m scripts.run_formal_queue`（硬 preflight + 冻结判定重算 +
+    overwrite 审计 + 分段日志），并归档于
+    `specs/archive/AR027-server-formal-runner/`；服务器窗口到位后由它一次性
+    跑完 AR023/024/025/026 正式面。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
    图缓冲为紧约束（AR026 生产捕获首验在此跑通，但四模式正式面建议 ≥24GiB）；
    真实模型两阶段实验（TFLOPs 削减与逐层结论）已在
@@ -1304,6 +1416,14 @@ python demo.py
 9. **专用 draft 架构（Medusa/Eagle）为 tier 2**。`model_draft` 已支持任意
    独立草稿模型的论文级接受率计量（AR006）。
 10. **逐模型 YAML 是模板**——请填入实际 Hugging Face 标识或本地 checkpoint 路径。
+11. **端侧金字塔缓存（AR029）是机制交付，不是速度声明**。已验证：逐层预算
+    归一化/块页淘汰/缺失哨兵/目标层守卫/工厂与配置接线/机制基准 E1-E4；未验证：
+    真实 checkpoint 上的质量-速度 A/B（按用户「不做大型实验」范围裁定
+    **BLOCKED-DEFERRED**，`baseline_claim=false`）。CUDA graph 与金字塔缓存
+    **互斥**（图静态父缓冲看不到运行时淘汰，init+setter 双点 `ValueError`）；
+    未来正式面须先在 `run_formal_queue` 增加 FaceSpec，再按 RERUN 记录环境/
+    资源/命令/工件路径。`pyramid_depth` 必须来自真实模型或显式配置——解析器
+    拒绝猜测层数。
 
 ---
 
@@ -1317,6 +1437,9 @@ python demo.py
 | `ValueError: ... supports batch 1 only` | 折叠采样路径收到 B>1（`[T,T]` 折叠掩码不可表达逐行 pad） | 折叠路径逐 prompt 调用（AR021）；batch 需求走 raw 路径 |
 | `ValueError: num_block_candidates > 0 requires a folded_model...` | 批量投机模式缺 `branch_ids` 能力的 folded_model | 传入 `ManualFoldedForward`（构造期显式报错，不静默降级） |
 | `ValueError: candidate_include_greedy=True requires num_block_candidates > 0` | 贪心锚定仅定义于投机路径（AR022） | 同时设置 `num_block_candidates>0`（构造期显式报错，不静默降级） |
+| `ValueError: use_pyramid_cache cannot be combined with use_cuda_graph` | 图静态父缓冲看不到运行时淘汰（AR029 互斥） | 关闭 `use_cuda_graph` 或不用金字塔缓存；setter 换入同样拒绝 |
+| `ValueError: use_pyramid_cache requires a real layer count` | `BenchmarkRunner` 拿了没有 `num_layers/num_hidden_layers` 的模型且未显式给深度 | 设置 `pyramid_depth`，或传入暴露真实层数的 adapter/模型（绝不猜 32） |
+| 折叠输出出现 NaN | 用了哨兵缓存但绕过了 `availability` 守卫（自定义 forward 未调用 helper） | 走 `ManualFoldedForward`/`FoldedTransformerLayer` 的受支持路径（AR029 已内置守卫） |
 | CUDA 上未用 Triton kernel | 未装 `triton` / 无 C 编译器（bf16 键记录） / hidden dim 不被 128 整除 | Linux/WSL 安装 `triton>=2.0`；PyTorch 回退恒正确（AR014 键记录） |
 | `evalplus` 在 Windows 失败 | 沙箱依赖 Unix `resource` 模块 | WSL 内运行 evalplus，或 Windows 用 lm-eval |
 | 慢测试超时 | 真实后端需加载模型与数据集 | 快速套件 `-m "not slow"`，慢测试单独跑 |

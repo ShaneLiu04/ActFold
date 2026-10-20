@@ -445,12 +445,15 @@ class ManualFoldedForward(nn.Module):
                 "graph_runner_pool_size must be >= 0, got " f"{graph_runner_pool_size}"
             )
         self.profile = detect_architecture(model)
+        # AR029: the cache setter validates graph compatibility, so the flag
+        # must exist before the initial cache assignment.
+        self.use_cuda_graph = bool(use_cuda_graph)
+        self._validate_cache_graph_compat(cache)
         self.cache = cache
         self.gate = gate
         self.scheduler = scheduler
         self.split_layers = bool(split_layers)
         self.split_min_tokens = int(split_min_tokens)
-        self.use_cuda_graph = bool(use_cuda_graph)
         self.graph_capacity_ratio = float(graph_capacity_ratio)
         # Adaptive capacity (AR017): the policy exists only when the feature
         # is on -- the public probe ``graph_adaptive_policy`` reads ``None``
@@ -545,6 +548,14 @@ class ManualFoldedForward(nn.Module):
             [self._wrap_layer(layer, idx) for idx, layer in enumerate(self.profile.layers)]
         )
 
+    def _validate_cache_graph_compat(self, value: Any) -> None:
+        """Reject a graph-incompatible cache when CUDA-graph folding is on (AR029)."""
+        if getattr(self, "use_cuda_graph", False) and getattr(value, "graph_incompatible", False):
+            raise ValueError(
+                "PyramidActivationCache is not CUDA-graph compatible; "
+                "use use_cuda_graph=False or a dense cache."
+            )
+
     @property
     def cache(self) -> Any:
         """Activation cache shared by the folded layers and graph runners."""
@@ -564,7 +575,11 @@ class ManualFoldedForward(nn.Module):
         fall back to eager. AR021 extends the reach to every runner held by
         the shape-keyed pools (including non-active members — an evicted
         runner is dead by definition and never replayed again).
+
+        AR029 validates graph compatibility BEFORE mutating any reference, so
+        a rejected swap leaves the instance unchanged.
         """
+        self._validate_cache_graph_compat(value)
         self._cache = value
         layers = getattr(self, "_wrapped_layers", None)
         if layers is not None:

@@ -605,3 +605,36 @@ model_family: "my_family"
 | "model_name_or_path is required" error | BenchmarkRunner config lacks a model path | Set a real model identifier in the config or pass `--model` |
 | "A real tokenizer is required" error | Evaluation model has no tokenizer | Use a model family that loads a tokenizer (e.g., `causal_lm`) |
 | Synthetic-looking ablation results | Using `--synthetic` or a template config without a checkpoint | Provide a real `model_name_or_path` for measured results |
+
+---
+
+## AR029 — Bounded-Memory Pyramid Cache (mechanism face)
+
+AR029 is a mechanism/infrastructure experiment: it validates the cache contract
+and the sentinel guard, not a baseline speedup. The only runnable face on the
+current scope decision (`baseline_claim=false`) is `--quick`:
+
+```bash
+python -m scripts.ar029_pyramid_cache_bench --quick
+```
+
+It writes `results/optimization/ar029_pyramid_cache_bench_quick.json` with:
+
+- `full`: no eviction, compared bit-for-bit against `ActivationCache`
+  (`total_tokens = 4 * T * depth`, uniform ratios 1.0);
+- `pressure`: a genuine linear pyramid `[4*block, 1*block]` (parent layer 0
+  resident, target layer 1 tail evicted), compared bit-for-bit against
+  `_HoleMaskedDense` — a real `ActivationCache` with the pyramid's per-layer
+  holes injected as NaN and the same `availability`;
+- `reference`: the dense oracle's own accounting.
+
+Frozen verdicts: **E1** both diffs `== 0.0`; **E2** per-layer token bound and
+`stats["bytes"] == sum(block tensor bytes)` on both faces; **E3**
+`reuse_tokens > 0` and `reuse/valid >= 0.01`; **E4** every output and stat
+finite and non-negative. Precedence is `blocked > supported > refuted`.
+
+Measured (CPU, seed 1234, single shot): E1 `0.0/0.0`, E2 PASS, E3 `40/64`,
+E4 PASS → `supported`. The formal real-checkpoint A/B is **BLOCKED-DEFERRED**;
+`main([])` without `--quick` returns exit 3 and writes nothing. Adding it
+requires a new `run_formal_queue` FaceSpec plus the standard dual-metric,
+pre-committed, `reps>=30` protocol (see `docs/RERUN_CHECKLIST.md` step 17).

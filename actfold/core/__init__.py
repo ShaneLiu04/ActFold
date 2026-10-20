@@ -8,6 +8,8 @@ from actfold.core.chunked_cache import ChunkedActivationCache
 from actfold.core.folded_transformer import FoldedTransformerLayer
 from actfold.core.folding_scheduler import FoldingScheduler
 from actfold.core.model_wrapper import FoldedModel
+from actfold.core.pyramid_cache import PyramidActivationCache
+from actfold.core.pyramid_plan import PyramidPlan, build_pyramid_plan
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.core.split_layer import SplitFoldedTransformerLayer, SplitSpec, detect_split_spec
 from actfold.core.vectorized_cache import VectorizedActivationCache
@@ -21,10 +23,13 @@ __all__ = [
     "FoldedModel",
     "FoldedTransformerLayer",
     "FoldingScheduler",
+    "PyramidActivationCache",
+    "PyramidPlan",
     "SimilarityGate",
     "SplitFoldedTransformerLayer",
     "SplitSpec",
     "VectorizedActivationCache",
+    "build_pyramid_plan",
     "detect_split_spec",
     "make_activation_cache",
 ]

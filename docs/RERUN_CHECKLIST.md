@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1179 passed / 4 skipped / 3 deselected（slow 默认跳过）
+# 4) 整仓质量门：期望 1273 passed / 4 skipped / 3 deselected（slow 默认跳过）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -306,6 +306,23 @@ python demo.py
 #      可装载但 bitsandbytes 量化在 WDDM 坏态下停滞（fresh 重启复现）。正式
 #      面与完整冒烟应在 Linux/TCC 高算力机执行后回填工件（步骤 7 流程）。
 #     对照数字：待正式工件（预承诺单次；勿以 quick 冒烟替代）
+#
+# 17) AR029 端侧金字塔激活缓存（机制面；真实 checkpoint A/B = BLOCKED-DEFERRED）
+#     a) quick 机制面（CPU，~数秒；与真实 checkpoint 无关）：
+python -m scripts.ar029_pyramid_cache_bench --quick
+#     工件：results/optimization/ar029_pyramid_cache_bench_quick.json
+#     预期：verdicts E1/E2/E3/E4 全 true、overall=supported；
+#     两面 max diff 均为 0.0；pressure reuse_ratio≈0.625；status=ok。
+#     b) 正式面（真实 checkpoint，BLOCKED-DEFERRED）：**当前脚本拒绝执行**——
+#     不带 --quick 直接返回 exit 3，且不写 formal 路径。原因：用户范围裁定
+#     「不做大型实验」，本 AR 是机制/基础设施交付（baseline_claim=false），
+#     不得用 quick 数字冒充 baseline 加速。未来正式面必须：
+#       1. 先在 scripts/run_formal_queue.py 增加 AR029 FaceSpec（前置换算/命令/
+#          工件校验函数），不得手工拼命令；
+#       2. 定义质量-速度双指标（质量对齐 + p50 加速）与预承诺单次协议；
+#       3. 在 ≥24GiB 安静 GPU（Linux/TCC）上按步骤 7 执行并回填工件，
+#          再更新 README ladder 第 10 档状态。
+#     c) 环境：quick 面只依赖 CPU torch；不需要 AR019 venv、权重或 CUDA。
 ```
 
 ## 4. 方法学要求（重跑必须满足）

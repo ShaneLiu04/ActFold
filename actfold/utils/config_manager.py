@@ -74,6 +74,19 @@ class ActFoldConfig:
     use_stability_profiler: bool = True
     use_chunked_cache: bool = False
     use_vectorized_cache: bool = False
+    # AR029: bounded-memory pyramid activation cache (default off).  The
+    # pyramid switch takes precedence over the other cache switches; the
+    # CUDA-graph combination is rejected at construction time.
+    use_pyramid_cache: bool = False
+    pyramid_depth: int = 0  # 0 = resolve from the model at build time
+    pyramid_total_tokens: int = 4096
+    pyramid_block_size: int = 16
+    pyramid_max_ratio: float = 1.0
+    pyramid_min_ratio: float = 0.25
+    pyramid_schedule: str = "linear"
+    pyramid_recent_blocks: int = 2
+    pyramid_anchor_blocks: int = 1
+    pyramid_anchor_stride: int = 2
     max_branch_steps: int = 4
     draft_mode: str = "suffix_append"
     draft_max_new_tokens: int = 256

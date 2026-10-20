@@ -110,6 +110,51 @@ class BenchmarkRunner:
             return "cpu"
         return config_device
 
+    def _resolve_pyramid_depth(self) -> int:
+        """Resolve the real layer count for the pyramid plan (AR029)."""
+        if self.config.pyramid_depth > 0:
+            return int(self.config.pyramid_depth)
+        candidates = []
+        for owner in (self._diffusion_model, getattr(self, "model", None)):
+            if owner is None:
+                continue
+            candidates.append(owner)
+            raw = getattr(owner, "model", None)
+            if raw is not None:
+                candidates.append(raw)
+        for owner in candidates:
+            depth = getattr(owner, "num_layers", None)
+            if not depth:
+                depth = getattr(getattr(owner, "config", None), "num_hidden_layers", None)
+            if isinstance(depth, int) and depth > 0:
+                return depth
+        raise ValueError(
+            "use_pyramid_cache requires a real layer count: set pyramid_depth "
+            "or expose num_layers/num_hidden_layers"
+        )
+
+    def _pyramid_cache_kwargs(self) -> dict[str, Any]:
+        """Return the pyramid cache factory kwargs (empty when disabled)."""
+        if not self.config.use_pyramid_cache:
+            return {}
+        if self.config.use_cuda_graph:
+            raise ValueError(
+                "use_pyramid_cache cannot be combined with use_cuda_graph: "
+                "the graph static parent buffers never see runtime evictions."
+            )
+        return {
+            "use_pyramid": True,
+            "pyramid_depth": self._resolve_pyramid_depth(),
+            "pyramid_total_tokens": self.config.pyramid_total_tokens,
+            "pyramid_block_size": self.config.pyramid_block_size,
+            "pyramid_max_ratio": self.config.pyramid_max_ratio,
+            "pyramid_min_ratio": self.config.pyramid_min_ratio,
+            "pyramid_schedule": self.config.pyramid_schedule,
+            "pyramid_recent_blocks": self.config.pyramid_recent_blocks,
+            "pyramid_anchor_blocks": self.config.pyramid_anchor_blocks,
+            "pyramid_anchor_stride": self.config.pyramid_anchor_stride,
+        }
+
     def _load_diffusion_model(self) -> Any:
         """Load a real Diffusion LLM based on config.
 
@@ -186,6 +231,7 @@ class BenchmarkRunner:
             use_chunked=self.config.use_chunked_cache,
             chunk_size=self.config.cache_chunk_size,
             use_vectorized=self.config.use_vectorized_cache,
+            **self._pyramid_cache_kwargs(),
         )
         gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
         if self.config.use_cuda_graph:
@@ -247,6 +293,7 @@ class BenchmarkRunner:
                 use_chunked=self.config.use_chunked_cache,
                 chunk_size=self.config.cache_chunk_size,
                 use_vectorized=self.config.use_vectorized_cache,
+                **self._pyramid_cache_kwargs(),
             )
             gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
             scheduler = FoldingScheduler(

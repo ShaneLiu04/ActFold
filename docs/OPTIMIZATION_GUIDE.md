@@ -858,6 +858,37 @@ AR013（`specs/changes/AR013-test-debt-closure/`，混合 AR：测试为主 + br
 
 ---
 
+## 第三十四部分 AR029 端侧有界内存金字塔激活缓存（逐层预算 + 块页 + 缺失哨兵守卫；机制交付，真实面 BLOCKED-DEFERRED）
+
+**动机（实测）**：端侧设备无法为每个分支保留每层全量激活。旧 `ActivationCache`
+逐层同预算、整条 LRU：预算紧时整条淘汰父条目、后续层全部退化为重算；预算松时
+驻留量随层数线性增长。缺少「逐层差异化预算 + 块页 + 缺失哨兵」的统一机制。
+
+**机理**：
+1. `PyramidPlan` 把 plan 级 `total_tokens` 归一化为逐层块对齐预算
+   （linear/geometric），floor 后从最深回收；`depth*block>total` 显式拒绝。
+2. `PyramidActivationCache` 块页存储 + 逐层硬上界 + 全局写序淘汰（锚点/近期块
+   保护、超硬界回收最旧块）+ NaN 缺失 + `availability` + 六键 `stats()` +
+   原子 `put_batch`。
+3. 安全核心：门读 L-1、合并用 L。逐层预算不同时，L-1 可能驻留而 L 缺失；
+   `_apply_cache_availability` 在 forced AND 之后、profiler/计数/快速路径之前
+   把**目标层**可用性 AND 进 mask（1-D 不扩维），并使 fused count 失效。
+4. CUDA graph × pyramid 互斥（init+setter 双校验）；工厂 `use_pyramid` 最高优先；
+   `ActFoldConfig.pyramid_*`；`BenchmarkRunner` 真实深度 resolver，绝不猜 32。
+
+**mutation/验收**：UT-2901~2978 共 94 例（计划 20 / 缓存 35 / 集成 27 / 基准 12）。
+机制基准 `scripts/ar029_pyramid_cache_bench.py --quick`：
+full（无淘汰）vs `ActivationCache` 逐位；pressure（线性金字塔 `[4·block, 1·block]`）
+vs `_HoleMaskedDense` 逐层 NaN oracle。实测 E1 diff=0.0/0.0、E2 两面预算与字节
+账本成立、E3 reuse=0.625、E4 全有限非负 ⇒ **E1-E4 supported**。
+
+**范围裁定**：用户明确「不做大型实验」，本 AR 为机制/基础设施交付
+（`evidence_level="mechanism"`、`baseline_claim=false`）；真实 checkpoint A/B
+记为 **BLOCKED-DEFERRED**，未来须先给 `run_formal_queue` 增加 FaceSpec。
+实现期勘误（design.md §4.2.3）：统一预算压力面不可执行（门层缺失使守卫冗余；
+子分支写 L0 先淘汰父 L0 导致整层重算，单 forced mask 无法复现），故改为真实
+金字塔 + 逐层洞 oracle。
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

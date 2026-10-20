@@ -25,6 +25,12 @@ callers must treat the returned tensors as read-only.  The old
 ``get(token_mask)`` method remains available as a backward-compatible alias
 of ``fetch_masked``.
 
+**Sentinel carve-out (AR029).** The zero-fill sentence above binds caches that
+do **not** implement :class:`MissingSentinelCapable`.  A sentinel cache returns
+``missing_value`` (NaN) for missing positions instead; callers must consult
+``availability`` before reusing any row, and must treat returned tensors as
+independent (writable) results rather than internal views.
+
 AR020 adds the optional batched-write capability
 :class:`BatchedPutCapable` (structural, runtime-checkable): caches that
 provide ``put_batch`` accept a sequence of :class:`CachePutEntry` records in
@@ -65,6 +71,30 @@ class BatchedPutCapable(Protocol):
 
         Raises ValueError before any mutation when any entry is invalid.
         """
+        ...
+
+
+@runtime_checkable
+class MissingSentinelCapable(Protocol):
+    """Explicit missing-value capability (AR029).
+
+    Caches implementing this protocol return ``missing_value`` for positions
+    they never stored (or evicted) and expose ``availability`` so callers can
+    distinguish a real zero from a hole.  The base zero-fill contract in
+    :class:`ActivationCacheProtocol` does not apply to these caches.
+    """
+
+    missing_value: float
+
+    def availability(
+        self,
+        branch_id: str,
+        layer_idx: int,
+        seq_len: int,
+        step_idx: int = 0,
+        name: str = "ffn_out",
+    ) -> torch.Tensor:
+        """Return a boolean mask of the stored token positions."""
         ...
 
 

@@ -1,0 +1,71 @@
+{
+  "schema": "ar029_pyramid_cache_bench",
+  "schema_version": 1,
+  "evidence_level": "mechanism",
+  "baseline_claim": false,
+  "status": "ok",
+  "config": {
+    "hidden": 32,
+    "vocab": 64,
+    "depth": 2,
+    "seq": 32,
+    "block_size": 16,
+    "quick": true,
+    "full_budgets": [
+      128,
+      128
+    ],
+    "pressure_budgets": [
+      64,
+      16
+    ],
+    "tau": 0.9
+  },
+  "measurements": {
+    "full": {
+      "cache_bytes": 24576,
+      "tokens_stored": 128,
+      "reuse_ratio": 0.75,
+      "missing_ratio": 0.0,
+      "stable_ratio": 0.75,
+      "wall_ms": 4.161,
+      "dense_wall_ms": 8.898,
+      "max_abs_diff_vs_dense": 0.0,
+      "child_max_abs_diff_vs_dense": 0.0
+    },
+    "pressure": {
+      "cache_bytes": 18432,
+      "tokens_stored": 80,
+      "reuse_ratio": 0.625,
+      "missing_ratio": 0.2,
+      "stable_ratio": 0.625,
+      "wall_ms": 3.726,
+      "reuse_tokens": 40,
+      "valid_tokens": 64,
+      "max_abs_diff_vs_hole_oracle": 0.0,
+      "evictions": 4
+    },
+    "reference": {
+      "cache_bytes": 24576,
+      "tokens_stored": 128,
+      "reuse_ratio": 0.625,
+      "missing_ratio": 0.0,
+      "stable_ratio": 0.625,
+      "wall_ms": 2.249,
+      "reuse_tokens": 40,
+      "valid_tokens": 64
+    }
+  },
+  "verdicts": {
+    "E1": true,
+    "E2": true,
+    "E3": true,
+    "E4": true
+  },
+  "overall": "supported",
+  "meta": {
+    "device": "cpu",
+    "torch_version": "2.5.1+cu121",
+    "note": "mechanism-level evidence; real-checkpoint A/B is BLOCKED-DEFERRED and must not be inferred from this artifact"
+  }
+}

@@ -364,8 +364,10 @@ one parent cached at batch 1, §9), then committed by a single selection rule.
    eager layer loop consumes the first element (the `_recompute_all`
    convention). Fast-dLLM's remote layers return bare tensors, which is why
    the tuple face surfaced only at AR023's cross-family smoke. The graph
-   static body (`FoldedGraphRunner`'s own layer loop) does NOT unwrap —
-   unwrap it before any tuple-layer graph capture.
+   static body (`FoldedGraphRunner`'s own layer loop) **does** unwrap —
+   it calls `_recompute_all`, which inherits the `_pack_output` first-element
+   convention (AR026 correction; pinned by UT-2603 on CPU and UT-2604 on
+   CUDA).
 
 Default-off (`num_block_candidates=0`) is byte-identical to the reference
 samplers. Empirical face: on Fast-dLLM-v2-1.5B the greedy-anchored mode
@@ -379,3 +381,49 @@ see the AR023 artifacts for the per-family hierarchical quality faces
 (Dream's gradual super-step denoising preserves the quality face far better
 than LLaDA's whole-block one-shot commit).
 
+
+## 14. Bounded-Memory Sentinel Cache (AR029)
+
+A sentinel cache keeps a *subset* of a branch's activations and represents every
+missing token with `NaN` plus an explicit availability bitmap:
+
+```
+availability(parent, L, T, step=0) -> Bool[T]
+fetch(parent, L) -> {name: Tensor[B, T, H]}   # NaN where unavailable
+```
+
+`PyramidActivationCache` realizes this with block pages and **per-layer**
+budgets: a plan-wide `total_tokens` is normalized into layer weights
+(`linear` / `geometric`), floored to `block_size`, and reclaimed from the
+deepest layer until the sum fits. Eviction walks a per-layer global write
+order, protecting the deterministic anchors (`retained_blocks`) and the
+just-written entry's recent blocks; only when the hard bound still requires it
+does the oldest protected block get reclaimed. An entry with no blocks left is
+deleted.
+
+The folding forward is safe under this cache because of one ordering rule.
+For layer `L`, the gate reads the parent's layer `L-1` `ffn_out` (layer 0 reads
+the parent `embedding`), while the merge consumes the parent's layer `L`
+`ffn_out`. With per-layer budgets, `L-1` can be resident while `L` is missing:
+
+```
+stable_mask = gate(h_child, h_parent[L-1])        # gate-side view
+stable_mask &= ~forced_divergent                  # AR021 ordering
+stable_mask &= availability(parent, L)            # AR029 target-layer guard
+profiler.record(stable_mask)                      # then counts/fast paths
+```
+
+Applying the target-layer availability **after** the forced mask and **before**
+the profiler/count/fast paths guarantees every missing target row recomputes;
+a 1-D per-row mask stays 1-D (never expanded to `[T, T]`), and the fused gate's
+cached count is discarded so `stable_mask.sum()` re-derives it. Legacy caches
+without `availability` are a byte-for-byte no-op.
+
+CUDA graph and sentinel caches are mutually exclusive: a captured static parent
+buffer cannot observe runtime evictions. `ManualFoldedForward` rejects the
+combination at construction and in the `cache` setter (validation precedes
+propagation). The mechanism benchmark checks two invariant faces on CPU — the
+full-budget pyramid against `ActivationCache` (bit-exact) and a genuine pyramid
+against a per-layer NaN oracle (bit-exact) — and reports `E1`-`E4` with
+`evidence_level="mechanism"` and `baseline_claim=false`; a real-checkpoint A/B
+is deferred and requires a new `run_formal_queue` FaceSpec.
