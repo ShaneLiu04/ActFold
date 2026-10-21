@@ -1307,9 +1307,7 @@ def test_ut2438_llada_joint_refill_parity_bitwise(device: str) -> None:
     ref1 = sampler_b.sample(p1, folded_model=mff_solo)
     ref2 = sampler_b.sample(p2, folded_model=mff_solo)
 
-    def _assert_tie_order_parity(
-        actual: torch.Tensor, expected: torch.Tensor, label: str
-    ) -> None:
+    def _assert_tie_order_parity(actual: torch.Tensor, expected: torch.Tensor, label: str) -> None:
         assert actual.shape == expected.shape, label
         assert torch.equal(
             torch.sort(actual, dim=-1).values, torch.sort(expected, dim=-1).values
