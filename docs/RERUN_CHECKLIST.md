@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1273 passed / 4 skipped / 3 deselected（slow 默认跳过）
+# 4) 整仓质量门：期望 1376 passed / 4 skipped / 3 deselected（slow 默认跳过）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -323,6 +323,40 @@ python -m scripts.ar029_pyramid_cache_bench --quick
 #       3. 在 ≥24GiB 安静 GPU（Linux/TCC）上按步骤 7 执行并回填工件，
 #          再更新 README ladder 第 10 档状态。
 #     c) 环境：quick 面只依赖 CPU torch；不需要 AR019 venv、权重或 CUDA。
+#
+# 18) AR030 Agent/RSI 页共享折叠缓存（机制面；真实 checkpoint A/B = BLOCKED-DEFERRED）
+#     a) quick 机制面（CPU 即可，分钟级；无权重下载、与真实 checkpoint 无关）：
+python -m scripts.ar030_paged_agent_bench --quick
+#     工件：results/optimization/ar030_paged_agent_bench_quick.json
+#     schema：ar030_paged_agent_bench（version 1）
+#     预期：verdicts E1/E2/E3/E4 全 true、overall=supported；
+#     E1 两面 max_abs_diff_vs_dense 均 == 0.0；
+#     E2 物理页 32（16/层，恰好触界冻结预算 16/层）vs 朴素 144 页，页/字节共享率
+#     0.778（98304 vs dense 参考复算 442368 字节），evictions=0；
+#     E3 fork 字节增量全 0、每候选新增物理页==内容差异页==2、共享占比
+#     0.778 ≥ 0.5；E4 诚实检查 14 项全真（提交失败 k=0/k=1 原子回滚 /
+#     stale plan 拒绝 / snapshot-restore 逐位往返+分层可用性全等 /
+#     demote-promote 往返逐位 / 窗口读==冻结 plan 视图 / COW-off 跳比较
+#     与原地写 / refcount 破坏检测 / rollout 回滚恢复 fork 基线 /
+#     rollout 窗口失败仅丢弃该候选暂存 / close 解冻 base / refcount 台账零泄漏）。
+#     b) 判定语义：E1-E4 冻结于脚本内（数据收集前预注册，单次运行、不得
+#     重跑至通过）；优先级 blocked（不诚实）> supported > refuted；
+#     honest negative（inconclusive/refuted/blocked）原样交付工件，禁止改判。
+#     c) 正式面（真实 checkpoint，BLOCKED-DEFERRED）：**当前脚本拒绝执行**——
+#     不带 --quick 直接返回 exit 3（BLOCKED-DEFERRED），且不写 formal 路径。
+#     原因：用户范围裁定「不做大型实验」，本 AR 是机制/基础设施交付
+#     （evidence_level="mechanism"、baseline_claim=false），不得用 quick 数字
+#     冒充 baseline 加速。解除条件（须全部满足）：
+#       1. 先在 scripts/run_formal_queue.py 增加 AR030 FaceSpec（前置换算/
+#          命令/工件校验函数），不得手工拼命令；
+#       2. 在 ≥24GiB 安静 GPU 服务器（Linux/TCC）上执行（同步骤 17 的
+#          服务器/环境约定）；
+#       3. 真实 checkpoint 双面 A/B 协议草案：LLaDA/Dream 真实模型多候选
+#          rollout（与 AR023 同环境的权重获取/venv 约定，见步骤 13；AR019
+#          venv transformers==4.53.1 + 本地权重），定义质量-速度双指标
+#          （质量对齐 + p50 加速）与预承诺单次协议后回填工件，
+#          再更新 README ladder 第 11 档状态。
+#     d) 环境：quick 面只依赖 CPU torch；不需要 AR019 venv、权重或 CUDA。
 ```
 
 ## 4. 方法学要求（重跑必须满足）

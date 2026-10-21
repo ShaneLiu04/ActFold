@@ -53,19 +53,26 @@ class SimilarityGate(nn.Module):
         self.metric = metric
         self.eps = eps
 
-    def forward(
+    def scores(
         self,
         h_child: torch.Tensor,
         h_parent: torch.Tensor,
     ) -> torch.Tensor:
-        """Return a stability mask.
+        """Return per-token similarity scores (AR031, the budget face).
+
+        Same validation and math as :meth:`forward`, but returns the raw
+        float similarity scores instead of the thresholded mask. The budget
+        cap (:func:`actfold.core.layer_budget.apply_layer_budget`) consumes
+        this face; ``forward`` is exactly ``scores(...) > tau``.
 
         Args:
             h_child: Child hidden states, shape ``[batch, seq_len, hidden_dim]``.
             h_parent: Parent hidden states, same shape.
 
         Returns:
-            Boolean tensor of shape ``[batch, seq_len]``. ``True`` means stable.
+            Float tensor of shape ``[batch, seq_len]`` with the per-token
+            similarity scores (NaN scores map to ``divergent`` only at the
+            ``forward`` thresholding step — NaN ``> tau`` is False).
 
         Raises:
             ValueError: If shapes do not match or inputs are not 3-D.
@@ -83,7 +90,26 @@ class SimilarityGate(nn.Module):
         # Align parent to child's device/dtype to avoid runtime device errors.
         h_parent = h_parent.to(dtype=h_child.dtype, device=h_child.device)
 
-        sim = self._compute_similarity(h_child, h_parent)
+        return self._compute_similarity(h_child, h_parent)
+
+    def forward(
+        self,
+        h_child: torch.Tensor,
+        h_parent: torch.Tensor,
+    ) -> torch.Tensor:
+        """Return a stability mask.
+
+        Args:
+            h_child: Child hidden states, shape ``[batch, seq_len, hidden_dim]``.
+            h_parent: Parent hidden states, same shape.
+
+        Returns:
+            Boolean tensor of shape ``[batch, seq_len]``. ``True`` means stable.
+
+        Raises:
+            ValueError: If shapes do not match or inputs are not 3-D.
+        """
+        sim = self.scores(h_child, h_parent)
         return sim > self.tau
 
     def _effective_eps(self, dtype: torch.dtype) -> float:

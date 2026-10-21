@@ -889,6 +889,74 @@ vs `_HoleMaskedDense` 逐层 NaN oracle。实测 E1 diff=0.0/0.0、E2 两面预�
 子分支写 L0 先淘汰父 L0 导致整层重算，单 forced mask 无法复现），故改为真实
 金字塔 + 逐层洞 oracle。
 
+---
+
+## 第三十五部分 AR030 面向 Agent/RSI 的页共享折叠内存（页表 + 引用计数 + COW + 物理页预算 + rollout 事务；机制交付，真实面 BLOCKED-DEFERRED）
+
+**动机（实测）**：Agent/RSI 多候选 rollout 中 N 个候选共享同一 prompt 前缀、
+各自只改末尾少数 token——dense 激活缓存按整分支张量存储，字节随分支线性增长
+O(N·T·L)。机制基准实测（真实 2 层 TinyDecoder、T=128、8 候选、页=16 token）：
+朴素页存 144 页 vs PSFM 物理驻留 32 页，**页/字节共享率 0.778**。PSFM 按差异页
+分配（O(N·diff_pages)）。
+
+**机理**：
+1. `page_table.py`：`Page`/`PageTable`/`PageStore`——页 id/页大小校验、
+   fork O(1) 元数据复制（refcount+1）、release 到 0 立即 reclaim、
+   `clone_state`/`restore_state` 快照隔离、`replace_tensors`。
+2. COW 写路径：逐页 `torch.equal`——内容相同复用共享页（零拷贝）、独占页
+   （refcount==1）原地写、共享页内容不同分配新页并 release 旧引用；写事务
+   日志保证任意 put 失败原子回滚（`_fail_after_staged` 注入钩子）。
+3. 逐层**物理页**预算硬上界：淘汰键冻结 `(protected_any, refcount,
+   write_seq, page_id)`——rollout 硬保护集优先、refcount 升序（共享页最后
+   淘汰）、写序最旧、页 id 决定序；N 分支共享的页只占一份预算。
+4. hot/cold 分层：cold 页张量卸载 + `availability=False` + NaN 哨兵，只有
+   显式 `promote` 恢复（demote/promote 逐位往返）；**refcount>=2 的共享
+   cold 页永不原地覆盖**（独占防护）。缺页由 AR029 同一 target-layer
+   availability 守卫强制重算。
+5. Agent rollout 事务（`fork_rollouts`/`RolloutSet`/`rollback_candidate`/
+   `close_candidate`/`close_rollout`）：base 冻结、单候选失败原子回滚、
+   close 解冻；`enter_plan` 只读窗口 + 暂存写退出原子提交（`PlanStaleError`）；
+   snapshot/restore sha256 校验、跨实例恢复、epoch=max+1。
+
+**什么时候开 `use_paged_cache`**：
+- Agent/RSI **多候选 rollout**：N 个候选共享长前缀、各自只改少量 token——
+  页共享收益最大（fork 零字节增量，实测共享率 0.778）；
+- 分支间**共享长前缀**的负载（rollout 树、beam 式多路试探）；
+- **内存受限端侧**：需要逐层物理页预算硬上界，而不是 dense 缓存的随分支
+  线性增长。单分支、无前缀共享的负载收益有限（COW 比较有成本），用默认
+  缓存即可。
+
+**页大小/预算调参建议**：
+- `paged_page_tokens`：16~64 token/页——页太小则页表元数据与逐页比较
+  开销占比升高；页太大则 COW 粒度变粗（一处差异整页重算）；
+- `paged_total_tokens`：按**各层页数和 × 页大小**估算（深度 L、每层 P 页、
+  页 S token ⇒ `total ≈ L·P·S`），从宽裕预算起步、按 eviction 统计收紧；
+- `paged_max_ratio`/`paged_min_ratio`：1.0/1.0 为均匀预算（每层同页数）；
+  浅层热、深层冷的负载可按层衰减（max>min + linear/geometric schedule）。
+
+**与 pyramid/vectorized/graph 的关系**：工厂优先级
+`use_paged > use_pyramid > use_vectorized > use_chunked`——`use_paged` 开启时
+其余缓存开关不生效；CUDA graph 与 paged 缓存**三处互斥拒绝**（runner
+kwargs / MFF init / cache setter，构造期 `ValueError`——图静态父缓冲看不到
+COW 换页/降层/淘汰）；与 pyramid 同属端侧有界内存档，但 pyramid 面向单分支
+逐层驻留规划，PSFM 面向**多候选共享**的物理页去重。
+
+**mutation/验收**：UT-3001~3101 共 103 例（页表 15 / 计划 15 / 预算 22 /
+分层 14 / rollout 18 / 集成 8 / 基准判定 11）。机制基准
+`scripts/ar030_paged_agent_bench.py --quick`：真实 2 层 TinyDecoder、8 候选，
+宽裕/压力两面 vs dense `ActivationCache` oracle。实测 E1 两面
+`max_abs_diff_vs_dense=0.0`、E2 物理页 32（16/层，恰好触界冻结预算 16/层）vs 朴素
+144（页/字节共享率 0.778、98304 vs 442368 字节、evictions=0）、E3 fork
+字节增量 0 + 每候选新增页==差异页==2、E4 诚实检查 14/14 全真 ⇒
+**E1-E4 supported**。
+
+**范围裁定**：用户明确「不做大型实验」，本 AR 为机制/基础设施交付
+（`evidence_level="mechanism"`、`baseline_claim=false`）；真实 checkpoint A/B
+记为 **BLOCKED-DEFERRED**，未来须先给 `run_formal_queue` 增加 FaceSpec，
+再在 ≥24GiB 安静 GPU（Linux/TCC）上按 RERUN 步骤 18 执行。交付期修复：
+refcount>=2 的共享 cold 页被原地 `replace_tensors` 会腐化所有共同持有分支
+（bench 编写中发现并修复，独占防护 UT 钉死）。
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

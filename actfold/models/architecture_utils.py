@@ -402,6 +402,17 @@ class ManualFoldedForward(nn.Module):
             detectable FFN chain silently fall back to full recompute.
         split_min_tokens: Minimum ``batch * seq`` for the split path to engage
             (below it the per-layer gather sync outweighs the FFN savings).
+        budget_policy: Optional ``LayerRecomputeBudgetPolicy`` (AR031): a
+            per-layer recompute budget whose depth must match the wrapped
+            stack. Every ``forward`` entry advances the policy window and
+            warms its per-call table; on the eager-primary configuration
+            (``use_cuda_graph=False``) each layer caps its divergent
+            recompute count and observes the layer-total stable count,
+            while with graphs on the cap lives inside the captured body
+            (refreshed out-of-body before every replay, observed after the
+            publish) and graph-degradation eager fallbacks run uncapped
+            (exact recompute). ``None`` (the default) attaches nothing —
+            byte-identical to the pre-AR031 wiring.
         use_cuda_graph: Opt in to CUDA-graph capture/replay of the folded
             verification forward (requires CUDA; wired up by the graph runner,
             ignored otherwise).
@@ -434,6 +445,7 @@ class ManualFoldedForward(nn.Module):
         graph_adaptive_config: Any | None = None,
         graph_runner_pool_size: int = 0,
         multi_parent_batch: bool = False,
+        budget_policy: Any | None = None,
     ) -> None:
         super().__init__()
         if not 0.0 < graph_capacity_ratio <= 1.0:
@@ -445,6 +457,19 @@ class ManualFoldedForward(nn.Module):
                 "graph_runner_pool_size must be >= 0, got " f"{graph_runner_pool_size}"
             )
         self.profile = detect_architecture(model)
+        # AR031: the layer-adaptive recompute budget policy. Depth must
+        # match the wrapped stack (the per-layer table/observe indexing is
+        # layer-position based); ``None`` (the default) attaches nothing —
+        # byte-identical to the pre-AR031 wiring on every path.
+        self._budget_policy = budget_policy
+        if budget_policy is not None:
+            policy_depth = getattr(budget_policy, "num_layers", -1)
+            if policy_depth != len(self.profile.layers):
+                raise ValueError(
+                    "budget_policy num_layers "
+                    f"({policy_depth}) does not match the wrapped layer count "
+                    f"({len(self.profile.layers)})."
+                )
         # AR029: the cache setter validates graph compatibility, so the flag
         # must exist before the initial cache assignment.
         self.use_cuda_graph = bool(use_cuda_graph)
@@ -552,7 +577,7 @@ class ManualFoldedForward(nn.Module):
         """Reject a graph-incompatible cache when CUDA-graph folding is on (AR029)."""
         if getattr(self, "use_cuda_graph", False) and getattr(value, "graph_incompatible", False):
             raise ValueError(
-                "PyramidActivationCache is not CUDA-graph compatible; "
+                "Activation cache is not CUDA-graph compatible; "
                 "use use_cuda_graph=False or a dense cache."
             )
 
@@ -619,6 +644,76 @@ class ManualFoldedForward(nn.Module):
             scheduler=self.scheduler,
             multi_parent_batch=self.multi_parent_batch,
         )
+
+    # ------------------------------------------------------------------
+    # AR031 layer-adaptive budget wiring
+    # ------------------------------------------------------------------
+    def _begin_budget_step(self, tokens: Any) -> None:
+        """Advance the budget window and warm the per-forward table cache.
+
+        One call per ``forward`` entry: ``begin_step`` advances the step
+        counter (re-estimating at window boundaries), and ``budget_table``
+        over the uniform ``[N*T] * L`` token vector warms the O(1)
+        ``budget_for`` cache that every downstream face (the eager layer cap
+        and the pre-replay ``budget_static`` backfill) reads — zero device
+        sync on either face.
+        """
+        if self._budget_policy is None:
+            return
+        num_tokens = int(tokens.shape[0]) * int(tokens.shape[-1])
+        self._budget_policy.begin_step()
+        self._budget_policy.budget_table([num_tokens] * len(self._wrapped_layers))
+
+    def _make_budget_static(self, device: Any) -> list[Any] | None:
+        """Fresh per-layer budget scalars for a new graph runner (AR031 A4).
+
+        ``None`` when no policy is attached (the runner captures the legacy
+        body); otherwise a list of 0-dim int64 device tensors, zero-filled
+        at capture time — the warmup runs are discarded and every replay
+        reads dynamically refreshed values (``_backfill_budget_static``).
+        """
+        if self._budget_policy is None:
+            return None
+        import torch
+
+        return [
+            torch.zeros((), dtype=torch.int64, device=device)
+            for _ in range(len(self._wrapped_layers))
+        ]
+
+    def _backfill_budget_static(self, runner: Any, tokens: Any) -> None:
+        """Refresh the runner's budget scalars OUTSIDE the capture body.
+
+        Runs before every replay (zero host sync — host-int ``fill_`` into
+        device scalars); the values come from the policy table warmed at
+        this forward's entry, so a window re-estimate takes effect on the
+        very next replay (UT-3118).
+        """
+        if self._budget_policy is None:
+            return
+        budget_static = runner.budget_static
+        if budget_static is None:
+            return
+        num_tokens = int(tokens.shape[0]) * int(tokens.shape[1])
+        for layer_idx, buf in enumerate(budget_static):
+            buf.fill_(self._budget_policy.budget_for(layer_idx, num_tokens))
+
+    def _observe_budget_publish(self, runner: Any, tokens: Any) -> None:
+        """Observe the capped per-layer stable counts after a graph publish.
+
+        AR031 A3 layer-total face: exactly one ``observe_layer`` per layer
+        over the post-cap static mask (``mask_buf`` holds the capped masks
+        — the graph body wrote them back after the A1 cap), with the
+        whole-grid token count. The device-side sums are zero-sync; the
+        window re-estimate reads them back in its single batched readback.
+        """
+        if self._budget_policy is None:
+            return
+        num_layers = len(self._wrapped_layers)
+        num_tokens = int(tokens.shape[0]) * int(tokens.shape[-1])
+        sums = runner.mask_buf.sum(dim=tuple(range(1, runner.mask_buf.dim())))  # [L]
+        for layer_idx in range(num_layers):
+            self._budget_policy.observe_layer(layer_idx, sums[layer_idx], num_tokens)
 
     def forward(
         self,
@@ -811,6 +906,10 @@ class ManualFoldedForward(nn.Module):
                     f"parent_branch_ids length {len(parent_branch_ids)} does "
                     f"not match branch_ids length {len(branch_ids)}."
                 )
+        # AR031: one window step per forward entry (uniform for the graph
+        # and eager dispatches — the graph path's publish observes the
+        # capped masks, the eager path caps inside the layers).
+        self._begin_budget_step(tokens)
         if branch_ids is not None:
             if branch_id is not None:
                 raise ValueError(
@@ -882,6 +981,16 @@ class ManualFoldedForward(nn.Module):
         mp_kwargs: dict[str, Any] = (
             {"parent_branch_ids": list(parent_branch_ids)} if parent_branch_ids is not None else {}
         )
+        # AR031 rule (a): the eager layer cap runs ONLY on the eager-primary
+        # configuration (``use_cuda_graph=False``). With graphs on, the cap
+        # lives inside the captured body; the graph degradation/structural
+        # eager fallbacks deliberately run UNCAPPED (the existing AR002
+        # semantics = exact recompute — UT-3115 pins the fallback output).
+        budget_kwargs: dict[str, Any] = (
+            {"budget_policy": self._budget_policy}
+            if self._budget_policy is not None and not self.use_cuda_graph
+            else {}
+        )
         if parent_branch_ids is not None and self.use_cuda_graph:
             # DD10 defense: the batched graph body perceives only one shared
             # parent; a per-row call degrades to the eager body below with a
@@ -907,6 +1016,7 @@ class ManualFoldedForward(nn.Module):
                 **forced_kwargs,
                 **pos_ids_kwargs,
                 **mp_kwargs,
+                **budget_kwargs,
             )
             # Tuple-returning layers (e.g. the real LLaDA remote blocks): the
             # wrapped layer re-wraps its output as ``(hidden, None)`` for the
@@ -1168,6 +1278,7 @@ class ManualFoldedForward(nn.Module):
                 position_embeddings_static=position_embeddings,
                 forced_divergent_static=forced_divergent,
                 position_ids_static=position_ids,
+                budget_static=self._make_budget_static(tokens.device),
             )
             try:
                 safe_capture(
@@ -1224,6 +1335,7 @@ class ManualFoldedForward(nn.Module):
                 self._degradation_fallback_count += 1
                 return None
 
+        self._backfill_budget_static(runner, tokens)
         logits = runner.replay(
             tokens, parent_branch_id, branch_id, forced_divergent=forced_divergent
         )
@@ -1295,6 +1407,10 @@ class ManualFoldedForward(nn.Module):
                 tau=self.gate.tau,
                 metric="cosine",
             )
+        # AR031 A3: one layer-total observe per published replay (the
+        # mask_buf entries hold the post-cap masks — the graph body wrote
+        # them back after the A1 cap).
+        self._observe_budget_publish(runner, tokens)
 
     def _install_batched_runner(
         self,
@@ -1450,6 +1566,7 @@ class ManualFoldedForward(nn.Module):
                 position_embeddings_static=position_embeddings,
                 forced_divergent_static=forced_divergent,
                 position_ids_static=position_ids,
+                budget_static=self._make_budget_static(tokens.device),
             )
             try:
                 safe_capture(
@@ -1510,6 +1627,7 @@ class ManualFoldedForward(nn.Module):
         if not self._parent_cache_complete_batched(parent_branch_id, tokens):
             self._count_parent_incomplete_fallback(parent_branch_id, tokens)
             return None
+        self._backfill_budget_static(runner, tokens)
         logits = runner.replay(
             tokens, parent_branch_id, branch_ids[0], forced_divergent=forced_divergent
         )
@@ -1699,6 +1817,11 @@ class ManualFoldedForward(nn.Module):
                         tau=self.gate.tau,
                         metric="cosine",
                     )
+        # AR031 A3: one layer-total observe per published batched replay —
+        # the whole-grid reduction runs AFTER the publish so every (layer,
+        # row) face reads the same post-cap masks (the shrink hook below
+        # must still never observe before the publish).
+        self._observe_budget_publish(runner, tokens)
 
     def _observe_adaptive_capacity(
         self,
@@ -1817,6 +1940,7 @@ class ManualFoldedForward(nn.Module):
             position_embeddings_static=position_embeddings,
             forced_divergent_static=forced_divergent,
             position_ids_static=position_ids,
+            budget_static=self._make_budget_static(tokens.device),
         )
         try:
             safe_capture(

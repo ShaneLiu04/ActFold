@@ -87,6 +87,19 @@ class ActFoldConfig:
     pyramid_recent_blocks: int = 2
     pyramid_anchor_blocks: int = 1
     pyramid_anchor_stride: int = 2
+    # AR030: agent-workload paged fold cache (default off).  The paged
+    # switch takes precedence over every other cache switch; the
+    # CUDA-graph combination is rejected at construction time.
+    use_paged_cache: bool = False
+    paged_depth: int = 0  # 0 = resolve from the model at build time
+    paged_page_tokens: int = 16
+    paged_total_tokens: int = 4096
+    paged_max_ratio: float = 1.0
+    paged_min_ratio: float = 0.25
+    paged_schedule: str = "linear"
+    paged_recent_pages: int = 2
+    paged_anchor_pages: int = 1
+    paged_anchor_stride: int = 2
     max_branch_steps: int = 4
     draft_mode: str = "suffix_append"
     draft_max_new_tokens: int = 256
@@ -146,6 +159,18 @@ class ActFoldConfig:
     # put_batch per layer (#42 probe), and folded_generate_batched merges
     # chains. The MFF constructor consumes the field.
     multi_parent_batch: bool = False
+    # AR031: YAML consumption faces for the layer-adaptive recompute budget
+    # and the uncertainty-ordered validation knobs. Same consumption-only
+    # pattern as candidate_include_greedy above: the operational fields and
+    # their validation live on LayerRecomputeBudgetPolicy construction
+    # (eval.benchmark_runner) and the family sampler dataclasses.
+    layer_budget_enabled: bool = False
+    layer_budget_ratio: float = 0.15
+    layer_budget_warmup: int = 5
+    layer_budget_window: int = 10
+    uncertainty_validation_order: bool = False
+    uncertainty_margin: float = 0.9
+    uncertainty_margin_gap: float = 0.05
 
     def __post_init__(self) -> None:
         if self.max_new_tokens <= 0:

@@ -62,6 +62,21 @@ verification with per-row parents (the C4 form through
 then per-chain segment B. The seed formula carries NO chain component
 (same ``unit_idx``/``sub_idx``/``j`` per chain), which is what makes the
 per-chain outputs bitwise-equal to back-to-back solo ``sample()`` runs.
+
+AR031 (FR4, design §4.2.2 A6) adds the opt-in uncertainty-aware
+candidate validation order: the shared pure helpers
+``plan_uncertainty_order`` / ``should_early_stop`` (module-level below)
+plus the segment-B opt-in branch that validates rows in prior-descending
+order (the frozen draft-side prior: the minimum over the fill positions
+of ``softmax(draft_logits_region)[pos, cand_token]``) and may early-stop
+the scoring loop once a validated row's best min-prob clears the
+margin/margin-gap predicate. The ``[N, T]`` forward batch, the frozen
+seed formula, the greedy anchor, and the min-prob winner rule are
+untouched; the off branch stays byte-identical, and
+``fast_dllm_sampler`` consumes the same helpers on its inline
+speculative face (E4 — the helpers are the single source, imported
+function-locally there because this module imports
+``_MAX_FOLD_CTX_ENTRIES`` from it at load time).
 """
 
 from __future__ import annotations
@@ -96,6 +111,53 @@ class SpecCtx:
     position: Any | None = None
 
 
+def plan_uncertainty_order(prior: torch.Tensor) -> list[int]:
+    """Plan the uncertainty-aware candidate validation order (AR031 A6).
+
+    Descending prior with ties to the smaller row index (the stable-sort
+    convention); empty and non-1-D inputs are ``ValueError`` (an order is
+    defined only over a non-empty candidate prior vector).
+
+    Args:
+        prior: ``[N]`` per-candidate draft-side prior — the minimum over
+            the fill positions of ``softmax(draft_logits_region)`` at the
+            candidate tokens (the frozen AR031 formula).
+
+    Returns:
+        The candidate row indices in descending-prior order.
+    """
+    if prior.dim() != 1:
+        raise ValueError(
+            "plan_uncertainty_order requires a 1-D prior vector, got "
+            f"shape {tuple(prior.shape)}."
+        )
+    values = [float(v) for v in prior.tolist()]
+    if not values:
+        raise ValueError("plan_uncertainty_order requires a non-empty prior vector.")
+    return sorted(range(len(values)), key=lambda i: (-values[i], i))
+
+
+def should_early_stop(
+    q_best: float, remaining_max_prior: float, margin: float, margin_gap: float
+) -> bool:
+    """The frozen AR031 early-stop predicate (the exact conjunction).
+
+    ``q_best >= margin and (q_best - remaining_max_prior) >= margin_gap``
+    — a NaN argument compares False on both clauses (never stops).
+
+    Args:
+        q_best: The best min-prob posterior among the validated rows.
+        remaining_max_prior: The max prior over the not-yet-validated
+            rows (the caller skips the check when none remain).
+        margin: The ``uncertainty_margin`` config field.
+        margin_gap: The ``uncertainty_margin_gap`` config field.
+
+    Returns:
+        True when the scoring loop may stop after the current row.
+    """
+    return bool(q_best >= margin and (q_best - remaining_max_prior) >= margin_gap)
+
+
 class SpeculativeCore:
     """Greedy-anchored speculative-candidate mechanism core (mixin).
 
@@ -110,6 +172,29 @@ class SpeculativeCore:
     _greedy_wins: int
     _greedy_spec_calls: int
     _folding_parent: str | None
+    _unc_validated_rows: int
+    _unc_skipped_rows: int
+    _unc_early_stops: int
+
+    @property
+    def uncertainty_stats(self) -> dict[str, int]:
+        """Read-only uncertainty observation face (AR031, #44 precedent).
+
+        Returns:
+            ``{"validated_rows": int, "skipped_rows": int, "early_stops":
+            int}`` — instance-level cumulative counts surviving across
+            ``sample`` calls (a FRESH dict per read; mutating the return
+            never leaks in). Only the ``uncertainty_validation_order=True``
+            speculative path increments them (default off stays
+            ``{0, 0, 0}`` forever); per unit ``validated + skipped == N``
+            and ``early_stops`` counts the loops that terminated with
+            rows remaining.
+        """
+        return {
+            "validated_rows": self._unc_validated_rows,
+            "skipped_rows": self._unc_skipped_rows,
+            "early_stops": self._unc_early_stops,
+        }
 
     @property
     def greedy_win_stats(self) -> dict[str, int]:
@@ -328,6 +413,12 @@ class SpeculativeCore:
         all chains in ONE batched call and then run this segment per chain
         on the row-sliced logits.
 
+        AR031 A6: with ``uncertainty_validation_order`` on, the row
+        selection routes through ``_uncertainty_order_select`` (prior-
+        descending validation order + margin/margin-gap early stop, the
+        ``uncertainty_stats`` counters); default off keeps the vectorized
+        argmax path byte-identical.
+
         Args:
             x: ``[1, T]`` canvas, mutated in place at the fill positions.
             finished: ``[1]`` (batch-1) bool finished flags, mutated in
@@ -367,12 +458,27 @@ class SpeculativeCore:
         fill_positions = masked_local + region_start  # [M] canvas coordinates
 
         region_logits = batched_logits[:, region_start : region_start + region_len, :]
-        probs = F.softmax(region_logits, dim=-1)
         committed = cands[:, region_start : region_start + region_len]
-        scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)  # [N, R]
-        fill_scores = scores[:, masked_local]  # [N, M] — the FILL position domain
-        min_scores = fill_scores.min(dim=-1).values
-        j_star = int(min_scores.argmax())
+        if bool(getattr(self.config, "uncertainty_validation_order", False)):
+            # AR031 A6 opt-in: prior-descending row validation with the
+            # margin/margin-gap early stop. The per-row scoring below
+            # consumes the batched logits one row at a time (skipped rows
+            # are never scored); the off branch keeps the vectorized path
+            # byte-identical.
+            j_star = self._uncertainty_order_select(
+                batched_logits=batched_logits,
+                cands=cands,
+                draft_logits_region=draft_logits_region,
+                region_start=region_start,
+                region_len=region_len,
+                masked_local=masked_local,
+            )
+        else:
+            probs = F.softmax(region_logits, dim=-1)
+            scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)  # [N, R]
+            fill_scores = scores[:, masked_local]  # [N, M] — the FILL position domain
+            min_scores = fill_scores.min(dim=-1).values
+            j_star = int(min_scores.argmax())
 
         if self.config.candidate_include_greedy:
             self._greedy_spec_calls += 1
@@ -405,6 +511,81 @@ class SpeculativeCore:
         commit_pos = fill_positions[top_local]
         x[0, commit_pos] = winner_tokens[top_local]
         finished |= (x[:, commit_pos] == stop_token_id).any(dim=1)
+
+    def _uncertainty_order_select(
+        self,
+        batched_logits: torch.Tensor,
+        cands: torch.Tensor,
+        draft_logits_region: torch.Tensor,
+        region_start: int,
+        region_len: int,
+        masked_local: torch.Tensor,
+    ) -> int:
+        """AR031 A6: prior-descending row validation + margin early stop.
+
+        The frozen draft-side prior per candidate row is the minimum over
+        the fill positions of ``softmax(draft_logits_region)[pos,
+        cand_token]``; rows validate in ``plan_uncertainty_order`` order,
+        each scored by its own per-row softmax over the region slice (a
+        skipped row is never scored), and the loop stops after a row
+        whose best validated min-prob clears ``should_early_stop`` against
+        the remaining rows' max prior. The winner is the best min-prob
+        among the VALIDATED rows with vectorized-argmax tie semantics
+        (strictly greater, ties to the smaller row index — bit-equal to
+        the full-validation ``argmax`` when the loop never stops; per-row
+        vs batch softmax is bit-exact on CPU by design A6). Counters:
+        ``validated + skipped == N`` per call; ``early_stops`` counts the
+        breaks with rows remaining. Skipped rows never influence the
+        commit / ``finished`` / history / ``_folding_parent``.
+
+        Args:
+            batched_logits: ``[N, T, V]`` family-corrected verification
+                logits (the ONE batched forward already ran).
+            cands: The ``[N, T]`` candidate canvas (segment A's output).
+            draft_logits_region: ``[1, R, V]`` family-corrected draft
+                logits over the unit region (the prior source).
+            region_start: Canvas start coordinate of the unit region.
+            region_len: Region length ``R``.
+            masked_local: ``[M]`` still-masked positions inside the
+                region (local coordinates, non-empty).
+
+        Returns:
+            The selected candidate row index ``j_star``.
+        """
+        margin = float(getattr(self.config, "uncertainty_margin", 0.9))
+        margin_gap = float(getattr(self.config, "uncertainty_margin_gap", 0.05))
+        fill_positions = masked_local + region_start  # [M] canvas coordinates
+        # Frozen prior: min over the fill positions of the draft softmax
+        # at the candidate tokens — [M, V].gather(-1, [M, N]) -> [M, N],
+        # min over the fill dim -> [N].
+        draft_probs = F.softmax(draft_logits_region, dim=-1)  # [1, R, V]
+        cand_fill = cands[:, fill_positions]  # [N, M]
+        prior = draft_probs[0, masked_local, :].gather(-1, cand_fill.t()).min(dim=0).values
+        order = plan_uncertainty_order(prior)
+        prior_list = [float(v) for v in prior.tolist()]
+        best_row = -1
+        best_q = float("-inf")
+        for pos, row in enumerate(order):
+            row_logits = batched_logits[row, region_start : region_start + region_len, :]
+            probs_row = F.softmax(row_logits, dim=-1)  # [R, V]
+            committed_row = cands[row, region_start : region_start + region_len]  # [R]
+            q = float(
+                torch.gather(probs_row, -1, committed_row.unsqueeze(-1))
+                .squeeze(-1)[masked_local]
+                .min()
+            )
+            self._unc_validated_rows += 1
+            if q > best_q or (q == best_q and row < best_row):
+                best_q = q
+                best_row = row
+            remaining = order[pos + 1 :]
+            if not remaining:
+                break
+            if should_early_stop(best_q, max(prior_list[r] for r in remaining), margin, margin_gap):
+                self._unc_early_stops += 1
+                self._unc_skipped_rows += len(remaining)
+                break
+        return best_row
 
     def _speculative_commit(
         self,

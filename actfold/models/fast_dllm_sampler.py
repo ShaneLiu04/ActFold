@@ -77,6 +77,19 @@ class FastDLLMSamplerConfig(SamplerConfig):
             min-prob selection, and chain/stop semantics are unchanged.
             ``False`` (the default) is byte-identical to the AR021 end
             state; ``True`` requires ``num_block_candidates > 0``.
+        uncertainty_validation_order: AR031 FR4 opt-in uncertainty-aware
+            validation order (the inline twin of the shared SpeculativeCore
+            face — see
+            :class:`~actfold.models.llada_sampler.LLaDASamplerConfig`).
+            ``True`` reorders the inline row scoring in prior-descending
+            order (the same frozen draft-side prior) and may early-stop
+            the scoring loop on the ``uncertainty_margin`` /
+            ``uncertainty_margin_gap`` predicate; the per-row posterior
+            keeps this face's frozen whole-small-block min-prob domain.
+            ``False`` (the default) is byte-identical. Requires
+            ``num_block_candidates > 0``.
+        uncertainty_margin: AR031 early-stop margin, ``[0, 1]``.
+        uncertainty_margin_gap: AR031 early-stop gap, ``[0, 1]``.
     """
 
     block_size: int = 32
@@ -88,6 +101,9 @@ class FastDLLMSamplerConfig(SamplerConfig):
     num_block_candidates: int = 0
     candidate_top_k: int = 10
     candidate_include_greedy: bool = False
+    uncertainty_validation_order: bool = False
+    uncertainty_margin: float = 0.9
+    uncertainty_margin_gap: float = 0.05
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -101,6 +117,19 @@ class FastDLLMSamplerConfig(SamplerConfig):
                 "candidate_include_greedy=True requires num_block_candidates"
                 " > 0 (greedy anchoring is defined only on the speculative"
                 f" path; got num_block_candidates={self.num_block_candidates})"
+            )
+        if self.uncertainty_validation_order and self.num_block_candidates == 0:
+            raise ValueError(
+                "uncertainty_validation_order=True requires num_block_candidates"
+                " > 0 (the uncertainty-aware validation order is defined only"
+                f" on the speculative path; got num_block_candidates="
+                f"{self.num_block_candidates})"
+            )
+        if not 0.0 <= self.uncertainty_margin <= 1.0:
+            raise ValueError(f"uncertainty_margin must be in [0, 1], got {self.uncertainty_margin}")
+        if not 0.0 <= self.uncertainty_margin_gap <= 1.0:
+            raise ValueError(
+                "uncertainty_margin_gap must be in [0, 1], got " f"{self.uncertainty_margin_gap}"
             )
 
 
@@ -152,6 +181,32 @@ class FastDLLMSampler(DiffusionSampler):
         # path; the default-off configuration keeps both at zero.
         self._greedy_wins = 0
         self._greedy_spec_calls = 0
+        # AR031: instance-level uncertainty observation counters (the
+        # greedy_win_stats precedent) — survive across ``sample`` calls,
+        # incremented only on the uncertainty-armed speculative path.
+        self._unc_validated_rows = 0
+        self._unc_skipped_rows = 0
+        self._unc_early_stops = 0
+
+    @property
+    def uncertainty_stats(self) -> dict[str, int]:
+        """Read-only uncertainty observation face (AR031, #44 precedent).
+
+        Returns:
+            ``{"validated_rows": int, "skipped_rows": int, "early_stops":
+            int}`` — instance-level cumulative counts surviving across
+            ``sample`` calls (a FRESH dict per read; mutating the return
+            never leaks in). Only the ``uncertainty_validation_order=True``
+            speculative path increments them (default off stays
+            ``{0, 0, 0}`` forever); per small block ``validated + skipped
+            == N`` and ``early_stops`` counts the loops that terminated
+            with rows remaining.
+        """
+        return {
+            "validated_rows": self._unc_validated_rows,
+            "skipped_rows": self._unc_skipped_rows,
+            "early_stops": self._unc_early_stops,
+        }
 
     @property
     def greedy_win_stats(self) -> dict[str, int]:
@@ -387,6 +442,13 @@ class FastDLLMSampler(DiffusionSampler):
         the unchanged min-prob rule and CAN LOSE. ``branch_ids`` naming is
         unchanged: ``_cand{j}`` has meant "row j" since AR021 (never
         "random draw j").
+
+        AR031 A6: with ``uncertainty_validation_order`` on, the row
+        selection routes through ``_uncertainty_select_inline`` (the
+        shared-helpers inline twin of the core segment-B face — prior-
+        descending validation order + margin/margin-gap early stop, the
+        ``uncertainty_stats`` counters); default off keeps the vectorized
+        argmax path byte-identical.
         """
         cfg = self.config
         num_candidates = int(cfg.num_block_candidates)
@@ -427,12 +489,26 @@ class FastDLLMSampler(DiffusionSampler):
             forced_divergent=ctx.forced.unsqueeze(0).repeat(num_candidates, 1),
         )
         shifted = right_shift_logits(batched_logits)
-        commit_logits = shifted[:, sb_start:sb_end, :]
-        probs = F.softmax(commit_logits, dim=-1)
         committed = cands[:, sb_start:sb_end]
-        scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)
-        min_scores = scores.min(dim=-1).values
-        j_star = int(min_scores.argmax())
+        if num_masked > 0 and bool(cfg.uncertainty_validation_order):
+            # AR031 A6 opt-in inline twin: prior-descending row validation
+            # with the margin/margin-gap early stop (the same shared
+            # helpers as the core segment B); the off branch keeps the
+            # vectorized min-prob path byte-identical.
+            j_star = self._uncertainty_select_inline(
+                shifted=shifted,
+                cands=cands,
+                small_logits=small_logits,
+                masked_local=masked_local,
+                sb_start=sb_start,
+                sb_end=sb_end,
+            )
+        else:
+            commit_logits = shifted[:, sb_start:sb_end, :]
+            probs = F.softmax(commit_logits, dim=-1)
+            scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)
+            min_scores = scores.min(dim=-1).values
+            j_star = int(min_scores.argmax())
         if cfg.candidate_include_greedy:
             self._greedy_spec_calls += 1
             if j_star == 0:
@@ -442,6 +518,79 @@ class FastDLLMSampler(DiffusionSampler):
         self._folding_parent = cand_branch_ids[j_star]
         if self.config.return_history:
             history.append(x.clone())
+
+    def _uncertainty_select_inline(
+        self,
+        shifted: torch.Tensor,
+        cands: torch.Tensor,
+        small_logits: torch.Tensor,
+        masked_local: torch.Tensor,
+        sb_start: int,
+        sb_end: int,
+    ) -> int:
+        """AR031 A6 inline twin: prior-descending validation + early stop.
+
+        Consumes the SAME shared helpers as the core segment B (E4:
+        ``plan_uncertainty_order`` / ``should_early_stop`` — imported
+        function-locally because ``speculative_core`` imports
+        ``_MAX_FOLD_CTX_ENTRIES`` from this module at load time; UT-3141
+        pins the inline/core parity). The prior is the same frozen
+        draft-side formula (the minimum over the fill positions of the
+        draft softmax at the candidate tokens); the per-row posterior
+        keeps this face's frozen whole-small-block min-prob domain (rows
+        are scored one at a time — a skipped row is never scored). The
+        winner tracks vectorized-argmax tie semantics (strictly greater,
+        ties to the smaller row index); counters:
+        ``validated + skipped == N`` per small block, ``early_stops``
+        counts the breaks with rows remaining.
+
+        Args:
+            shifted: ``[N, T, V]`` right-shifted batched verification
+                logits (the ONE batched forward already ran).
+            cands: The ``[N, T]`` candidate canvas.
+            small_logits: ``[1, S, V]`` right-shifted draft logits over
+                the small block (the prior source).
+            masked_local: ``[M]`` still-masked small-block-local
+                positions (non-empty).
+            sb_start: Canvas start coordinate of the small block.
+            sb_end: Canvas end coordinate of the small block.
+
+        Returns:
+            The selected candidate row index ``j_star``.
+        """
+        from actfold.models.speculative_core import (  # noqa: PLC0415
+            plan_uncertainty_order,
+            should_early_stop,
+        )
+
+        margin = float(self.config.uncertainty_margin)
+        margin_gap = float(self.config.uncertainty_margin_gap)
+        # Frozen prior: min over the fill positions of the draft softmax
+        # at the candidate tokens — [M, V].gather(-1, [M, N]) -> [M, N],
+        # min over the fill dim -> [N].
+        draft_probs = F.softmax(small_logits, dim=-1)  # [1, S, V]
+        cand_fill = cands[:, masked_local + sb_start]  # [N, M]
+        prior = draft_probs[0, masked_local, :].gather(-1, cand_fill.t()).min(dim=0).values
+        order = plan_uncertainty_order(prior)
+        prior_list = [float(v) for v in prior.tolist()]
+        best_row = -1
+        best_q = float("-inf")
+        for pos, row in enumerate(order):
+            probs_row = F.softmax(shifted[row, sb_start:sb_end, :], dim=-1)  # [S, V]
+            committed_row = cands[row, sb_start:sb_end]  # [S]
+            q = float(torch.gather(probs_row, -1, committed_row.unsqueeze(-1)).squeeze(-1).min())
+            self._unc_validated_rows += 1
+            if q > best_q or (q == best_q and row < best_row):
+                best_q = q
+                best_row = row
+            remaining = order[pos + 1 :]
+            if not remaining:
+                break
+            if should_early_stop(best_q, max(prior_list[r] for r in remaining), margin, margin_gap):
+                self._unc_early_stops += 1
+                self._unc_skipped_rows += len(remaining)
+                break
+        return best_row
 
     def sample(
         self,

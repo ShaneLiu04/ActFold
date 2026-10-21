@@ -10,7 +10,7 @@ from typing import Any
 import torch
 from tqdm import tqdm
 
-from actfold.core import SimilarityGate
+from actfold.core import LayerRecomputeBudgetPolicy, SimilarityGate
 from actfold.core.adaptive_capacity import AdaptiveCapacityConfig
 from actfold.core.cache_factory import make_activation_cache
 from actfold.core.folding_scheduler import FoldingScheduler
@@ -133,6 +133,87 @@ class BenchmarkRunner:
             "or expose num_layers/num_hidden_layers"
         )
 
+    def _resolve_paged_depth(self) -> int:
+        """Resolve the real layer count for the paged plan (AR030)."""
+        if self.config.paged_depth > 0:
+            return int(self.config.paged_depth)
+        for owner in (self._diffusion_model, getattr(self, "model", None)):
+            if owner is None:
+                continue
+            depth = getattr(owner, "num_layers", None)
+            if not depth:
+                depth = getattr(getattr(owner, "config", None), "num_hidden_layers", None)
+            if isinstance(depth, int) and depth > 0:
+                return depth
+        raise ValueError(
+            "use_paged_cache requires a real layer count: set paged_depth "
+            "or expose num_layers/num_hidden_layers"
+        )
+
+    def _resolve_budget_depth(self) -> int:
+        """Resolve the real layer count for the budget policy (AR031).
+
+        Follows the AR029 ``_resolve_pyramid_depth`` precedent: an explicit
+        ``num_layers`` attribute wins over the HF ``config.num_hidden_layers``
+        probe on the adapter, its raw model, or the pre-built runner model;
+        an unresolvable depth raises rather than guessing.
+        """
+        candidates = []
+        for owner in (self._diffusion_model, getattr(self, "model", None)):
+            if owner is None:
+                continue
+            candidates.append(owner)
+            raw = getattr(owner, "model", None)
+            if raw is not None:
+                candidates.append(raw)
+        for owner in candidates:
+            depth = getattr(owner, "num_layers", None)
+            if not depth:
+                depth = getattr(getattr(owner, "config", None), "num_hidden_layers", None)
+            if isinstance(depth, int) and depth > 0:
+                return depth
+        raise ValueError(
+            "layer_budget_enabled requires a real layer count: expose "
+            "num_layers/num_hidden_layers"
+        )
+
+    def _layer_budget_policy(self) -> LayerRecomputeBudgetPolicy | None:
+        """Build the layer-adaptive recompute budget policy (AR031).
+
+        Returns ``None`` when ``layer_budget_enabled`` is off (before any
+        depth resolution -- the default-off face builds no policy state).
+        """
+        if not self.config.layer_budget_enabled:
+            return None
+        return LayerRecomputeBudgetPolicy(
+            budget_ratio=self.config.layer_budget_ratio,
+            num_layers=self._resolve_budget_depth(),
+            warmup_steps=self.config.layer_budget_warmup,
+            window_steps=self.config.layer_budget_window,
+        )
+
+    def _paged_cache_kwargs(self) -> dict[str, Any]:
+        """Return the paged cache factory kwargs (empty when disabled)."""
+        if not self.config.use_paged_cache:
+            return {}
+        if self.config.use_cuda_graph:
+            raise ValueError(
+                "use_paged_cache cannot be combined with use_cuda_graph: "
+                "the graph static parent buffers never see runtime evictions."
+            )
+        return {
+            "use_paged": True,
+            "paged_depth": self._resolve_paged_depth(),
+            "paged_total_tokens": self.config.paged_total_tokens,
+            "paged_page_tokens": self.config.paged_page_tokens,
+            "paged_max_ratio": self.config.paged_max_ratio,
+            "paged_min_ratio": self.config.paged_min_ratio,
+            "paged_schedule": self.config.paged_schedule,
+            "paged_recent_pages": self.config.paged_recent_pages,
+            "paged_anchor_pages": self.config.paged_anchor_pages,
+            "paged_anchor_stride": self.config.paged_anchor_stride,
+        }
+
     def _pyramid_cache_kwargs(self) -> dict[str, Any]:
         """Return the pyramid cache factory kwargs (empty when disabled)."""
         if not self.config.use_pyramid_cache:
@@ -231,6 +312,7 @@ class BenchmarkRunner:
             use_chunked=self.config.use_chunked_cache,
             chunk_size=self.config.cache_chunk_size,
             use_vectorized=self.config.use_vectorized_cache,
+            **self._paged_cache_kwargs(),
             **self._pyramid_cache_kwargs(),
         )
         gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)
@@ -268,6 +350,7 @@ class BenchmarkRunner:
                 graph_adaptive_capacity=self.config.graph_adaptive_capacity,
                 graph_adaptive_config=adaptive_config,
                 graph_runner_pool_size=self.config.graph_runner_pool_size,
+                budget_policy=self._layer_budget_policy(),
             )
         except RuntimeError:
             # detect_architecture found no layer stack / embedding module
@@ -293,6 +376,7 @@ class BenchmarkRunner:
                 use_chunked=self.config.use_chunked_cache,
                 chunk_size=self.config.cache_chunk_size,
                 use_vectorized=self.config.use_vectorized_cache,
+                **self._paged_cache_kwargs(),
                 **self._pyramid_cache_kwargs(),
             )
             gate = SimilarityGate(tau=self.config.tau, metric=self.config.metric)

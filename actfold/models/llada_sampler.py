@@ -91,6 +91,25 @@ class LLaDASamplerConfig(SamplerConfig):
             position (pure device indexing; an EOS-absent pool degenerates
             to the greedy value). ``False`` restores the AR023 semantics
             exactly (the A/B anchor face).
+        uncertainty_validation_order: AR031 FR4 opt-in uncertainty-aware
+            validation order. ``True`` reorders the segment-B row scoring
+            in prior-descending order (the frozen draft-side prior: the
+            minimum over the fill positions of
+            ``softmax(draft_logits_region)[pos, cand_token]``) and may
+            early-stop the scoring loop once a validated row's best
+            min-prob clears ``uncertainty_margin`` with a
+            ``uncertainty_margin_gap`` lead over the remaining rows' max
+            prior (``plan_uncertainty_order`` / ``should_early_stop`` in
+            ``speculative_core``). The ``[N, T]`` forward batch, the
+            frozen seed formula, the greedy anchor, and the min-prob
+            winner rule are untouched; skipped rows never touch the
+            commit. ``False`` (the default) is byte-identical. Requires
+            ``num_block_candidates > 0``.
+        uncertainty_margin: AR031 early-stop margin — the predicate's
+            ``q_best >= margin`` clause; must lie in ``[0, 1]``.
+        uncertainty_margin_gap: AR031 early-stop gap — the predicate's
+            ``q_best - remaining_max_prior >= margin_gap`` clause; must
+            lie in ``[0, 1]``.
     """
 
     block_size: int | None = None
@@ -109,6 +128,9 @@ class LLaDASamplerConfig(SamplerConfig):
     progressive_refill: bool = False
     refill_top_k: int | None = None
     candidate_eos_aware: bool = True
+    uncertainty_validation_order: bool = False
+    uncertainty_margin: float = 0.9
+    uncertainty_margin_gap: float = 0.05
 
     def __post_init__(self) -> None:
         sub_block = self.speculative_sub_block_size
@@ -150,6 +172,19 @@ class LLaDASamplerConfig(SamplerConfig):
                 f"speculative_sub_block_size ({self.speculative_sub_block_size}) "
                 f"must not exceed block_size ({self.block_size}) on the "
                 "speculative path"
+            )
+        if self.uncertainty_validation_order and self.num_block_candidates == 0:
+            raise ValueError(
+                "uncertainty_validation_order=True requires num_block_candidates"
+                " > 0 (the uncertainty-aware validation order is defined only"
+                f" on the speculative path; got num_block_candidates="
+                f"{self.num_block_candidates})"
+            )
+        if not 0.0 <= self.uncertainty_margin <= 1.0:
+            raise ValueError(f"uncertainty_margin must be in [0, 1], got {self.uncertainty_margin}")
+        if not 0.0 <= self.uncertainty_margin_gap <= 1.0:
+            raise ValueError(
+                "uncertainty_margin_gap must be in [0, 1], got " f"{self.uncertainty_margin_gap}"
             )
 
 
@@ -193,6 +228,12 @@ class LLaDASampler(DiffusionSampler, SpeculativeCore):
         # the greedy-anchored speculative path.
         self._greedy_wins = 0
         self._greedy_spec_calls = 0
+        # AR031: instance-level uncertainty observation counters (the
+        # greedy_win_stats precedent) — survive across ``sample`` calls,
+        # incremented only on the uncertainty-armed speculative path.
+        self._unc_validated_rows = 0
+        self._unc_skipped_rows = 0
+        self._unc_early_stops = 0
 
     def initialize(self, prompt_ids: torch.Tensor) -> torch.Tensor:
         """Keep the prompt and mask the positions to be generated."""

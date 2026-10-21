@@ -32,6 +32,7 @@ import torch
 import torch.nn as nn
 
 from actfold.core.fused_ops import fused_gate_mask_count, merge_stable_divergent
+from actfold.core.layer_budget import apply_layer_budget
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.core.split_layer import SplitFoldedTransformerLayer, _padded_divergent_index
 
@@ -92,6 +93,7 @@ class FoldedGraphRunner:
         position_embeddings_static: tuple[torch.Tensor, torch.Tensor] | None = None,
         forced_divergent_static: torch.Tensor | None = None,
         position_ids_static: torch.Tensor | None = None,
+        budget_static: list[torch.Tensor] | None = None,
     ) -> None:
         if not 0.0 < capacity_ratio <= 1.0:
             raise ValueError(f"capacity_ratio must satisfy 0 < ratio <= 1, got {capacity_ratio}")
@@ -113,6 +115,21 @@ class FoldedGraphRunner:
             if forced_divergent_static is not None
             else None
         )
+        if budget_static is not None:
+            if len(budget_static) != len(wrapped_layers):
+                raise ValueError(
+                    f"budget_static length {len(budget_static)} != wrapped layer "
+                    f"count {len(wrapped_layers)}"
+                )
+            # AR031 A4: the budget face owns its own gate so the scores path
+            # bypasses the fused kernel (#38) with the identical cosine math.
+            self._budget_static: list[torch.Tensor] | None = list(budget_static)
+            self._budget_gate: SimilarityGate | None = SimilarityGate(
+                tau=self._gate_tau, metric="cosine", eps=self._gate_eps
+            )
+        else:
+            self._budget_static = None
+            self._budget_gate = None
 
         # Populated by capture().
         self._num_layers = len(wrapped_layers)
@@ -169,6 +186,18 @@ class FoldedGraphRunner:
         """
         return self._forced_divergent_static
 
+    @property
+    def budget_static(self) -> list[torch.Tensor] | None:
+        """Per-layer budget scalars baked by reference (AR031 A4).
+
+        ``None`` when the runner was captured without a budget; otherwise a
+        fixed-length list of 0-dim device tensors whose content is refreshed
+        by the caller OUTSIDE the capture body (``fill_`` before every
+        replay, zero host sync) so the in-graph A1 cap reads fresh per-layer
+        budgets on every launch.
+        """
+        return self._budget_static
+
     # ------------------------------------------------------------------
     # Static-buffer accessors (host-side; caller clones before next replay)
     # ------------------------------------------------------------------
@@ -191,14 +220,22 @@ class FoldedGraphRunner:
     @property
     def mask_buf(self) -> torch.Tensor:
         """Per-layer stability masks ``[L, batch, seq]`` (bool)."""
-        self._require_captured()
-        return self._mask_buf  # type: ignore[return-value]
+        if self._mask_buf is None:
+            raise RuntimeError(
+                "Static mask buffers not allocated: capture() (or the "
+                "manual buffer-allocation direct-drive face) must run first."
+            )
+        return self._mask_buf
 
     @property
     def count_buf(self) -> torch.Tensor:
         """Per-layer stable counts ``[L]`` (int32)."""
-        self._require_captured()
-        return self._count_buf  # type: ignore[return-value]
+        if self._count_buf is None:
+            raise RuntimeError(
+                "Static count buffer not allocated: capture() (or the "
+                "manual buffer-allocation direct-drive face) must run first."
+            )
+        return self._count_buf
 
     @property
     def child_buf(self) -> torch.Tensor:
@@ -439,17 +476,29 @@ class FoldedGraphRunner:
         ), "static buffers allocated in capture()"
 
         x = self._embed_fn(tokens_static)
+        budget_static = self._budget_static
+        budget_gate = self._budget_gate
         for layer_idx, layer in enumerate(self._layers):
             mask = mask_buf[layer_idx]
             count = count_buf[layer_idx]
-            fused_gate_mask_count(
-                x,
-                parent_static[layer_idx],
-                self._gate_tau,
-                self._gate_eps,
-                mask,
-                count,
-            )
+            budget_scores: torch.Tensor | None = None
+            if budget_static is not None:
+                # AR031: the budget face derives the mask from the scores
+                # face, bypassing the fused kernel (#38) -- the cap consumes
+                # the same scores and the plain gate is exactly
+                # ``scores > tau`` (bit-identical, UT-3120).
+                assert budget_gate is not None, "budget gate built with budget_static"
+                budget_scores = budget_gate.scores(x, parent_static[layer_idx])
+                mask.copy_(budget_scores > self._gate_tau)
+            else:
+                fused_gate_mask_count(
+                    x,
+                    parent_static[layer_idx],
+                    self._gate_tau,
+                    self._gate_eps,
+                    mask,
+                    count,
+                )
             if self._forced_divergent_static is not None:
                 # AR021 FR2: AND the forced region into the gate mask and
                 # re-derive the stable count from the AND-ed mask with a
@@ -457,6 +506,22 @@ class FoldedGraphRunner:
                 # the kernel count was computed pre-AND and would let forced
                 # bits through the divergent budget validation.
                 mask &= ~self._forced_divergent_static
+            if budget_scores is not None:
+                # AR031 A1: cap AFTER the forced AND (forced rows are exempt
+                # by construction, #43) -- the most-similar non-exempt
+                # divergent rows fold back to stable until the per-layer
+                # recompute count fits the refreshed budget scalar.
+                capped = apply_layer_budget(
+                    mask,
+                    budget_scores,
+                    budget_static[layer_idx],  # type: ignore[index]
+                    forced=self._forced_divergent_static,
+                )
+                mask.copy_(capped)
+            if self._forced_divergent_static is not None or budget_scores is not None:
+                # One shared final reduction over the post-AND/post-cap mask:
+                # the kernel count is pre-AND/pre-cap and would under-count
+                # the divergent demand (UT-3114: count == mask.sum()).
                 count.copy_(mask.sum())
             use_split = isinstance(layer, SplitFoldedTransformerLayer) and layer.split_enabled
             layer_impl: Any = layer

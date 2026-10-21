@@ -638,3 +638,70 @@ E4 PASS → `supported`. The formal real-checkpoint A/B is **BLOCKED-DEFERRED**;
 `main([])` without `--quick` returns exit 3 and writes nothing. Adding it
 requires a new `run_formal_queue` FaceSpec plus the standard dual-metric,
 pre-committed, `reps>=30` protocol (see `docs/RERUN_CHECKLIST.md` step 17).
+
+## AR030 — Paged Shared Fold Memory (mechanism face)
+
+AR030 is a mechanism/infrastructure experiment for Agent/RSI multi-candidate
+rollouts: it validates the page table / refcount / COW page-sharing contract
+under a hard physical-page budget, not a baseline speedup. The only runnable
+face under the current scope decision (`baseline_claim=false`) is `--quick`:
+
+```bash
+python -m scripts.ar030_paged_agent_bench --quick
+```
+
+It writes `results/optimization/ar030_paged_agent_bench_quick.json` with
+schema `ar030_paged_agent_bench` (version 1).
+
+**Frozen geometry** (single shot, CPU, deterministic):
+
+| Parameter | Value |
+|---|---|
+| Model | real 2-layer `TinyDecoder` (hidden 32, vocab 64, real attention + FFN) |
+| `SEQ` | 128 |
+| `PAGE` (page tokens) | 16 |
+| `CANDIDATES` | 8 (each changes the last 8 tokens) |
+| Gate | `SimilarityGate` cosine, `TAU = 0.9` + `forced_divergent` |
+| Pressure face budget | 16 pages/layer (`PRESSURE_TOTAL = 512` tokens, exactly at the boundary: 8 root + 8 candidate pages, zero evictions) |
+| Full face budget | 256 pages/layer (`FULL_TOTAL = 8192` tokens) |
+| `MIN_SHARING_RATIO` | 0.5 |
+
+**Frozen verdicts** (precedence `blocked > supported > refuted`):
+
+- **E1 exactness**: both faces' `max_abs_diff_vs_dense == 0.0` — the paged
+  cache must be bit-exact against the dense `ActivationCache` oracle.
+- **E2 memory bound + sharing**: physical pages within the per-layer budget;
+  measured physical pages 32 (16/layer, exactly at the frozen 16-page budget) vs naive 144 pages, page
+  sharing ratio and byte sharing ratio 0.778 (98304 vs 442368 bytes),
+  `evictions == 0`.
+- **E3 fork/COW**: fork byte deltas all 0; new physical pages per candidate ==
+  content-diff pages == 2 (one per layer); shared pages bit-equal; sharing
+  ratio >= `MIN_SHARING_RATIO` (0.778 >= 0.5).
+- **E4 honesty** (14 checks): commit-failure injection (k=0/k=1) rolls back
+  atomically; a stale plan is rejected; snapshot/restore round-trips
+  bit-exactly with `epoch+1` including tier/availability equality;
+  demote/promote round-trips bit-exactly; plan availability == executor
+  availability; window reads match the frozen plan view; COW-off skips
+  comparison and in-place mutation; refcount corruption is detected; a
+  rollout rollback restores the fork baseline; a rollout window validation
+  failure discards only that candidate's staged writes; `close` unfreezes
+  the base; the refcount ledger has zero leaks; every output and stat is
+  finite and non-negative.
+
+Measured (CPU, single shot): E1 `0.0/0.0`, E2 `32` vs `144` / `0.778` /
+`evictions=0`, E3 all-0 fork deltas / new==diff==2, E4 14/14 honesty checks →
+**E1-E4 supported**, `overall="supported"`.
+
+**Honest negatives**: verdict logic is frozen inside the script before data
+collection (one-shot, never rerun-until-pass); a strict failure blocks ALL
+verdicts; `inconclusive` / `refuted` / `blocked` outcomes are delivered
+verbatim in the artifact.
+
+**BLOCKED-DEFERRED boundary**: the artifact carries
+`evidence_level="mechanism"` and `baseline_claim=false` — no baseline-speedup
+claim may be inferred from it. `main([])` without `--quick` returns exit 3 and
+writes nothing. The formal real-checkpoint A/B (LLaDA/Dream multi-candidate
+rollout, dual-metric, pre-committed, `reps>=30`) first requires a new
+`run_formal_queue` FaceSpec plus a >=24 GiB quiet GPU server; see
+`docs/RERUN_CHECKLIST.md` step 18 for the unblocking conditions and the
+protocol draft.

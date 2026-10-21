@@ -1,0 +1,133 @@
+{
+  "schema": "ar030_paged_agent_bench",
+  "schema_version": 1,
+  "evidence_level": "mechanism",
+  "baseline_claim": false,
+  "status": "ok",
+  "mode": "quick",
+  "geometry": {
+    "hidden": 32,
+    "vocab": 64,
+    "depth": 2,
+    "seq": 128,
+    "page_tokens": 16,
+    "candidates": 8,
+    "forced_tokens": 8,
+    "tau": 0.9,
+    "pressure_total_tokens": 512,
+    "full_total_tokens": 8192,
+    "budget_pages_per_layer": 16
+  },
+  "metrics": {
+    "full": {
+      "max_abs_diff_vs_dense": 0.0,
+      "physical_pages": 32,
+      "paged_bytes": 98304,
+      "new_pages_per_candidate": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "fork_byte_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "pressure": {
+      "wall_ms": 46.991,
+      "max_abs_diff_vs_dense": 0.0,
+      "physical_pages": 32,
+      "physical_pages_per_layer": {
+        "0": 16,
+        "1": 16
+      },
+      "budget_pages_per_layer": {
+        "0": 16,
+        "1": 16
+      },
+      "paged_hot_bytes": 98304,
+      "paged_total_bytes": 98304,
+      "plan_expected_bytes": 98304,
+      "independent_page_bytes": 98304,
+      "nonshared_hot_bytes": 442368,
+      "nonshared_pages": 144,
+      "byte_sharing_ratio": 0.777778,
+      "page_sharing_ratio": 0.777778,
+      "new_pages_per_candidate": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "diff_pages_per_candidate": [
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2,
+        2
+      ],
+      "fork_byte_deltas": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "evictions": 0
+    },
+    "dense_reference": {
+      "cache_bytes": 442368,
+      "page_equivalents": 144
+    }
+  },
+  "honesty_checks": {
+    "commit_fail_k0_atomic": true,
+    "commit_fail_k1_atomic": true,
+    "stale_plan_rejected": true,
+    "demote_promote_roundtrip_bit_exact": true,
+    "snapshot_restore_bit_exact": true,
+    "snapshot_restore_tier_availability_equal": true,
+    "plan_availability_matches_executor": true,
+    "window_reads_match_plan_view": true,
+    "cow_off_skips_comparison_and_inplace": true,
+    "refcount_corruption_detected": true,
+    "rollout_window_failure_discards_staged": true,
+    "rollout_rollback_restores_baseline": true,
+    "rollout_close_unfreezes_base": true,
+    "refcount_ledger_clean": true
+  },
+  "verdicts": {
+    "E1": true,
+    "E2": true,
+    "E3": true,
+    "E4": true
+  },
+  "overall": "supported",
+  "duration_s": 0.189,
+  "meta": {
+    "device": "cpu",
+    "torch_version": "2.5.1+cu121",
+    "note": "mechanism-level evidence; real-checkpoint A/B is BLOCKED-DEFERRED and must not be inferred from this artifact"
+  }
+}

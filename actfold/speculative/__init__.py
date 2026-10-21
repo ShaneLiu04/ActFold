@@ -12,6 +12,7 @@ from actfold.speculative.draft_generator import DraftGenerator
 from actfold.speculative.fast_dllm_adapter import FastDLLMAdapter
 from actfold.speculative.folded_generation import FoldedGenerationResult, folded_generate
 from actfold.speculative.spiffy_baseline import SpiffyBaseline
+from actfold.speculative.uncertainty_validator import UncertaintyRolloutValidator
 from actfold.speculative.verification_engine import ActFoldVerificationEngine, VerificationResult
 
 __all__ = [
@@ -26,6 +27,7 @@ __all__ = [
     "FoldedGenerationResult",
     "SpiffyBaseline",
     "ActFoldVerificationEngine",
+    "UncertaintyRolloutValidator",
     "VerificationResult",
     "folded_generate",
 ]

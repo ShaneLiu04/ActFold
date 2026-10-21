@@ -3,9 +3,11 @@
 This module centralises cache construction so that callers can switch between
 :class:`~actfold.core.activation_cache.ActivationCache`,
 :class:`~actfold.core.chunked_cache.ChunkedActivationCache`,
-:class:`~actfold.core.vectorized_cache.VectorizedActivationCache` and the
+:class:`~actfold.core.vectorized_cache.VectorizedActivationCache`, the
 bounded-memory :class:`~actfold.core.pyramid_cache.PyramidActivationCache`
-(AR029) via configuration without changing instantiation logic elsewhere.
+(AR029) and the agent-workload page cache
+:class:`~actfold.core.paged_fold_cache.PagedFoldCache` (AR030) via
+configuration without changing instantiation logic elsewhere.
 """
 
 from __future__ import annotations
@@ -14,6 +16,7 @@ from typing import Union
 
 from actfold.core.activation_cache import ActivationCache
 from actfold.core.chunked_cache import ChunkedActivationCache
+from actfold.core.paged_fold_cache import PagedFoldCache
 from actfold.core.pyramid_cache import PyramidActivationCache
 from actfold.core.pyramid_plan import PyramidPlan, build_pyramid_plan
 from actfold.core.vectorized_cache import VectorizedActivationCache
@@ -24,6 +27,7 @@ ActivationCacheType = Union[
     ChunkedActivationCache,
     VectorizedActivationCache,
     PyramidActivationCache,
+    PagedFoldCache,
 ]
 
 
@@ -34,6 +38,17 @@ def make_activation_cache(
     chunk_size: int = 64,
     use_vectorized: bool = False,
     max_branch_steps: int | None = 4,
+    use_paged: bool = False,
+    paged_plan: PyramidPlan | None = None,
+    paged_depth: int | None = None,
+    paged_page_tokens: int = 16,
+    paged_total_tokens: int = 4096,
+    paged_max_ratio: float = 1.0,
+    paged_min_ratio: float = 0.25,
+    paged_schedule: str = "linear",
+    paged_recent_pages: int = 2,
+    paged_anchor_pages: int = 1,
+    paged_anchor_stride: int = 2,
     use_pyramid: bool = False,
     pyramid_plan: PyramidPlan | None = None,
     pyramid_depth: int | None = None,
@@ -62,9 +77,20 @@ def make_activation_cache(
         max_branch_steps: Maximum number of distinct ``(branch, step)`` keys the
             vectorized cache retains (ring eviction); only used with
             ``use_vectorized``. ``0``/``None`` disables the bound.
-        use_pyramid: If ``True``, return a :class:`PyramidActivationCache`.
-            Takes precedence over every other switch (the budget bound must
+        use_paged: If ``True``, return a :class:`PagedFoldCache` (AR030).
+            Takes precedence over every other switch (the page budget bound must
             never be silently downgraded).
+        paged_plan: Explicit frozen plan; ignores the other ``paged_*`` knobs.
+        paged_depth: Real model layer count (required when no plan is given).
+        paged_page_tokens: Tokens per cache page.
+        paged_total_tokens: Plan-wide token budget across all layers.
+        paged_max_ratio / paged_min_ratio: Per-layer budget ratio bounds.
+        paged_schedule: ``"linear"`` or ``"geometric"``.
+        paged_recent_pages: Pages protected for the just-written entry.
+        paged_anchor_pages: Leading anchor pages per entry.
+        paged_anchor_stride: Additional every-N-th page anchor.
+        use_pyramid: If ``True``, return a :class:`PyramidActivationCache`.
+            Takes precedence over the vectorized/chunked switches.
         pyramid_plan: Explicit frozen plan; ignores the other ``pyramid_*``
             knobs.
         pyramid_depth: Real model layer count (required when no plan is given).
@@ -80,9 +106,48 @@ def make_activation_cache(
         An initialised activation cache.
 
     Raises:
-        ValueError: When ``use_pyramid`` is set without a plan or a positive
-            depth, or when the plan parameters are invalid.
+        ValueError: When ``use_paged``/``use_pyramid`` is set without a plan or
+            a positive depth, or when the plan parameters are invalid.
     """
+    if use_paged:
+        plan = paged_plan
+        if plan is None:
+            if paged_depth is None or paged_depth <= 0:
+                raise ValueError(
+                    "use_paged requires an explicit paged_plan or a positive "
+                    f"paged_depth, got {paged_depth!r}"
+                )
+            plan = build_pyramid_plan(
+                depth=paged_depth,
+                total_tokens=paged_total_tokens,
+                block_size=paged_page_tokens,
+                max_ratio=paged_max_ratio,
+                min_ratio=paged_min_ratio,
+                schedule=paged_schedule,
+                recent_blocks=paged_recent_pages,
+                anchor_blocks=paged_anchor_pages,
+                anchor_stride=paged_anchor_stride,
+            )
+        return PagedFoldCache(
+            plan=plan,
+            page_tokens=paged_page_tokens,
+            device=device,
+            plan_config={
+                "depth": plan.depth,
+                "page_tokens": paged_page_tokens,
+                "total_tokens": plan.requested_total,
+                "max_ratio": paged_max_ratio,
+                "min_ratio": paged_min_ratio,
+                "schedule": paged_schedule,
+                "recent_pages": paged_recent_pages,
+                "anchor_pages": paged_anchor_pages,
+                "anchor_stride": paged_anchor_stride,
+                "layer_budgets": [
+                    max(1, plan.budget_tokens(layer) // paged_page_tokens)
+                    for layer in range(plan.depth)
+                ],
+            },
+        )
     if use_pyramid:
         plan = pyramid_plan
         if plan is None:

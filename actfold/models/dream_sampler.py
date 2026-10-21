@@ -62,6 +62,13 @@ class DreamSamplerConfig(SamplerConfig):
             speculative unit (budget = the sum of their transfer counts,
             truncated by the still-masked count). ``>= 1``; ``s`` covering
             the whole schedule degenerates to a one-shot tail.
+        uncertainty_validation_order: AR031 FR4 opt-in uncertainty-aware
+            validation order (the shared SpeculativeCore face — see
+            :class:`~actfold.models.llada_sampler.LLaDASamplerConfig`).
+            ``False`` (the default) is byte-identical. Requires
+            ``num_block_candidates > 0``.
+        uncertainty_margin: AR031 early-stop margin, ``[0, 1]``.
+        uncertainty_margin_gap: AR031 early-stop gap, ``[0, 1]``.
     """
 
     eps: float = 1e-3
@@ -75,6 +82,9 @@ class DreamSamplerConfig(SamplerConfig):
     candidate_top_k: int = 10
     candidate_include_greedy: bool = False
     speculative_steps: int = 8
+    uncertainty_validation_order: bool = False
+    uncertainty_margin: float = 0.9
+    uncertainty_margin_gap: float = 0.05
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -89,6 +99,19 @@ class DreamSamplerConfig(SamplerConfig):
             )
         if self.speculative_steps < 1:
             raise ValueError(f"speculative_steps must be >= 1, got {self.speculative_steps}")
+        if self.uncertainty_validation_order and self.num_block_candidates == 0:
+            raise ValueError(
+                "uncertainty_validation_order=True requires num_block_candidates"
+                " > 0 (the uncertainty-aware validation order is defined only"
+                f" on the speculative path; got num_block_candidates="
+                f"{self.num_block_candidates})"
+            )
+        if not 0.0 <= self.uncertainty_margin <= 1.0:
+            raise ValueError(f"uncertainty_margin must be in [0, 1], got {self.uncertainty_margin}")
+        if not 0.0 <= self.uncertainty_margin_gap <= 1.0:
+            raise ValueError(
+                "uncertainty_margin_gap must be in [0, 1], got " f"{self.uncertainty_margin_gap}"
+            )
 
 
 class _DreamJointWindow(NamedTuple):
@@ -132,6 +155,12 @@ class DreamSampler(DiffusionSampler, SpeculativeCore):
         # the greedy-anchored speculative path.
         self._greedy_wins = 0
         self._greedy_spec_calls = 0
+        # AR031: instance-level uncertainty observation counters (the
+        # greedy_win_stats precedent) — survive across ``sample`` calls,
+        # incremented only on the uncertainty-armed speculative path.
+        self._unc_validated_rows = 0
+        self._unc_skipped_rows = 0
+        self._unc_early_stops = 0
 
     def initialize(self, prompt_ids: torch.Tensor) -> torch.Tensor:
         """Build a left-padded canvas with prompts right-aligned."""

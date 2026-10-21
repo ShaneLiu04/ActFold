@@ -155,6 +155,7 @@ class FoldedTransformerLayer(nn.Module):
         branch_ids: Sequence[str] | None = None,
         forced_divergent: torch.Tensor | None = None,
         parent_branch_ids: Sequence[str] | None = None,
+        budget_policy: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded Transformer layer.
@@ -190,6 +191,14 @@ class FoldedTransformerLayer(nn.Module):
                 AR007 truncation on this face). ``None`` (the default)
                 attaches nothing — the single-parent path is byte-for-byte
                 unchanged.
+            budget_policy: Optional AR031 recompute-budget policy. On the
+                equal-length face the mask is derived from the gate's
+                ``scores`` (bit-identical fused-kernel bypass), the divergent
+                recompute count is capped at ``budget_for(layer, N*T)``
+                AFTER the forced AND and BEFORE the availability guard, and
+                the layer-total stable count is observed after the guard.
+                Variable-length steps skip the cap (exact recompute — the
+                safe direction). ``None`` attaches nothing (byte-identical).
             **kwargs: Extra arguments forwarded to ``original_layer``
                 (filtered to its signature). This channel carries
                 ``position_embeddings`` (AR019): a rotary ``(cos, sin)``
@@ -214,6 +223,7 @@ class FoldedTransformerLayer(nn.Module):
                 step_idx,
                 forced_divergent=forced_divergent,
                 parent_branch_ids=parent_branch_ids,
+                budget_policy=budget_policy,
                 **kwargs,
             )
         # Resolve branch identifiers from explicit kwargs or the thread-local
@@ -315,7 +325,14 @@ class FoldedTransformerLayer(nn.Module):
         # single fused kernel (AR002/T006): the count buffer replaces the
         # separate ``mask.sum()`` reduction readback below.
         stable_count_buf: torch.Tensor | None = None
-        if prefix_len == seq_len:
+        budget_scores: torch.Tensor | None = None
+        if prefix_len == seq_len and budget_policy is not None:
+            # AR031: the budget face derives the mask from the scores face
+            # (bit-identical, UT-3120) so the cap consumes the same scores;
+            # the fused kernel is bypassed (#38 mirror).
+            budget_scores = self._budget_scores(hidden_states, h_parent)
+            stable_mask = budget_scores > self.gate.tau
+        elif prefix_len == seq_len:
             # Equal-length folding: the existing semantics, bit for bit.
             if type(self.gate) is SimilarityGate and self.gate.metric == "cosine":
                 stable_mask = torch.empty(
@@ -369,6 +386,15 @@ class FoldedTransformerLayer(nn.Module):
             stable_mask &= ~forced_divergent
             stable_count_buf = None
 
+        if budget_scores is not None:
+            # AR031 A1: cap AFTER the forced AND (forced rows are exempt by
+            # construction, #43) and BEFORE the availability guard — the
+            # fused kernel count (if any) is pre-cap and therefore stale.
+            stable_mask = self._cap_layer_budget(
+                budget_policy, stable_mask, budget_scores, forced_divergent
+            )
+            stable_count_buf = None
+
         # AR029: a sentinel cache (pyramid) may have evicted rows of the
         # TARGET layer while the gate read layer L-1.  AND the target-layer
         # availability before the profiler/count/fast paths so a hole always
@@ -376,6 +402,13 @@ class FoldedTransformerLayer(nn.Module):
         stable_mask, cache_guarded = _apply_cache_availability(self, parent_branch_id, stable_mask)
         if cache_guarded:
             stable_count_buf = None
+
+        budget_sum: torch.Tensor | None = None
+        if budget_scores is not None:
+            # AR031 A3 layer-total observation: ONE observe per layer over
+            # the final (post-cap, post-guard) mask; the same device sum
+            # feeds the count consumption (zero extra readbacks).
+            budget_sum = self._observe_layer_budget(budget_policy, stable_mask)
 
         # Record real layer-wise stability statistics for downstream consumers.
         GLOBAL_STABILITY_PROFILER.record(
@@ -394,7 +427,11 @@ class FoldedTransformerLayer(nn.Module):
         # path (AR002/T006) already carries the count in a scalar buffer, so
         # no extra reduction kernel is launched at all.
         stable_count = (
-            int(stable_count_buf) if stable_count_buf is not None else int(stable_mask.sum())
+            int(budget_sum)
+            if budget_sum is not None
+            else int(stable_count_buf)
+            if stable_count_buf is not None
+            else int(stable_mask.sum())
         )
         num_tokens = stable_mask.numel()
 
@@ -485,6 +522,48 @@ class FoldedTransformerLayer(nn.Module):
         # For this generic wrapper we assume original_layer already handles them.
         return self._pack_output(h_out)
 
+    # ------------------------------------------------------------------
+    # AR031 eager budget face (serial / batched / multi-parent)
+    # ------------------------------------------------------------------
+    def _budget_scores(self, h_child: torch.Tensor, h_parent: torch.Tensor) -> torch.Tensor:
+        """Scores face for the AR031 budget path (exact-type gate required).
+
+        The mask on the budget face is exactly ``scores > tau`` — a
+        bit-identical re-expression of the gate that bypasses the fused
+        kernel (the #38 mirror of the graph-side bypass), yielding the
+        scores the cap consumes.
+        """
+        if type(self.gate) is not SimilarityGate:
+            raise ValueError(
+                "budget_policy requires an exact-type SimilarityGate, got "
+                f"{type(self.gate).__name__}"
+            )
+        return self.gate.scores(h_child, h_parent)
+
+    def _cap_layer_budget(
+        self,
+        budget_policy: Any,
+        stable_mask: torch.Tensor,
+        scores: torch.Tensor,
+        forced_divergent: torch.Tensor | None,
+    ) -> torch.Tensor:
+        """AR031 A1 cap: fold the most-similar non-exempt divergent rows."""
+        budget_l = budget_policy.budget_for(self.layer_idx, stable_mask.numel())
+        capped: torch.Tensor = budget_policy.apply_layer_budget(
+            stable_mask, scores, budget_l, forced=forced_divergent
+        )
+        return capped
+
+    def _observe_layer_budget(
+        self,
+        budget_policy: Any,
+        stable_mask: torch.Tensor,
+    ) -> torch.Tensor:
+        """AR031 A3 layer-total observe; the sum feeds the count consumption."""
+        stable_sum = stable_mask.sum()
+        budget_policy.observe_layer(self.layer_idx, stable_sum, stable_mask.numel())
+        return stable_sum
+
     def _forward_batched(
         self,
         hidden_states: torch.Tensor,
@@ -495,6 +574,7 @@ class FoldedTransformerLayer(nn.Module):
         forced_divergent: torch.Tensor | None = None,
         *,
         parent_branch_ids: Sequence[str] | None = None,
+        budget_policy: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded layer for N same-parent branches in a single batch.
@@ -524,6 +604,10 @@ class FoldedTransformerLayer(nn.Module):
             parent_branch_ids: Per-row parent identifiers (AR025): row ``i``
                 folds against ``parent_branch_ids[i]``. Mutually exclusive
                 with ``parent_branch_id``.
+            budget_policy: Optional AR031 recompute-budget policy (the
+                serial-face semantics, applied at batch granularity: scores
+                face on the equal-length grid, cap after the forced AND,
+                layer-total observe after the guard).
             **kwargs: Extra arguments forwarded to ``original_layer``.
 
         Returns:
@@ -553,6 +637,7 @@ class FoldedTransformerLayer(nn.Module):
                 list(parent_branch_ids),
                 step_idx,
                 forced_divergent=forced_divergent,
+                budget_policy=budget_policy,
                 **kwargs,
             )
         if parent_branch_id is None:
@@ -628,8 +713,14 @@ class FoldedTransformerLayer(nn.Module):
         # Plain gate only (AR015 design D3): the stride-0 expanded parent is
         # not validated inside the fused gate kernel; the serial fused
         # dispatch is untouched.
+        budget_scores: torch.Tensor | None = None
         if prefix_len == seq_len:
-            stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
+            if budget_policy is not None:
+                # AR031 scores face (bit-identical; the cap consumes it).
+                budget_scores = self._budget_scores(hidden_states, h_parent)
+                stable_mask = budget_scores > self.gate.tau
+            else:
+                stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
         else:
             # AR003 variable-length prefix folding: compare the prefix
             # against the parent, force the suffix divergent.
@@ -653,8 +744,21 @@ class FoldedTransformerLayer(nn.Module):
             # stable-count readback.
             stable_mask &= ~forced_divergent
 
+        if budget_scores is not None:
+            # AR031 A1: cap AFTER the forced AND, BEFORE the guard (the
+            # batched mirror of the serial ordering).
+            stable_mask = self._cap_layer_budget(
+                budget_policy, stable_mask, budget_scores, forced_divergent
+            )
+
         # AR029 target-layer availability guard (same-parent batch: one mask).
         stable_mask, _cache_guarded = _apply_cache_availability(self, parent_branch_id, stable_mask)
+
+        budget_sum: torch.Tensor | None = None
+        if budget_scores is not None:
+            # AR031 A3 layer-total observe (one per layer, whole [N, T] grid);
+            # the same device sum feeds the batch count readback.
+            budget_sum = self._observe_layer_budget(budget_policy, stable_mask)
 
         for row_idx, bid in enumerate(branch_ids):
             GLOBAL_STABILITY_PROFILER.record(
@@ -668,7 +772,7 @@ class FoldedTransformerLayer(nn.Module):
             )
 
         # One batch-granularity readback covers the three-way split (F4a).
-        stable_count = int(stable_mask.sum())
+        stable_count = int(budget_sum) if budget_sum is not None else int(stable_mask.sum())
         num_tokens = stable_mask.numel()
 
         if stable_count == num_tokens:
@@ -792,6 +896,7 @@ class FoldedTransformerLayer(nn.Module):
         parent_branch_ids: list[str],
         step_idx: int,
         forced_divergent: torch.Tensor | None = None,
+        budget_policy: Any | None = None,
         **kwargs: Any,
     ) -> torch.Tensor | tuple[torch.Tensor, None]:
         """Run one folded layer for N branches folding against N parents.
@@ -822,7 +927,12 @@ class FoldedTransformerLayer(nn.Module):
             parent_branch_ids: One parent identifier per row.
             step_idx: Current diffusion step index.
             forced_divergent: Optional ``[N, seq_len]`` boolean tensor
-                (AR021 FR2 ordering, unchanged).
+                (AR021 FR2, unchanged).
+            budget_policy: Optional AR031 recompute-budget policy, applied
+                ONLY on the all-valid uniform-length full-canvas branch (the
+                one face where per-row scores cover the whole grid); mixed
+                parent lengths / degraded rows run uncapped (exact recompute
+                — the safe direction, design F3).
             **kwargs: Extra arguments forwarded to ``original_layer``.
 
         Returns:
@@ -865,6 +975,7 @@ class FoldedTransformerLayer(nn.Module):
         # single-parent :577-604 face; a LONGER parent degrades, UT-2409);
         # invalid rows get an all-False mask row directly (the constructive
         # force of the zeros placeholder, without gating against zeros).
+        budget_scores: torch.Tensor | None = None
         if all(row_valid):
             valid_parent_rows = [row for row in row_parent if row is not None]
             prefix_len = valid_parent_rows[0].shape[1]
@@ -878,7 +989,13 @@ class FoldedTransformerLayer(nn.Module):
                 # Plain gate only (the AR015 D3 discipline: stacked per-row
                 # parents are not validated inside the fused gate kernel).
                 if prefix_len == seq_len:
-                    stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
+                    if budget_policy is not None:
+                        # AR031 scores face: cap applies only where scores
+                        # cover the whole grid (equal-length all-valid rows).
+                        budget_scores = self._budget_scores(hidden_states, h_parent)
+                        stable_mask = budget_scores > self.gate.tau
+                    else:
+                        stable_mask = self.gate(hidden_states, h_parent)  # [N, seq_len]
                 else:
                     # AR003 append-only prefix folding: compare the prefix,
                     # force the appended suffix divergent.
@@ -968,6 +1085,14 @@ class FoldedTransformerLayer(nn.Module):
             # AR021 FR2 single ordering (batched face), unchanged.
             stable_mask &= ~forced_divergent
 
+        if budget_scores is not None:
+            # AR031 A1: cap AFTER the forced AND, BEFORE the per-row guard —
+            # only the all-valid uniform full-canvas branch carries scores
+            # (every other branch runs uncapped by design).
+            stable_mask = self._cap_layer_budget(
+                budget_policy, stable_mask, budget_scores, forced_divergent
+            )
+
         # AR029 per-row target-layer availability guard (each row uses its
         # own parent id; rows without a usable parent stay all-False).  The
         # shared helper keeps the rank/availability contract single-sourced.
@@ -981,6 +1106,12 @@ class FoldedTransformerLayer(nn.Module):
                 )
                 stable_mask[row_idx] = row_mask[0]
 
+        budget_sum: torch.Tensor | None = None
+        if budget_scores is not None:
+            # AR031 A3 layer-total observe: one per layer over the final
+            # whole-grid mask; the same device sum feeds the count readback.
+            budget_sum = self._observe_layer_budget(budget_policy, stable_mask)
+
         for row_idx, bid in enumerate(branch_ids):
             GLOBAL_STABILITY_PROFILER.record(
                 branch_id=bid,
@@ -993,7 +1124,7 @@ class FoldedTransformerLayer(nn.Module):
             )
 
         # One batch-granularity readback covers the three-way split (F4a).
-        stable_count = int(stable_mask.sum())
+        stable_count = int(budget_sum) if budget_sum is not None else int(stable_mask.sum())
         num_tokens = stable_mask.numel()
 
         if stable_count == num_tokens:

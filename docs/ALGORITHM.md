@@ -427,3 +427,73 @@ full-budget pyramid against `ActivationCache` (bit-exact) and a genuine pyramid
 against a per-layer NaN oracle (bit-exact) — and reports `E1`-`E4` with
 `evidence_level="mechanism"` and `baseline_claim=false`; a real-checkpoint A/B
 is deferred and requires a new `run_formal_queue` FaceSpec.
+
+## 15. Paged Shared Fold Memory (AR030)
+
+For Agent/RSI multi-candidate rollouts, N candidates share one prompt prefix
+and each edits only the last few tokens. A dense cache stores whole-branch
+tensors — bytes grow as O(N·T·L). PSFM stores activations as **pages** behind
+a page table with per-page refcounts, so bytes grow with the *diff pages*
+(O(N·diff_pages)); the mechanism bench measured page/byte sharing 0.778
+(32 physical pages vs 144 naive) at 8 candidates × T=128.
+
+Data structure (`actfold/core/page_table.py`):
+
+```
+Page        { tensors, layer, tier: hot|cold, refcount, write_seq, page_id }
+PageStore   { pages: id -> Page, hot set, cold set }   # refcount ledger
+PageTable   { branch -> (layer -> [page_id, ...]) }    # logical -> physical
+```
+
+`fork(parent, child)` is an **O(1) metadata copy**: the child's layer tables
+point at the same physical pages and each page's refcount increments. Release
+decrements; a refcount of 0 reclaims the page immediately.
+
+COW write path (`put` of a branch's layer, one logical page at a time):
+
+```
+old = page_table[branch][layer][slot]          # incumbent physical page
+if torch.equal(new_tensors, old.tensors):
+    reuse old            # shared page, refcount+1, zero copy
+elif old.refcount == 1:
+    old.replace_tensors(new_tensors)           # exclusive page: write in place
+else:
+    new = store.alloc(new_tensors)             # shared + different: fresh page
+    release(old)                               # old reference dropped
+page_table[branch][layer][slot] = chosen
+enforce_budget(layer)                          # physical-page hard bound
+epoch += 1
+```
+
+The whole `put` runs under a write transaction journal: any failure restores
+the captured state atomically (the `_fail_after_staged` hook injects failures
+for tests).
+
+**Eviction selection** (budget pressure, per layer) sorts candidates by the
+frozen key `(protected_any, refcount, write_seq, page_id)`: pages under rollout
+hard protection are unmovable (exhausting them raises `RolloutBudgetError`),
+shared pages (higher refcount) are evicted last, then oldest write, then page
+id for determinism. Victims are **demoted to cold**, not dropped: cold pages
+have their tensors offloaded, `availability=False`, and read back as NaN;
+only an explicit `promote` restores them (demote/promote round-trips
+bit-exactly). A shared cold page (refcount >= 2) is **never overwritten in
+place** — the exclusive guard routes divergent writes to a fresh page, since an
+in-place write would corrupt every co-holding branch. Missing pages force
+recomputation through the same target-layer availability guard as AR029, so
+outputs stay bit-exact against the dense oracle (E1: `max_abs_diff == 0.0`).
+
+**Rollout transactions** wrap the page table in an Agent-facing API:
+`fork_rollouts(base, candidates)` freezes the base branch; a candidate failure
+rolls back **atomically** to the fork baseline; `close_*` unfreezes the base.
+`enter_plan` opens a read-only window over a frozen `FoldPagePlan` — writes
+inside the window are staged and atomically committed on exit; a stale plan
+raises `PlanStaleError`. `snapshot`/`restore` is sha256-checked, works across
+instances (empty target only), and sets `epoch = max+1`.
+
+Complexity: `fork` O(pages) (metadata copy, no tensor copies — measured fork
+byte deltas 0); `put` O(pages × compare) (one `torch.equal` per logical page);
+`fetch` O(pages) (page-table lookup + concat).
+
+The mechanism benchmark reports `E1`-`E4` with `evidence_level="mechanism"`
+and `baseline_claim=false`; the real-checkpoint A/B is deferred and requires a
+new `run_formal_queue` FaceSpec.
