@@ -32,7 +32,7 @@ import torch
 import torch.nn as nn
 
 from actfold.core.fused_ops import fused_gate_mask_count, merge_stable_divergent
-from actfold.core.layer_budget import apply_layer_budget
+from actfold.core.layer_budget import apply_layer_budget, broadcast_forced_to_mask
 from actfold.core.similarity_gate import SimilarityGate
 from actfold.core.split_layer import SplitFoldedTransformerLayer, _padded_divergent_index
 
@@ -510,12 +510,15 @@ class FoldedGraphRunner:
                 # AR031 A1: cap AFTER the forced AND (forced rows are exempt
                 # by construction, #43) -- the most-similar non-exempt
                 # divergent rows fold back to stable until the per-layer
-                # recompute count fits the refreshed budget scalar.
+                # recompute count fits the refreshed budget scalar.  The
+                # static forced buffer may be position-level ``[T]`` (#43
+                # production form); broadcast it to the mask shape so the
+                # frozen same-shape cap contract holds (UT-3165).
                 capped = apply_layer_budget(
                     mask,
                     budget_scores,
                     budget_static[layer_idx],  # type: ignore[index]
-                    forced=self._forced_divergent_static,
+                    forced=broadcast_forced_to_mask(mask, self._forced_divergent_static),
                 )
                 mask.copy_(capped)
             if self._forced_divergent_static is not None or budget_scores is not None:

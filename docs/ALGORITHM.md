@@ -497,3 +497,95 @@ byte deltas 0); `put` O(pages × compare) (one `torch.equal` per logical page);
 The mechanism benchmark reports `E1`-`E4` with `evidence_level="mechanism"`
 and `baseline_claim=false`; the real-checkpoint A/B is deferred and requires a
 new `run_formal_queue` FaceSpec.
+
+## 16. Layer-Adaptive Recompute Budget and Uncertainty-Ordered Validation (AR031)
+
+The gating of Sections 3-4 decides per token, per layer, whether the parent FFN
+output is reused — but nothing bounds the total recompute. AR031 adds an
+explicit per-layer budget:
+
+- **Windowed policy (A2)**: during warmup the global budget is split uniformly
+  across layers; at window boundaries the split is re-estimated from
+  accumulated per-layer stability utilities (floor + largest-remainder,
+  surplus redistributed, zero-budget layers lifted). The accumulation is
+  device-pure (`observe_layer` adds a device-side scalar; a cross-device
+  observation raises instead of silently moving).
+- **Exact-count cap (A1)**: exempt rows (already stable, forced-divergent, or
+  NaN-scored) always recompute and never consume the budget; among the
+  non-exempt divergent rows the most similar flip back to stable until the
+  non-exempt recompute count fits `B_l`. The threshold is selected by a
+  capture-safe gather on the graph face (no host readback).
+- **Forced broadcast**: the production forced tensor is position-level `[T]`
+  (shared by every speculative-canvas row); both cap choke points (the eager
+  layer and the graph static body) broadcast it to the mask shape while the
+  core cap keeps its strict same-shape validation.
+- **Uncertainty-ordered validation**: candidate rows participate in
+  descending confidence order with a margin / margin-gap early-stop; the
+  winner rule (min-prob) is unchanged, so ordering affects only the
+  early-stop face.
+
+Mask order (frozen): gate scores/mask -> AND ~forced -> budget cap ->
+availability guard -> profiler record -> count consumption.
+
+Empirical face (Fast-dLLM-v2-1.5B, three arms, reps=30, pre-committed single
+shot): quality and safety faces all supported (posthoc gap 0.0, decode lengths
+restored, winner equivalence 100%, budget violations 0, reproduction 6/6
+strict-equal rows) while the mechanism attribution is an honest refuted — full
+vs adaptive-off 1.0004x (delta 1.15ms << 2-sigma 1464.68ms): at tau=0.95 with
+forced active blocks the folding demand never reaches the 15% budget, so the
+cap is non-binding. The mechanism is a safety/regularization guarantee
+(bounded recompute at zero quality loss), not a speedup at this workload.
+
+## 17. Verification-Logit Advance Reuse (AR032)
+
+The speculative block loop of Sections 13-14 (AR021/AR022) spends three folded
+forwards per block: the draft serial forward, the `[N, T]` batched
+verification forward, and the block-advance serial forward whose only product
+is a single token (`argmax(logits[:, -1])`). The verification logits are
+write-only in AR-domain speculative decoding implementations (SpecInfer,
+EAGLE) and, before AR032, here as well. AR032 makes them a first-class
+inference source for the advance step (opt-in, default off):
+
+- **Frozen next-token definition**:
+  `next_token = argmax(right_shift_logits(batched_logits)[j_star, -1, :])`
+  where `batched_logits` is strictly the **last small block's** verification
+  forward. Only the last small block's winner row equals the post-commit
+  canvas bit-for-bit (S>1: earlier small blocks' winner rows still carry the
+  mask token in later positions, so a wrong-source stash necessarily flips
+  the advance token — pinned by a content-conditioned `(token, position)`
+  fixture with a save-first defect injection).
+- **Constructive input equivalence**: after commit `x == cands[j_star]`
+  (candidate fills are overwritten by the commit; every other region is
+  same-source), so the winner-row tail distribution and the independent
+  advance forward's `logits[:, -1]` are the same distribution — same input,
+  same weights, same `(T, prompt_len)` fold-context objects. Under full
+  recompute (tau=1.0) the on/off A/B is bit-exact and a divergence is a
+  mechanism bug; under real folding, two ULP drift faces are documented
+  properties, not errors: the numerical source switch (verification vs
+  serial forward, different fold parents) near argmax ties, and downstream
+  chain-shape changes (the on arm folds later forwards directly against the
+  winner branch, the off arm through the AR branch).
+- **Tail-row clone (D8)**: `_speculative_small_block` returns
+  `(j_star, shifted[j_star, -1:, :].clone())` — a `[1, V]` clone, never a
+  full-row view, because the caller-side stash would otherwise pin the whole
+  `[N, T, V]` cat backing (~250-500MB transient VRAM on the real face).
+- **Count contract**: on-mode eligible blocks make exactly
+  `2·num_small_blocks` forwards (off: `+1`); the omitted count is exactly 1
+  per block-advance-eligible block (`remaining > 0`; the final block never
+  advances on either side). The on mode never mints a `fastdllm_ar_*`
+  branch, so off-arm ar-branch counts are the frozen eligible-block probe
+  and the identity `off_serial − on_serial == eligible_blocks` is a hard,
+  independently-refutable gate.
+
+Empirical face (Fast-dLLM-v2-1.5B, three arms — official baseline /
+reuse-off (AR022-aligned N=4+greedy, eager) / reuse-on (= ② plus the single
+switch) — reps=30, pre-committed single shot, artifact
+`results/optimization/ar032_speculative_advance_bench.json`): overall
+**supported** — H1 gap 0.0 with decode lengths [34, 66] on==off and
+exact-match 1.0/1.0; H2 **7.9698×** vs baseline (26305.87ms vs 3300.68ms
+p50); H3 **1.2875×** vs reuse-off (4249.76ms vs 3300.68ms) with the count
+identity 4−2==2; H4 canary 3/3, per-arm ledger bounds, reproduction 6/6
+strictly equal. Every eligible block converts three forwards into two at
+identical quality — the advance forward's entire cost is reclaimed because
+its single-token product was already computed by the verification forward.
+

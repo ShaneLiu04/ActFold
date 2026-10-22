@@ -253,3 +253,68 @@ def test_ut3152_cross_device_observation_rejected() -> None:
     with pytest.raises(ValueError, match="device"):
         policy.observe_layer(0, torch.tensor(1.0, dtype=torch.float32, device="meta"), 8)
     policy.observe_layer(0, torch.tensor(1.0, dtype=torch.float32, device="cpu"), 8)
+
+
+def test_ut3167_position_level_forced_one_dim() -> None:
+    """UT-3167 (renumbered from the review-round collision with the T006
+    validator face's UT-3164): the #43 production forced tensor is ``[T]``.
+
+    The eager budget face broadcasts a 1-D forced to the mask shape at the
+    cap choke point (the frozen ``apply_layer_budget`` same-shape contract
+    holds); the 1-D form is bit-identical to the explicit ``[1, T]`` form
+    (a silently-ignored or mis-broadcast forced would break the equality).
+    """
+    model = _tiny_model(seed=3164)
+    gen = torch.Generator().manual_seed(3164)
+    parent = torch.randint(0, 8, (1, 8), generator=gen)
+    child = parent.clone()
+    child[0, 5] = (child[0, 5] + 1) % 8
+    child[0, 6] = (child[0, 6] + 3) % 8
+    forced = torch.zeros(8, dtype=torch.bool)
+    forced[5:] = True
+
+    outs = []
+    for form in (forced, forced.unsqueeze(0)):
+        mff = _fresh_mff(
+            model,
+            budget_policy=LayerRecomputeBudgetPolicy(budget_ratio=0.15, num_layers=2),
+        )
+        with torch.no_grad():
+            mff(parent, branch_id="3164-parent")
+            outs.append(
+                mff(
+                    child,
+                    branch_id="3164-child",
+                    parent_branch_id="3164-parent",
+                    forced_divergent=form,
+                )
+            )
+    assert torch.equal(outs[0], outs[1])
+
+
+def test_ut3168_budget_requires_exact_similarity_gate() -> None:
+    """UT-3168: the eager budget face rejects non-exact-type gates (design E9).
+
+    The cap semantics are defined on ``scores > tau``; a top-k gate
+    (``AdaptiveQuantileGate``, a SimilarityGate subclass) has no threshold
+    mask, so the combination fails fast at the scores face with a
+    ``ValueError`` naming the gate type — never a silently wrong cap.
+    """
+    from actfold.core.adaptive_gate import AdaptiveQuantileGate
+
+    model = _tiny_model(seed=3168)
+    gen = torch.Generator().manual_seed(3168)
+    parent = torch.randint(0, 8, (1, 8), generator=gen)
+    child = parent.clone()
+    child[0, 5] = (child[0, 5] + 1) % 8
+
+    mff = ManualFoldedForward(
+        model,
+        cache=ActivationCache(max_entries_per_layer=1024),
+        gate=AdaptiveQuantileGate(target_stable_ratio=0.5),
+        budget_policy=LayerRecomputeBudgetPolicy(budget_ratio=0.15, num_layers=2),
+    )
+    with torch.no_grad():
+        mff(parent, branch_id="3168-parent")
+        with pytest.raises(ValueError, match="SimilarityGate"):
+            mff(child, branch_id="3168-child", parent_branch_id="3168-parent")

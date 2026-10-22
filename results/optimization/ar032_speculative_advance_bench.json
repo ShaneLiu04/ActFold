@@ -1,0 +1,554 @@
+{
+  "arms": {
+    "baseline": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 22661.982429999625,
+          "n": 30,
+          "p50": 22175.9535499732,
+          "std": 1106.9766987603305
+        },
+        "prompt1": {
+          "mean": 28575.210273331806,
+          "n": 30,
+          "p50": 27862.324649991933,
+          "std": 3026.133765027819
+        }
+      },
+      "stable_ratio_timed": null,
+      "whole_gen_ms": {
+        "mean": 25618.596351665718,
+        "n": 60,
+        "p50": 26305.87459995877,
+        "std": 3732.6943846917907
+      }
+    },
+    "reuse-off": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 3324.670656665694,
+          "n": 30,
+          "p50": 3247.11094997474,
+          "std": 197.20904689666537
+        },
+        "prompt1": {
+          "mean": 4888.960839990371,
+          "n": 30,
+          "p50": 4781.899149995297,
+          "std": 222.59731243227463
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.6667,
+        "mean": 0.5833,
+        "min": 0.5,
+        "n": 8400,
+        "std": 0.0833
+      },
+      "whole_gen_ms": {
+        "mean": 4106.815748328033,
+        "n": 60,
+        "p50": 4249.755600001663,
+        "std": 809.9206320692599
+      }
+    },
+    "reuse-on": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 2571.77502666406,
+          "n": 30,
+          "p50": 2497.4222500168253,
+          "std": 160.01941565092494
+        },
+        "prompt1": {
+          "mean": 3854.0989333298057,
+          "n": 30,
+          "p50": 3738.872799964156,
+          "std": 227.69577497277095
+        }
+      },
+      "stable_ratio_timed": {
+        "max": 0.6667,
+        "mean": 0.5833,
+        "min": 0.5,
+        "n": 6720,
+        "std": 0.0833
+      },
+      "whole_gen_ms": {
+        "mean": 3212.936979996933,
+        "n": 60,
+        "p50": 3300.6804499891587,
+        "std": 670.6820707790555
+      }
+    }
+  },
+  "canary": {
+    "faces": {
+      "batched_structure_equal": true,
+      "eligible_blocks_positive": true,
+      "on_ar_advance_forwards_zero": true
+    },
+    "pass": true
+  },
+  "hypotheses_declared": {
+    "h1": "quality alignment (on vs baseline): the merged absolute posthoc overall-confidence gap <= 1e-3 (+1e-9 IEEE margin); per-prompt decode lengths on == off elementwise; merged block-grid exact-match on >= off - 1e-9 (slack) - 1e-9 (IEEE margin); any None face value refutes that face alone",
+    "h2": "p50 speedup (baseline vs on): p50(baseline)/p50(on) > 1.0 strictly; the merged two-sample std is recorded (2-sigma is report-only, the frozen gate is the strict ratio)",
+    "h3": "mechanism attribution (off vs on): p50(off)/p50(on) > 1.0 strictly AND off_serial_forwards - on_serial_forwards == eligible_blocks (the count face alone can refute); per-arm stable ratios and per-prompt forward counts are report-only faces",
+    "h4": "honest ledger: the mechanism-engagement canary (on-arm fastdllm_ar_* advance branches == 0, eligible blocks > 0, per-prompt batched verification counts equal across off/on) AND the per-arm actual-event-count-driven publish ledger within the #45 LEDGER_C bound AND the internal reproduction double-run strictly row-equal per (arm, prompt_index) -- a mismatch refutes H4 and the overall verdict while H1-H3 keep their own recomputable verdicts"
+  },
+  "hypotheses_verdicts": {
+    "h1": {
+      "faces": {
+        "a_posthoc_gap_le_1e-3": true,
+        "b_decode_lengths_equal": true,
+        "c_exact_match_ge_off": true
+      },
+      "numbers": {
+        "baseline_posthoc_mean": 0.470001,
+        "off_decode_lengths": [
+          34,
+          66
+        ],
+        "off_exact_match": 1.0,
+        "on_decode_lengths": [
+          34,
+          66
+        ],
+        "on_exact_match": 1.0,
+        "on_posthoc_mean": 0.470001,
+        "posthoc_gap": 0.0
+      },
+      "verdict": "supported"
+    },
+    "h2": {
+      "numbers": {
+        "baseline_ms": 26305.87459995877,
+        "delta_ms": 23005.19414996961,
+        "on_ms": 3300.6804499891587,
+        "rule": "supported iff p50(baseline)/p50(on) > 1.0 strictly; 2-sigma report-only",
+        "sigma": 3792.4690914461135,
+        "speedup": 7.9698,
+        "speedup_raw": 7.969833795951127,
+        "threshold_2sigma_ms": 7584.938182892227
+      },
+      "verdict": "supported"
+    },
+    "h3": {
+      "faces": {
+        "a_speedup_gt_1": true,
+        "b_mechanism_count": true
+      },
+      "numbers": {
+        "eligible_blocks": 2,
+        "off_ms": 4249.755600001663,
+        "off_serial_forwards": 4,
+        "on_ms": 3300.6804499891587,
+        "on_serial_forwards": 2,
+        "rule": "supported iff p50(off)/p50(on) > 1.0 strictly AND off_serial - on_serial == eligible_blocks (non-negative counts)",
+        "speedup": 1.2875,
+        "speedup_raw": 1.287539240587686
+      },
+      "verdict": "supported"
+    },
+    "h4": {
+      "faces": {
+        "canary_pass": true,
+        "ledger_within": true,
+        "reproduction_ok": true
+      },
+      "numbers": {
+        "canary_pass": true,
+        "ledger_within": true,
+        "repro_rows": []
+      },
+      "verdict": "supported"
+    },
+    "overall": "supported"
+  },
+  "ledger": {
+    "c": 4,
+    "num_layers": 28,
+    "per_prompt": {
+      "prompt0": {
+        "reuse-off": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 174,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "reuse-on": {
+          "batched_events": 1,
+          "bound": 244,
+          "ops_delta": 145,
+          "serial_events": 1,
+          "within_bound": true
+        }
+      },
+      "prompt1": {
+        "reuse-off": {
+          "batched_events": 1,
+          "bound": 360,
+          "ops_delta": 174,
+          "serial_events": 2,
+          "within_bound": true
+        },
+        "reuse-on": {
+          "batched_events": 1,
+          "bound": 244,
+          "ops_delta": 145,
+          "serial_events": 1,
+          "within_bound": true
+        }
+      }
+    },
+    "within_bound": {
+      "reuse-off": true,
+      "reuse-on": true
+    }
+  },
+  "mechanism_probe": {
+    "per_prompt": [
+      {
+        "batched_equal": true,
+        "eligible_blocks": 1,
+        "off": {
+          "ar_advance_forwards": 1,
+          "batched_forwards": 1,
+          "serial_forwards": 2
+        },
+        "on": {
+          "ar_advance_forwards": 0,
+          "batched_forwards": 1,
+          "serial_forwards": 1
+        },
+        "on_ar_zero": true,
+        "prompt_index": 0,
+        "serial_delta_off_minus_on": 1
+      },
+      {
+        "batched_equal": true,
+        "eligible_blocks": 1,
+        "off": {
+          "ar_advance_forwards": 1,
+          "batched_forwards": 1,
+          "serial_forwards": 2
+        },
+        "on": {
+          "ar_advance_forwards": 0,
+          "batched_forwards": 1,
+          "serial_forwards": 1
+        },
+        "on_ar_zero": true,
+        "prompt_index": 1,
+        "serial_delta_off_minus_on": 1
+      }
+    ],
+    "totals": {
+      "eligible_blocks": 2,
+      "off_batched_forwards": 2,
+      "off_serial_forwards": 4,
+      "on_batched_forwards": 2,
+      "on_serial_forwards": 2
+    }
+  },
+  "meta": {
+    "arm_configs": {
+      "baseline": {
+        "description": "official Fast-dLLM v2 recipe (raw sampler)",
+        "folded_model": null,
+        "num_block_candidates": 0
+      },
+      "reuse-off": {
+        "description": "the AR022-aligned config -- the attribution control; every block-advance-eligible block runs the independent serial AR forward",
+        "mff": "eager ManualFoldedForward (use_cuda_graph=False)",
+        "sampler": {
+          "candidate_include_greedy": true,
+          "candidate_top_k": 10,
+          "num_block_candidates": 4,
+          "speculative_advance_reuse": false
+        }
+      },
+      "reuse-on": {
+        "description": "the identical construction with exactly one switch flipped -- the block-advance token is the last small block's winning verification row tail argmax; one serial forward omitted per eligible block",
+        "mff": "eager ManualFoldedForward (use_cuda_graph=False)",
+        "sampler": {
+          "candidate_include_greedy": true,
+          "candidate_top_k": 10,
+          "num_block_candidates": 4,
+          "speculative_advance_reuse": true
+        }
+      }
+    },
+    "canary_note": "the canary is the mechanism-engagement face (on-arm advance branches == 0; eligible blocks > 0; batched structure equal); the AR022 degradation-class graph canary is moot by construction on the eager primary face (use_cuda_graph=False) and is recorded as a limitation note, never as a measured claim",
+    "command": "python -m scripts.ar032_speculative_advance_bench --reps 30 --model-path C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "gpu_driver_version": "556.18",
+    "interleaving": "per-rep round-robin over the three arms; rep r starts at position r%3 (anti-drift, WDDM fairness)",
+    "limitation_notes": [
+      "eager is the primary declaration face of this benchmark: the folded arms run ManualFoldedForward with use_cuda_graph=False (the WDDM 16GB host protocol); the AR032 reuse mechanism reads the batched verification forward's return value and is exercised end-to-end on the eager path (D7: the graph linkage face is identical by construction -- the stash is written by the verification forward itself, never by a replay-side effect -- and is BLOCKED-DEFERRED as a measured claim, requiring a quiet >=24 GiB TCC/Linux GPU per the AR030 formal-face standard)",
+      "timing follows the #39 wall-clock discipline (perf_counter + synchronize, warmup discarded, per-rep round-robin); the Windows WDDM display-driver mode does not lock clocks -- p50 over reps with interleaving is the noise mitigation",
+      "the mechanism's headroom is bounded by the per-prompt eligible-block count: the AR031 artifact's posthoc evidence shows 1-2 speculative blocks per prompt at these geometries, so the H3 delta is expected to be honest-but-modest; the count face and the engagement canary record the mechanism's activation regardless of the delta's size",
+      "the forward-count sidecar reads MFF host-side counters differenced around one untimed sidecar generation per (arm, prompt); the MFF bookkeeping (counter increments, branch-name appends) also runs during the timed segment but is host-only and uniform across arms"
+    ],
+    "mechanism_probe_semantics": "per (arm, prompt) the MFF serial/batched call counters are differenced around one untimed sidecar generation; eligible_blocks := the reuse-off arm's count of fastdllm_ar_* serial advance branches (the reuse-on arm never mints them -- D5); the on arm's per-prompt batched count must equal the off arm's (identical speculative verification structure); the identity off_serial - on_serial == eligible_blocks is the H3 count face",
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "C:\\Users\\l30086046\\AppData\\Local\\Temp\\opencode\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "prompts": {
+      "count": 2,
+      "num_tokens": 128,
+      "padded_token_lens": [
+        32,
+        64
+      ],
+      "raw_token_lens": [
+        21,
+        37
+      ],
+      "shape_windows_W": 4,
+      "texts": [
+        "Explain the key ideas of the theory of relativity in a few short sentences for a general audience.",
+        "The ocean appears blue because water absorbs red light more strongly than blue light. Describe how photosynthesis works in plants, why chlorophyll matters, and list the first five prime numbers."
+      ]
+    },
+    "quick": false,
+    "reproduction_declaration": "the untimed sidecar generation runs TWICE per (arm, prompt); pass A records the quality faces and forward counts, and pass B must be strictly payload-equal on every (arm, prompt) row (decode length + the full committed token list); any mismatch refutes H4 and the overall verdict while H1-H3 keep their own recomputable verdicts; the check binds quick and formal alike",
+    "reps": 30,
+    "run_date_utc": "2026-10-22T04:45:24.825294+00:00",
+    "seed": 2026,
+    "single_run_discipline": "pre-committed single-shot verdict, no rerun fishing",
+    "timing_method": "host perf_counter + torch.cuda.synchronize (#39); whole-generation wall clock; the quality sidecar (posthoc re-scoring, exact-match grids, ledger reads) runs only on the untimed passes; the MFF host-only bookkeeping is uniform across arms during the timed segment",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "venv": true,
+    "warmup_strategy": "one full discarded sample per (arm, prompt) before any timing; the untimed sidecar pass A records the quality faces and the forward-count sidecar, pass B is the internal reproduction self-check"
+  },
+  "quality": {
+    "faces": {
+      "baseline_posthoc_mean": 0.470001,
+      "off_decode_lengths": [
+        34,
+        66
+      ],
+      "off_exact_match": 1.0,
+      "on_decode_lengths": [
+        34,
+        66
+      ],
+      "on_exact_match": 1.0,
+      "on_posthoc_mean": 0.470001
+    },
+    "per_arm_sidecar": [
+      {
+        "block_exact_match": {
+          "reuse-off": {
+            "len_baseline": 34,
+            "len_other": 34,
+            "overall_exact_match": 1.0,
+            "per_block_exact_match": {
+              "block0": 1.0,
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-on": {
+            "len_baseline": 34,
+            "len_other": 34,
+            "overall_exact_match": 1.0,
+            "per_block_exact_match": {
+              "block0": 1.0,
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-off": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-on": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_exact_match": {
+          "reuse-off": {
+            "len_baseline": 66,
+            "len_other": 66,
+            "overall_exact_match": 1.0,
+            "per_block_exact_match": {
+              "block0": 1.0,
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-on": {
+            "len_baseline": 66,
+            "len_other": 66,
+            "overall_exact_match": 1.0,
+            "per_block_exact_match": {
+              "block0": 1.0,
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-off": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "reuse-on": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 1
+      }
+    ],
+    "per_prompt": [
+      {
+        "block_match_counts": {
+          "reuse-off": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "reuse-on": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 34,
+          "reuse-off": 34,
+          "reuse-on": 34
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.369661,
+          "reuse-off": 0.369661,
+          "reuse-on": 0.369661
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_match_counts": {
+          "reuse-off": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "reuse-on": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 66,
+          "reuse-off": 66,
+          "reuse-on": 66
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.570341,
+          "reuse-off": 0.570341,
+          "reuse-on": 0.570341
+        },
+        "prompt_index": 1
+      }
+    ]
+  },
+  "reproduction": {
+    "mismatches": [],
+    "mode": "internal-double-run",
+    "ok": true,
+    "rows_compared": 6
+  },
+  "schema": "ar032_speculative_advance_bench",
+  "schema_version": 1,
+  "speedups_p50": {
+    "off_vs_baseline": 6.19,
+    "on_vs_baseline": 7.9698,
+    "on_vs_off": 1.2875
+  }
+}

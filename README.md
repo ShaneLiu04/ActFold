@@ -95,6 +95,8 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 13 | **多 parent 批量折叠 + 双链 lockstep 并行投机**（AR025） | AR015 批量契约限定**同父**：双链投机只能逐链各发一次 `[N,T]` 批量前向——写账本随链数线性放大（合成面实测 chains=2/4 时 40–160 ops vs 合并 4 ops），跨链候选永不共享一次前向；逐链交错路径还让缓存 LRU 行为不对称（DD8 erratum 实证） | ①机制面：`ManualFoldedForward.parent_branch_ids` 尾参——per-row 父装配（gather + 行级降级，OQ1）+ 逐行 gate/merge，`[sum(N_c), T]` 单次折叠前向服务多链候选；②采样面：`sample_joint` W2 lockstep（单实例双链、per-chain 画布/折叠链状态/链限定 cache tag，双实例禁令=branch id 碰撞）；`_speculative_commit` 按 forward 接缝拆分 `_speculative_build`/`_speculative_score_commit`，合并闭包重写单数→复数 parent 参数；**种子公式无链分量**（同 unit/sub/j per chain ⇒ A/B 逐位等价构造前提）；③基准面：`--mode real` AR023 模板接线 + DD8 冻结判定式（H1 逐位硬门+logits 归因回放、H2 严格 p50(B)/p50(A)>1.0、交付线 ≥10%、H4 账本严格小） | 合成面 **16/16 全过**（8 形状点×双构造：S1 supported——nonsplit 逐位/split allclose 1e-6；S2 supported——写账本 4 < 40–160 严格；S3 0.9–0.975 report-only）；UT 13 例（逐位相等+账本严格小+守卫面）+ 冻结面哨兵 96 绿；真实面 reps=30 接线交付、按 RERUN 步骤 16 待高速算力机执行回填 |
 | 14 | **端侧有界内存金字塔激活缓存**（AR029） | 端侧 GPU/边缘设备无法为每个分支保留整层全量激活：`ActivationCache` 逐层同预算整条 LRU，长序列/多层时驻留量随层数线性增长；现有缓存要么全量驻留、要么整条淘汰，缺少**逐层差异化预算 + 块页 + 缺失哨兵**的统一机制 | ①`PyramidPlan`：plan 级总预算归一化为逐层块对齐预算（linear/geometric，floor 后从最深回收，`depth*block>total` 显式拒绝）；②`PyramidActivationCache`：块页存储 + 逐层硬预算 + 确定性锚点/近期窗口 + NaN 缺失哨兵 + `availability` + 六键 `stats()` + 原子 `put_batch`；③安全核心：门读 L-1、合并用 L，仅靠 NaN 会错配逐层预算——`_apply_cache_availability` 在 forced AND 之后、profiler/计数/快速路径之前把**目标层**可用性 AND 进 mask，1-D（AR028 逐行）绝不扩维；④graph×pyramid 在 MFF init+setter 双校验拒绝（图静态父缓冲看不到运行时淘汰） | 机制面 quick 工件 **E1-E4 全 supported**：全量预算 vs `ActivationCache` 与逐层洞 oracle **逐位一致（diff=0.0）**、逐层预算/独立字节账本成立、压力面复用率 0.625、输出与统计全有限非负；AR029 套件 **94 passed**（plan 20 / cache 35 / integration 27 / bench 12）；真实 checkpoint A/B 按范围裁定 **BLOCKED-DEFERRED**（`baseline_claim=false`） |
 | 15 | **面向 Agent/RSI 的页共享折叠内存 PSFM**（AR030） | Agent/RSI 多候选 rollout 中 N 个候选共享同一 prompt 前缀，dense 激活缓存按**整分支张量**存储——字节随分支线性增长 O(N·T·L)，端侧内存不可承受；实测 8 候选×T=128 负载下朴素页存 144 页 vs PSFM 物理驻留 32 页（**页/字节共享率 0.778**），内容差异只在每层 1 页 | 页表 + 引用计数 + COW 页共享（逐页 `torch.equal`：内容相同复用共享页 / 独占页原地写 / 共享页内容不同分配新页）+ fork O(1) 元数据复制 + 逐层**物理页**预算硬上界（冻结淘汰键 `(protected_any, refcount, write_seq, page_id)`）+ hot/cold 分层（cold 卸载 + NaN 哨兵 + 显式 promote）+ Agent rollout 事务（base 冻结、候选失败原子回滚、close 解冻）+ `enter_plan` 只读窗口 + 暂存写原子提交 | 机制级 **E1-E4 全 supported**：两面 vs dense oracle **逐位一致（max_abs_diff=0.0）**、物理页 32/朴素 144（字节 98304/442368）、evictions=0、fork 字节增量 0、每候选新增页==差异页==2、诚实检查 14/14 全真；`evidence_level="mechanism"`、`baseline_claim=false`，真实 checkpoint A/B **BLOCKED-DEFERRED** |
+| 16 | **层级自适应重算预算 + 不确定性排序验证**（AR031） | AR021/AR022 的折叠量由 tau 门控**隐式**决定——逐层重算量无硬上界，发散需求突发时折叠收益不可控；批量验证的逐行选定与验证顺序解耦，有序化存在理论空间。三臂真实基准实测该 workload 下 cap 恒不绑定（诚实负结果即交付） | ①A2 窗口化逐层预算策略（warmup 均匀 + 窗口边界按层稳定度效用加权再估、floor+最大余数+盈余回收分配，`observe_layer` 设备端零同步累计）；②A1 精确计数 cap （豁免位 = stable ∪ forced ∪ NaN 恒重算不记账，非豁免按相似度降序折叠至重算 ≤ B_l；graph 面 gather 选择器零回读）；③`broadcast_forced_to_mask`（#43 位置级 forced `[T]` 在两个 cap 阻塞点广播到掩码形状，核心同形契约保持严格）；④不确定性排序验证（margin/margin_gap validated-first + early-stop，`uncertainty_stats` 观测面）；⑤三臂冻结判定基准（H1-H4 预注册 + 逐 (arm,prompt) 双跑 reproduction 一票否决） | 三臂 reps=30：质量/安全面**全 supported**（posthoc gap 0.0、解码长度 34/66 恢复、块级 exact ≥ off、winner 等价 100%、逐层预算违规 0、repro 6/6）；H2 **6.2690×** vs baseline；**H3 诚实 refuted**——机制无附加延迟收益（full vs adaptive-off 1.0004×，Δ=1.15ms << 2σ=1464.68ms），以**安全/正则化面**交付 |
+| 17 | **投机验证前向的块推进复用**（AR032） | 投机块循环每 block 三次折叠前向——draft serial、`[N,T]` batched 验证、block-advance serial——而第三次前向的唯一产出一个 token；验证 logits 在业界（SpecInfer/EAGLE）与本项目均为 write-only 即弃。验证前向已对 winner 行（== commit 后 canvas，构造性逐位相同）算过全 `[T,V]` logits，其尾位置分布就是推进分布本身——**前向级结构性冗余** | opt-in `speculative_advance_reuse`（默认关 = AR031 末态逐字节不变；True+N=0 构造期 ValueError）：省略 block-advance serial forward，`next_token = argmax(tail_logits)`；复用源冻结为**最后一个 small block** 的验证前向（S>1 错源必被内容条件化 fixture + 缺陷注入捕获，UT-3174）；`[1,V]` 尾行克隆断开 `[N,T,V]` cat backing 滞留（D8）；folding chain 直连 winner branch（on 臂不铸造 `fastdllm_ar_*`——off 臂 ar 计数即冻结 eligible 探针）；eager 全重算（tau=1.0）on/off 逐位一致硬门 + 两类 ULP 漂移面文档化；H3 计数面 `off_serial−on_serial==eligible` 硬门（单独可 refute） | 三臂 reps=30 预承诺单次：**overall supported（H1-H4 全过）**——H1 gap 0.0 / decode [34,66] on==off / exact-match 1.0/1.0；H2 **7.9698×** vs baseline（26305.87 vs 3300.68ms p50）；H3 **1.2875×** 归因（4249.76 vs 3300.68ms）+ 计数 4−2==2 逐 prompt 成立；H4 canary 3/3 + 逐臂 ledger 界 + repro 6/6——投机加速 rung 从 7.02×（AR022）推至 **7.97×**，质量逐位不损 |
 
 ### 机理详解（按创新演进顺序）
 
@@ -444,9 +446,155 @@ prompt 前缀出发并行试探，各自只改动末尾少数 token。dense 激�
 
 ---
 
+#### 15. 层级自适应重算预算与不确定性排序验证（AR031）：折叠量的硬上界与验证顺序
+
+动机：AR021/AR022 的折叠量由 tau 门控隐式决定——没有任何机制保证「每层
+最多重算多少 token」。发散需求突发时折叠收益不可控；过度折叠则侵蚀质量
+余量。AR031 为折叠栈补上**逐层重算预算**这一显式控制面，并以**不确定性
+排序验证**（margin/margin_gap：高置信已验证行先于低置信行参与比较、连续
+达标可提前停止）探索验证顺序的质量-成本面。
+
+机制：`LayerRecomputeBudgetPolicy`（A2 窗口化策略：warmup 期均匀分配，
+窗口边界按层稳定度效用加权再估，floor+最大余数+盈余回收；`observe_layer`
+设备端零同步累计，跨设备观察显式拒绝）+ `apply_layer_budget`（A1 精确计数
+cap：豁免位 = stable ∪ forced ∪ NaN 分数，恒重算且不消耗 B_l；非豁免行按
+相似度降序折叠至重算数 ≤ B_l；graph 面 gather 选择器捕获安全零回读）+
+`broadcast_forced_to_mask`（#43 生产 forced 张量是位置级 `[T]`，eager 与
+graph 两个 cap 阻塞点广播到掩码形状，核心同形契约保持严格，UT-3161 不动）
++ 不确定性排序验证（`uncertainty_validation_order`/`margin`/`margin_gap`
+三键，`UncertaintyRolloutValidator`，`uncertainty_stats` 只读观测）。
+`ActFoldConfig` 七键 consumption-only 接线（默认全关 = 零回归）；
+benchmark_runner 经 `_resolve_budget_depth`（真实层数不猜，不可解析
+ValueError）+ `_layer_budget_policy`（enabled=False 先于深度解析）接入 MFF。
+
+实测（三臂基准 `scripts/ar031_adaptive_uncertainty_bench.py`，判定函数冻结
+先于数据收集）：质量与安全面全部成立——posthoc gap 0.0、解码长度恢复、
+winner 等价 100%、逐层预算违规 0、reproduction 6/6 行严格相等；
+**机制归因诚实 refuted**：该 workload（tau=0.95 + forced 活跃块）下折叠
+需求恒低于预算，cap 不绑定，full vs adaptive-off 仅 1.0004×
+（Δ=1.15ms << 2σ=1464.68ms）。AR031 的交付定位因此是**安全/正则化面**
+（重算量硬上界 + 质量零损），而非加速档；判定与数字原样见工件。
+
+---
+
+#### 16. 投机验证前向的块推进复用（AR032）：验证 logits 一鱼两吃，三前向变两前向
+
+动机：AR021/AR022 的投机块循环每 block 花费**三次**折叠前向——draft
+serial、`[N, T]` batched 验证、block-advance serial——而第三次前向的唯一
+产出是一个 token（`argmax(logits[:, -1])`）。验证 logits 在业界投机解码
+实现（SpecInfer/EAGLE——AR 域无块推进概念）与本项目均为 write-only 即弃；
+而 batched 验证已经对 **winner 行**（== commit 后 canvas，构造性逐位相同：
+fill 区被 commit 覆写、其余区域同源）计算了全 `[T, V]` logits，其尾位置的
+right-shifted logits 在数学上就是推进分布本身（同输入、同权重、同
+`(T, prompt_len)` fold ctx 对象）。这是比 kernel 级优化收益上限更高、机制
+更简洁的**前向级冗余消除**。
+
+机制（opt-in `speculative_advance_reuse`，默认关 = AR031 末态逐字节不变；
+True + N=0 构造期 `ValueError`）：
+
+- **冻结 next_token 定义**：`argmax(right_shift_logits(batched_logits)
+  [j_star, -1, :])`，复用源严格为**最后一个 small block** 的验证前向——
+  S>1 时更早 small block 的 winner 行尾部仍携带 `mask_id`，错源必产出错误
+  推进 token（内容条件化 `(token, position)` fixture + monkeypatch
+  save-first 缺陷注入钉死捕获力，UT-3174）；
+- **`[1, V]` 尾行克隆（D8）**：`_speculative_small_block` 改返
+  `(j_star, shifted[j_star, -1:, :].clone())`——绝不返回整行视图，否则
+  调用侧暂存会滞留整个 `[N, T, V]` cat 结果 backing（真实面 ~250-500MB
+  瞬态显存，16GB WDDM 预算不可接受）；
+- **chain 直连 + 计数探针**：on 臂不铸造 `fastdllm_ar_*` branch（无 forward
+  无 branch），下一 block draft 以 winner branch 为 parent 直连（#43 既有
+  语义）；off 臂的 ar 分支计数即冻结的 eligible 探针——计数恒等式
+  `off_serial − on_serial == eligible_blocks` 为 H3 硬门（单独可 refute，
+  逐臂 forward 计数 sidecar 供数）；
+- **等价验收双层**：eager 全重算（tau=1.0，CPU 非 split）on/off 完整轨迹
+  **逐位一致**为硬门（同计算图同输入，分叉即机制 bug）；真实折叠面两类
+  ULP 漂移（数值源切换的 argmax 平局翻转 + on 臂下游 parent 直连 winner 的
+  链形变化）为文档化属性，由质量门与 next-token 一致率记录面联合控制。
+
+实测（三臂基准 `scripts/ar032_speculative_advance_bench.py`，AR031 模板，
+判定冻结先于数据收集，reps=30 预承诺单次）：**overall supported（H1-H4
+全过）**——H1 三面（posthoc gap **0.0**（on==baseline==0.470001）、decode
+[34,66] on==off、exact-match 1.0/1.0）；H2 **7.9698×** vs 官方 baseline
+（26305.87 vs 3300.68ms p50）；H3 **1.2875×** 归因（4249.76 vs 3300.68ms）
++ 计数 4−2==2 逐 prompt delta==1、on 臂 ar 分支 0、batched 结构相等；H4
+canary 3/3 + 逐臂实际事件数 ledger 界（on 145≤244、off 174≤360——界按各臂
+forward 计数参数化，固定公式会假失败）+ repro 6/6 严格相等。每个 eligible
+block 三前向变两前向、质量逐位不损——投机加速 rung 从 7.02×（AR022）推至
+**7.97×**；eligible headroom 由 AR031 工件预示（每 prompt 1-2 块），formal
+实测 eligible=1/prompt，H3 1.2875× 如实反映该上界。
+
+诚实注记：跨 rung 计时漂移（baseline p50 同几何 3096.76ms[AR022,graph] →
+17279.30ms[AR031] → 26305.87ms[AR032,eager]，WDDM 主机状态噪声 + 执行模式
+差异）——**同 run A/B 比值内部有效，跨工件绝对值不可直接比**；quick timed
+face ~92s 超出 srs 90s 门为 host-conditional 事实（baseline 臂墙钟主导，
+机制臂仅 3.07s p50），如实记录。T007 审查 PASS 后的勘误全部以 spec 勘误 +
+变更记录处理，冻结判定函数与 formal 工件一字不动——工件↔代码重算一致性
+高于文档。
+
 ## 最新实验结果
 
-### Agent/RSI 页共享折叠内存机制基准（AR030）：E1-E4 全 supported（最新头条，机制面交付）
+### 投机验证前向的块推进复用三臂基准（AR032）：H1-H4 全 supported，投机加速 rung 推至 7.97×（最新头条）
+
+**工作负载**：Fast-dLLM-v2-1.5B（AR019 venv `transformers==4.53.1`，
+Quadro RTX 5000 16GB WDDM），num_tokens=128、2 prompts、reps=30 三臂
+round-robin（#39 计时，warmup 丢弃，~46min，峰值 ~4.6GB）：官方
+baseline / **reuse-off**（AR022 对齐配置 N=4+greedy，eager MFF 主声明面，
+复用关）/ **reuse-on**（与 ② **完全同配置**，仅
+`speculative_advance_reuse=True`——差异仅为复用开关，机制归因臂）。
+判定函数冻结先于数据收集；repro 双跑按 `(arm, prompt_index)` 配对。
+工件：`results/optimization/ar032_speculative_advance_bench.json`（quick
+面 `*_quick.json` 同判定契约、独立路径）。
+
+**冻结判定与实测**：
+
+| 判定 | 条件（冻结） | 实测 | 结果 |
+|---|---|---|---|
+| **H1 质量对齐** | posthoc gap ③vs① ≤ 1e-3（IEEE 余量）；decode length ③==②；merged block exact-match ③ ≥ ②−1e-9；任一 None → refuted | gap **0.0**（on==baseline==0.470001）；decode **[34,66]** on==off；exact-match **1.0/1.0** | **supported** |
+| **H2 端到端加速** | p50(①)/p50(③) > 1.0 严格（2σ report-only） | **7.9698×**（26305.87 vs 3300.68ms；Δ=23005.19ms > 2σ=7584.94ms） | **supported** |
+| **H3 机制归因** | p50(②)/p50(③) > 1.0 严格 **且** 计数面 `off_serial−on_serial == eligible_blocks` 硬门（单独可 refute） | **1.2875×**（4249.76 vs 3300.68ms）；计数 **4−2==2**（逐 prompt delta==1）；on 臂 `fastdllm_ar_*` 分支 **0**；batched 结构相等 | **supported** |
+| **H4 诚实账本** | canary 合取（on 臂 ar==0 / eligible>0 / batched 结构相等）+ 逐臂实际事件数 ledger 界 + repro 双跑严格相等 | canary **3/3**；ledger within（on 145≤244、off 174≤360——逐臂参数化界）；repro **6/6** | **supported** |
+
+**overall: supported**。每个 block-advance-eligible block 的三次折叠前向
+变为两次——被省略的推进 forward 的单 token 产物已由验证 forward 的 winner
+行尾 logits 构造性提供；eligible headroom 由 AR031 工件预示（每 prompt
+1-2 块），formal 实测 eligible=1/prompt，H3 1.2875× 如实反映该上界。
+repro 失配语义为冻结 UT 契约（UT-3178/3179）：H4/overall refuted 而
+H1-H3 保留各自可重算判定（无 blocked 档）。计时口径注记：同 run A/B
+比值内部有效；baseline p50 跨工件漂移（3096.76→17279.30→26305.87ms，
+WDDM 主机状态噪声 + graph/eager 执行模式差异）——跨工件绝对值不可直接比
+（工件内部：off_vs_baseline 6.19×、on_vs_baseline 7.9698×、on_vs_off
+1.2875×）。
+
+### 自适应重算预算与不确定性排序三臂基准（AR031）：质量/安全面全 supported，机制归因诚实 refuted
+
+**工作负载**：Fast-dLLM-v2-1.5B（AR019 venv `transformers==4.53.1`，
+torch 2.5.1+cu121，Quadro RTX 5000 16GB WDDM，seed 2026），num_tokens=128、
+2 prompts、reps=30 三臂 round-robin（#39 计时，warmup 丢弃）：
+官方 baseline / **adaptive-off**（AR022 对齐配置 + 均匀权重预算 cap）/
+**full**（AR031 全开：adaptive 窗口权重 + 不确定性排序验证）。判定函数
+冻结先于数据收集；逐 (arm, prompt) 双跑 reproduction 一票否决。工件：
+`results/optimization/ar031_adaptive_uncertainty_bench.json`（quick 面
+`*_quick.json` 同判定契约、独立路径）。
+
+**冻结判定与实测**：
+
+| 判定 | 条件（冻结） | 实测 | 结果 |
+|---|---|---|---|
+| **H1 质量归因** | merged gap ③vs① ≤ 1e-3；逐 prompt 解码长度恢复；merged block exact-match ③ ≥ ②−eps（off 分支 gap 仅 report） | posthoc gap **0.0/0.0**（双 prompt 逐位==baseline）；解码长度 **34/66** 全恢复；块级 exact-match ≥ off | **supported** |
+| **H2 端到端加速** | p50(base)/p50(full) > 1 严格 且 Δ > 2σ（AR017 口径，merged σ=√(σ²+σ²)） | **6.2690×**（17279.30ms vs 2756.30ms，Δ=14522.99ms > 2σ=3535.60ms） | **supported** |
+| **H3 机制归因** | p50(off)/p50(full) 同 H2 口径 | **1.0004×**（2757.46ms vs 2756.30ms，Δ=1.15ms << 2σ=1464.68ms） | **REFUTED**（诚实负结果） |
+| **H4 安全/账本** | winner 等价 100%；逐层预算违规 0（探针逐前向对账 B_l）；ledger 界内；reproduction 严格相等 | 等价 **1.0**（sidecar 冻结 off 分支全量重评分逐位比对 j_star）；违规 **0**；ledger 界内；repro **6/6** | **supported** |
+
+**overall: refuted**（纯由 H3 触发；质量与安全面全部成立）。定位：AR031
+以**安全/正则化面**交付——逐层重算硬上界 + 质量零损 + 等价 100%；在该
+workload 上无附加延迟收益（tau=0.95 + forced 活跃块下折叠需求恒低于 15%
+预算，cap 恒不绑定；不确定性排序不改 min-prop 选定的验证成本）。判定
+优先级 blocked > refuted > supported，honest negative 原样交付。基准的
+reproduction 面曾抓出并修复两个真实缺陷（位置级 forced 形状失配
+UT-3167/3165、pass A 跨 prompt 配对泄漏 UT-3166）；第一次 formal 运行按
+冻结语义全 blocked（仪器修复性质单次重跑，两次运行均留档 tasks.md）。
+
+### Agent/RSI 页共享折叠内存机制基准（AR030）：E1-E4 全 supported（机制面交付）
 
 **证据等级**：`evidence_level="mechanism"`、`baseline_claim=false`——这是
 **机制/基础设施**工件，不是「比官方 baseline 更快」的声明；真实 checkpoint
@@ -1045,8 +1193,10 @@ pip install -e .                       # 可编辑安装
 | 9 | AR026 真实 checkpoint 端到端图路径（生产捕获 + 四模式图基准） | LLaDA-8B / Dream-7B 生产捕获 | **T006 首验 PASS**：两族生产捕获 `graph_captures=2`、零失败诊断、零降级回退（AR023 裸捕获断言/广播断裂未复现）；四模式奇偶判定冻结 | 待正式面 | `ar026_probe_graph_faces.json` | 首验 PASS；正式面待跑 |
 | 10 | AR029 端侧有界内存金字塔激活缓存（逐层预算 + 块页 + 缺失哨兵守卫） | 机制基准：真实小型 decoder，full/pressure 两面（CPU 逐位） | E1-E4 **全 supported**（两面 diff=0.0、逐层预算/字节账本、复用 0.625、诚实性 PASS） | 机制面（无 baseline 速度声明） | `ar029_pyramid_cache_bench_quick.json` | 机制交付；真实 checkpoint A/B **BLOCKED-DEFERRED**（`baseline_claim=false`） |
 | 11 | AR030 面向 Agent/RSI 的页共享折叠内存 PSFM（页表 + 引用计数 + COW + rollout 事务） | 机制基准：真实 2 层 TinyDecoder，8 候选 rollout，压力/宽裕两面（CPU 逐位） | 机制面 N/A（BLOCKED-DEFERRED） | 机制面 N/A（BLOCKED-DEFERRED） | `ar030_paged_agent_bench_quick.json` | 机制交付；PSFM 页共享 0.778 / 与 dense oracle 逐位一致（E1-E4 全 supported）；真实 checkpoint A/B **BLOCKED-DEFERRED**（`baseline_claim=false`） |
+| 12 | AR031 层级自适应重算预算 + 不确定性排序验证（三臂真实基准，reps=30） | Fast-dLLM-v2-1.5B 三臂（官方 baseline / adaptive-off / full） | **质量/安全面全 supported**（gap 0.0、长度 34/66 恢复、winner 等价 100%、逐层预算违规 0、repro 6/6）；**H3 诚实 refuted**（机制无附加延迟收益，full vs off 1.0004×） | full vs baseline **6.2690×**（vs adaptive-off 1.0004×，机制归因 refuted 如实入档） | `ar031_adaptive_uncertainty_bench.json` | 已交付（**安全/正则化档**；加速归因诚实负结果） |
+| 13 | AR032 投机验证前向的块推进复用（三臂真实基准，reps=30） | Fast-dLLM-v2-1.5B 三臂（官方 baseline / reuse-off=AR022 对齐 / reuse-on=②+单开关） | **质量逐位不损**（posthoc gap 0.0、decode [34,66] on==off、exact-match 1.0/1.0）+ 计数恒等式 4−2==2 硬门 + canary 3/3 + repro 6/6 | reuse-on vs baseline **7.9698×**（vs reuse-off 1.2875× 机制归因 supported） | `ar032_speculative_advance_bench.json` | 已交付（**加速档**：投机 rung 7.02× → 7.97×；H1-H4 全 supported） |
 
-**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）与第 11 档（AR030）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
+**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）与第 11 档（AR030）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec；第 12 档（AR031）是**安全/正则化档**——质量与安全面全 supported，机制加速归因按预注册门诚实 refuted（full vs adaptive-off 1.0004×），不作为加速 rung 引用；第 13 档（AR032）是**加速档**——投机回路在质量逐位不损的前提下把推进 forward 全额回收（H1-H4 全 supported，7.9698× vs baseline / 1.2875× 归因）。**计时口径**：所有 p50 比值为同 run A/B 内部有效；baseline p50 跨工件漂移（WDDM 主机状态噪声 + graph/eager 执行模式差异，3096.76→17279.30→26305.87ms）使跨工件绝对值不可直接比。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
 
 ## 快速上手
 
@@ -1166,6 +1316,18 @@ config = FastDLLMSamplerConfig(
 sampler = FastDLLMSampler(model, config)
 output = sampler.sample(prompt_ids, folded_model=mff)
 print(sampler.greedy_win_stats)        # {"greedy_wins": ..., "speculative_calls": ...}
+
+# 块推进复用（AR032）：投机路径省略 block-advance serial forward——
+# next_token 取最后一个 small block 验证前向 winner 行尾 logits 的 argmax
+# （每个 eligible block 三次折叠前向变两次，质量逐位不损；默认 False 逐字节现状）
+config = FastDLLMSamplerConfig(
+    num_block_candidates=4,
+    candidate_top_k=10,
+    candidate_include_greedy=True,
+    speculative_advance_reuse=True,    # AR032 复用开关（True 需 N>0）
+)
+sampler = FastDLLMSampler(model, config)
+output = sampler.sample(prompt_ids, folded_model=mff)
 ```
 
 > 单发场景（单次 `generate()`）建议 `mff` 构造时 `use_cuda_graph=False`——
@@ -1195,6 +1357,16 @@ print(sampler.greedy_win_stats)        # {"greedy_wins": ..., "speculative_calls
 # 四模式投机质量对齐基准（AR022；同 venv/权重，峰值 ~5.8GB）
 <venv目录>\Scripts\python -m scripts.ar022_speculative_quality_bench \
     --model-path <本地权重目录> --reps 30               # --quick 冒烟 ≤5min
+
+# 层级自适应重算预算 + 不确定性排序三臂基准（AR031；同 venv/权重，~12 分钟）
+<venv目录>\Scripts\python.exe -X utf8 -m scripts.ar031_adaptive_uncertainty_bench `
+    --hf-home <HF缓存目录> --model-path <本地权重目录> --reps 30
+
+# 投机验证前向的块推进复用三臂基准（AR032；同 venv/权重，~46 分钟，峰值 ~4.6GB）
+# 正式工件覆盖保护：默认路径已存在则拒绝覆写（预承诺单次纪律；显式 --out 为自觉重跑通道）
+<venv目录>\Scripts\python.exe -X utf8 -m scripts.ar032_speculative_advance_bench `
+    --hf-home <HF缓存目录> --model-path <本地权重目录> --reps 30
+# 复现协议详见 docs/RERUN_CHECKLIST.md 第 19/20 步
 
 # 多 parent 批量折叠基准（AR025）——合成面 CPU 分钟级、无需 GPU/权重：
 python -m scripts.ar025_multi_parent_bench --mode synth  # 8 形状点×双构造
@@ -1398,15 +1570,21 @@ bash scripts/run_ablation.sh --synthetic
 ## 质量保障
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
-- **mypy**（`--ignore-missing-imports`）：`actfold` 73 文件 0 错 +
-  `scripts` 28 文件 0 错（`--explicit-package-bases`，命名空间包口径；
-  维护轮已清 29 项既有债务）
-- **pytest** 快速套件 **1376 passed / 4 skipped / 3 deselected**（零失败）
+- **mypy**（`--ignore-missing-imports`）：`actfold` 75 文件 0 错 +
+  `scripts` 30 文件 0 错（`--explicit-package-bases`，命名空间包口径；
+  维护轮已清既有债务，新增脚本保持为零）
+- **pytest** 快速套件 **1463 passed / 4 skipped / 3 deselected**（零失败）
   （含 AR025 sample_joint 15 例、AR024/AR026 并行轮新增、
   AR027 合同测试 66 例（UT-2701~2764）、**AR029 套件 94 例**（UT-2901~2978：
   计划 20 / 缓存 35 / 集成 27 / 机制基准判定 12；user-authorized quick 面）、
   **AR030 套件 103 例**（UT-3001~3101：页表 15 / 计划 15 / 预算 22 /
-  cold 分层 14 / rollout 事务 18 / 集成 8 / 机制基准判定 11）；
+  cold 分层 14 / rollout 事务 18 / 集成 8 / 机制基准判定 11）、
+  **AR031 套件 67 例**（UT-3102~3166：预算策略/窗口、图捕获体预算、
+  采样器不确定性、验证器、runner 接线、基准判定契约与配对语义）、
+  **AR032 套件 18 例**（UT-3170~3179：配置/边界、默认零回归（含非投机
+  子句）、forward 计数探针（S=1/S>1）、`_WinnerRowRecorder` 精确 winner
+  行钉住、内容条件化错源 fixture（缺陷注入验证）、tau=1.0 eager 逐位硬门、
+  折叠一致率记录面、推进语义、bench 判定/repro 契约）；
   lm-eval×2 bench-backend 用例已随 `pytest addopts` 默认 deselect
   （3 deselected，与代码无关）；skip = CUPTI + evalplus-unix 平台面等；
   BS-007 图重放性能判定在 Windows WDDM 小内核主机上按实测数字诚实 skip——
@@ -1437,12 +1615,12 @@ python demo.py
 - [`docs/ALGORITHM.md`](docs/ALGORITHM.md) — Branch Folding 形式化描述
 - [`docs/EXPERIMENTS.md`](docs/EXPERIMENTS.md) — 复现工作流
 - [`docs/DEEP_EXPERIMENT_REPORT.md`](docs/DEEP_EXPERIMENT_REPORT.md) — 两阶段深度实验报告（诊断 + 优化，真实模型实测）
-- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **30 个 AR 的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
+- [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **37 个部分的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
-- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；第 17 步 = AR029 机制 quick 面（BLOCKED-DEFERRED）；第 18 步 = AR030 机制 quick 面（BLOCKED-DEFERRED）；§7 = 高算力服务器复现路径）
-- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule、#46 真实 checkpoint 运维法规、#48 AR029 金字塔缓存契约与 #49 AR030 页共享缓存契约）
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR030）
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；第 17 步 = AR029 机制 quick 面（BLOCKED-DEFERRED）；第 18 步 = AR030 机制 quick 面（BLOCKED-DEFERRED）；第 19 步 = AR031 三臂基准；第 20 步 = AR032 三臂基准（含跨 rung 计时漂移口径）；§7 = 高算力服务器复现路径）
+- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule、#46 真实 checkpoint 运维法规、#48 AR029 金字塔缓存契约、#49 AR030 页共享缓存契约、#50 AR031 层级预算契约与 #51 AR032 推进复用契约）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR032）
 
 ---
 
@@ -1475,7 +1653,19 @@ python demo.py
     `python -m scripts.run_formal_queue`（硬 preflight + 冻结判定重算 +
     overwrite 审计 + 分段日志），并归档于
     `specs/archive/AR027-server-formal-runner/`；服务器窗口到位后由它一次性
-    跑完 AR023/024/025/026 正式面。
+     跑完 AR023/024/025/026 正式面。**AR031**（层级自适应重算预算 +
+     不确定性排序验证）已按三臂真实基准收口：质量/安全面全 supported
+     （posthoc gap 0.0、解码长度 34/66 恢复、winner 等价 100%、逐层预算
+     违规 0、repro 6/6），机制加速归因为**诚实负结果**（full vs
+     adaptive-off 1.0004×，H3 refuted）——定位**安全/正则化面**
+     （重算量硬上界 + 质量零损），详见最新实验结果与 ladder 第 12 档。
+     **AR032**（投机验证前向的块推进复用）已按三臂真实基准收口：
+     **overall supported（H1-H4 全过）**——投机路径省略 block-advance
+     serial forward、`next_token` 取最后一个 small block 验证前向 winner
+     行尾 logits（每个 eligible block 三前向变两前向），质量逐位不损
+     （gap 0.0、decode [34,66] on==off、exact 1.0/1.0），**投机加速 rung
+     从 7.02×（AR022）推至 7.9698×**（vs reuse-off 归因 1.2875× + 计数
+     恒等式 4−2==2 硬门），详见最新实验结果与 ladder 第 13 档。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
    图缓冲为紧约束（AR026 生产捕获首验在此跑通，但四模式正式面建议 ≥24GiB）；
    真实模型两阶段实验（TFLOPs 削减与逐层结论）已在
@@ -1529,14 +1719,15 @@ python demo.py
      硬上界、hot/cold 分层（demote/promote 逐位往返）、rollout 事务（base
      冻结/候选失败原子回滚/close 解冻）、`enter_plan` 只读窗口 + 原子提交、
      机制基准 E1-E4（页/字节共享率 0.778、fork 字节增量 0、两面与 dense
-     oracle 逐位一致）；未验证：真实 checkpoint 上的质量-速度 A/B（按用户
-     「不做大型实验」范围裁定 **BLOCKED-DEFERRED**，`baseline_claim=false`）。
-     **机制 AR 不宣称 baseline 速度优越；baseline 超越型实验是下一个 AR
-     （AR031）的工作**。CUDA graph 与 paged 缓存**三处互斥**（runner kwargs /
-     MFF init / cache setter）；`paged_depth` 必须显式或可从真实模型解析
-     （0=自动解析，解析不到 raise，绝不猜）。未来正式面须先在
-     `run_formal_queue` 增加 FaceSpec，再在 ≥24GiB 安静 GPU（Linux/TCC）上
-     按 RERUN 步骤 18 执行。
+      oracle 逐位一致）；未验证：真实 checkpoint 上的质量-速度 A/B（按用户
+      「不做大型实验」范围裁定 **BLOCKED-DEFERRED**，`baseline_claim=false`）。
+      **机制 AR 不宣称 baseline 速度优越**；baseline 超越型实验沿 ladder
+      推进（AR031 安全档 → AR032 加速档已交付）。CUDA graph 与 paged 缓存
+      **三处互斥**（runner kwargs /
+      MFF init / cache setter）；`paged_depth` 必须显式或可从真实模型解析
+      （0=自动解析，解析不到 raise，绝不猜）。未来正式面须先在
+      `run_formal_queue` 增加 FaceSpec，再在 ≥24GiB 安静 GPU（Linux/TCC）上
+      按 RERUN 步骤 18 执行。
 
 ---
 

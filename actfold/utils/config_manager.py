@@ -171,6 +171,11 @@ class ActFoldConfig:
     uncertainty_validation_order: bool = False
     uncertainty_margin: float = 0.9
     uncertainty_margin_gap: float = 0.05
+    # AR032: YAML consumption face for the speculative advance-reuse knob.
+    # Same consumption-only pattern as candidate_include_greedy above: the
+    # operational field and its True+N=0 construction-time validation live
+    # on FastDLLMSamplerConfig.
+    speculative_advance_reuse: bool = False
 
     def __post_init__(self) -> None:
         if self.max_new_tokens <= 0:

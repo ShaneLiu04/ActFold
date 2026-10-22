@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1376 passed / 4 skipped / 3 deselected（slow 默认跳过）
+# 4) 整仓质量门：期望 1463 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线，ST 实测 109.27s）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -357,6 +357,70 @@ python -m scripts.ar030_paged_agent_bench --quick
 #          （质量对齐 + p50 加速）与预承诺单次协议后回填工件，
 #          再更新 README ladder 第 11 档状态。
 #     d) 环境：quick 面只依赖 CPU torch；不需要 AR019 venv、权重或 CUDA。
+# 19) AR031 层级自适应重算预算 + 不确定性排序三臂基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#     a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录；
+#        判定函数冻结于脚本内（数据收集前预注册；预承诺单次纪律，不重跑钓鱼）
+#     b) quick 冒烟（单 prompt/reps=3/64 token，~3min，独立 _quick 工件）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar031_adaptive_uncertainty_bench `
+#     --quick --hf-home <HF缓存目录> --model-path <本地权重目录>
+#     c) 正式面（reps=30、num_tokens=128、2 prompts；本机 16GB WDDM 实测
+#        ~12min，峰值 VRAM ~5.8GB；#39 计时 + 逐 (arm,prompt) 双跑
+#        reproduction 一票否决）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar031_adaptive_uncertainty_bench `
+#     --hf-home <HF缓存目录> --model-path <本地权重目录> --reps 30
+#     工件：results/optimization/ar031_adaptive_uncertainty_bench.json
+#     （三臂 = 官方 baseline / adaptive-off（AR022 对齐配置 + 均匀权重预算
+#      cap）/ full（adaptive 窗口权重 + 不确定性排序验证）；H1 质量归因
+#      三面（merged gap ≤1e-3 + 逐 prompt 解码长度恢复 + 块级 exact ≥ off，
+#      off 分支 gap 仅 report）；H2/H3 严格 ratio>1 且 Δ>2σ（AR017 口径，
+#      numbers 不四舍五入保可复算）；H4 等价/预算违规/ledger/reproduction
+#      合取——repro False ⇒ 全 blocked 一票否决，数字原样保留；
+#      优先级 blocked > refuted > supported，honest negative 原样交付）
+#     对照数字：H1 supported（posthoc gap 0.0/0.0、长度 34/66 恢复、块级
+#      exact ≥ off）；H2 supported（6.2690×：17279.30 vs 2756.30ms，
+#      Δ=14522.99 > 2σ=3535.60）；H3 REFUTED（诚实负结果：full vs
+#      adaptive-off 1.0004×，Δ=1.15 << 2σ=1464.68——机制在该 workload 无
+#      附加延迟收益，定位安全/正则化面）；H4 supported（winner 等价 1.0、
+#      逐层预算违规 0、ledger 界内、repro 6/6）；overall refuted（纯由 H3 触发）
+#     运行注记：第一次 formal 运行曾因 bench 侧两个缺陷全 blocked（位置级
+#      forced 形状失配 UT-3167/3165、pass A 跨 prompt 配对泄漏 UT-3166），
+#      仪器修复后单次重跑；两次运行均留档 specs/changes/AR031-adaptive-budget-uncertainty/tasks.md。
+
+# 20) AR032 投机验证前向的块推进复用三臂基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#     a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录；
+#        判定函数冻结于脚本内（数据收集前预注册；预承诺单次纪律，不重跑钓鱼）
+#     b) quick 冒烟（单 prompt/reps=3/64 token，独立 _quick 工件；本机
+#        WDDM 实测 timed face ~92s + 模型加载/warmup，全墙钟约 3min——
+#        超出 srs 90s 计时门，host-conditional 如实记录，见 ST-019）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar032_speculative_advance_bench `
+#     --quick --hf-home <HF缓存目录> --model-path <本地权重目录>
+#     c) 正式面（reps=30、num_tokens=128、2 prompts；本机 16GB WDDM 实测
+#        ~46min，峰值 VRAM ~4.6GB；#39 计时 + round-robin 交错 + 逐
+#        (arm,prompt) 双跑 reproduction；正式工件覆盖保护：默认路径已存在
+#        则拒绝 rc=4，显式 --out 为操作员自觉重跑通道）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar032_speculative_advance_bench `
+#     --hf-home <HF缓存目录> --model-path <本地权重目录> --reps 30
+#     工件：results/optimization/ar032_speculative_advance_bench.json
+#     （三臂 = 官方 baseline / reuse-off（AR022 对齐配置 N=4+greedy，eager
+#      MFF 主声明面）/ reuse-on（同 ② 仅 speculative_advance_reuse=True）；
+#      H1 质量三面（posthoc gap ≤1e-3 + on/off decode 长度相等 + 块级
+#      exact-match on ≥ off−1e-9）；H2 p50(baseline)/p50(on) > 1.0 严格；
+#      H3 p50(off)/p50(on) > 1.0 且计数面 off_serial−on_serial ==
+#      eligible_blocks 硬门（单独可 refute）；H4 canary 合取（on 臂 ar
+#      推进 forward==0 / eligible>0 / batched 结构相等）+ 逐臂实际事件数
+#      ledger 界 + repro 双跑严格相等——失配 ⇒ H4/overall refuted 且
+#      H1-H3 保留（冻结 UT-3178/3179 契约，无 blocked 档））
+#     对照数字：H1-H4 全 supported——H1 gap 0.0（on==baseline==0.470001）、
+#      decode [34,66] on==off、exact-match 1.0/1.0；H2 7.9698×
+#      （26305.87 vs 3300.68ms p50）；H3 1.2875×（4249.76 vs 3300.68ms）
+#      + 计数 4−2==2（逐 prompt delta==1，on 臂 ar 分支 0、batched 结构
+#      相等）；H4 canary 3/3 + ledger within（on 界 244 < off 界 360，
+#      逐臂参数化）+ repro 6/6
+#     跨 rung 计时注记（重要）：baseline p50 同几何跨会话漂移
+#      3096.76ms（AR022，graph 臂）→ 17279.30ms（AR031）→ 26305.87ms
+#      （AR032，eager 臂）——WDDM 主机状态噪声 + 执行模式差异；同 run
+#      A/B 比值内部有效，跨工件绝对值不可直接比（AR032 工件内部：
+#      off_vs_baseline 6.19×、on_vs_baseline 7.9698×、on_vs_off 1.2875×）。
 ```
 
 ## 4. 方法学要求（重跑必须满足）

@@ -1,9 +1,12 @@
-"""AR031 budget policy unit tests (UT-3102..3113, UT-3161..3163)."""
+"""AR031 budget policy unit tests (UT-3102..3113, UT-3161..3163, UT-3169)."""
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 import torch
+import torch.nn as nn
 
 from actfold.core.layer_budget import LayerRecomputeBudgetPolicy
 
@@ -356,3 +359,108 @@ def test_ut3163_forced_rows_are_never_folded() -> None:
     expected = torch.zeros(10, dtype=torch.bool)
     expected[3:7] = True
     assert torch.equal(out, expected)
+
+
+class _RecordingPolicy(LayerRecomputeBudgetPolicy):
+    """Observe-side recorder (the bench `_RecordingBudgetPolicy` pattern)."""
+
+    def __init__(self, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self.observed: list[tuple[int, int, int]] = []
+
+    def observe_layer(self, layer_idx: int, stable_sum: torch.Tensor, num_tokens: int) -> None:
+        self.observed.append((layer_idx, int(stable_sum), num_tokens))
+        super().observe_layer(layer_idx, stable_sum, num_tokens)
+
+
+class _TinyTwoLayer(nn.Module):
+    """Synthetic two-layer decoder (the UT-3097/UT-3151 fixture pattern)."""
+
+    def __init__(self, seed: int) -> None:
+        super().__init__()
+        self.config = type(
+            "Config", (), {"model_type": "llama", "vocab_size": 8, "num_hidden_layers": 2}
+        )()
+        self.model = nn.Module()
+        torch.manual_seed(seed)
+        self.model.embed_tokens = nn.Embedding(8, 4)
+        self.model.layers = nn.ModuleList([nn.Linear(4, 4) for _ in range(2)])
+
+    def forward(self, tokens: torch.Tensor) -> torch.Tensor:
+        x = self.model.embed_tokens(tokens)
+        for layer in self.model.layers:
+            x = layer(x)
+        return x
+
+
+def test_ut3169_guard_priority_end_to_end_paged() -> None:
+    """UT-3169: FR1 AC6 end-to-end — the availability guard wins over the cap.
+
+    Real ``PagedFoldCache`` + ``ManualFoldedForward`` + a bound-armed budget:
+    after the parent is cached, its layer-1 page is demoted to cold
+    (availability all-False), so the target-layer guard must re-diverge every
+    row of layer 1 AFTER the cap ran.  The single-token-divergence fixture
+    keeps both layers' caps non-binding, isolating the guard face: a cap
+    mis-ordered after the guard would fold the guard rows back onto the cold
+    page (NaN sentinel + observed layer-1 stable count 7 instead of 0), so
+    ``observed == [(0, 7), (1, 0)]`` plus output equality pins the frozen
+    order ``gate -> AND ~forced -> cap -> guard -> observe -> record``.
+    """
+    from actfold.core import SimilarityGate
+    from actfold.core.paged_fold_cache import PagedFoldCache
+    from actfold.core.pyramid_plan import build_pyramid_plan
+    from actfold.models.architecture_utils import ManualFoldedForward
+
+    def _paged() -> PagedFoldCache:
+        plan = build_pyramid_plan(
+            depth=2, total_tokens=256, block_size=16, max_ratio=1.0, min_ratio=1.0
+        )
+        return PagedFoldCache(plan, 16, device="cpu")
+
+    def _demote_parent_layer(cache: PagedFoldCache, branch: str, layer: int) -> None:
+        page_ids: list[int] = []
+        for entry_branch, entry_layer, state in cache._table.entries():  # probe face
+            if entry_branch == branch and entry_layer == layer:
+                page_ids.extend(state.page_ids.values())
+        assert page_ids, f"no cached page for {branch} layer {layer}"
+        cache.demote(page_ids[0])
+
+    gen = torch.Generator().manual_seed(3169)
+    parent = torch.randint(0, 8, (1, 8), generator=gen)
+    child = parent.clone()
+    child[0, 5] = (child[0, 5] + 1) % 8  # one divergent row: caps stay non-binding
+
+    model = _TinyTwoLayer(seed=3169)
+    policy = _RecordingPolicy(budget_ratio=0.15, num_layers=2)
+
+    cache_a = _paged()
+    mff_a = ManualFoldedForward(
+        model, cache=cache_a, gate=SimilarityGate(tau=0.9), budget_policy=policy
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")  # no LM head on the synthetic fixture
+        with torch.no_grad():
+            mff_a(parent, branch_id="3169-parent")
+            _demote_parent_layer(cache_a, "3169-parent", 1)
+            avail = cache_a.availability("3169-parent", 1, 8)
+            assert not bool(avail.any())  # the hole is real (cold page)
+            out_a = mff_a(child, branch_id="3169-child", parent_branch_id="3169-parent")
+
+    # Post-guard observation: layer 1 re-diverged wholesale by the guard
+    # (exempt from B_l); layer 0 keeps its gate decision (7 stable of 8).
+    assert policy.observed == [(0, 7, 8), (1, 0, 8)]
+
+    # Reference: no budget, the same demoted page — the guard alone drives the
+    # layer-1 recompute, so the budget face must not perturb the output.
+    cache_b = _paged()
+    mff_b = ManualFoldedForward(
+        model, cache=cache_b, gate=SimilarityGate(tau=0.9), budget_policy=None
+    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        with torch.no_grad():
+            mff_b(parent, branch_id="3169-parent")
+            _demote_parent_layer(cache_b, "3169-parent", 1)
+            out_b = mff_b(child, branch_id="3169-child", parent_branch_id="3169-parent")
+    assert torch.equal(out_a, out_b)  # bit-identical: guard rows never fold onto cold pages
+    assert not bool(torch.isnan(out_a).any())  # a post-guard cap would read the NaN sentinel

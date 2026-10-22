@@ -4,6 +4,113 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR032: Verification-Logit Advance Reuse — the Speculative Speedup Rung Extended (overall supported)
+
+#### Added
+- `FastDLLMSamplerConfig.speculative_advance_reuse` (default `False` =
+  byte-identical to the AR031 end state; `True` + `num_block_candidates == 0`
+  raises `ValueError` at construction) and the `ActFoldConfig` YAML
+  consumption face (zero unknown-key warnings).
+- The mechanism (actfold/models/fast_dllm_sampler.py): the speculative
+  block-advance step omits its independent serial forward and takes
+  `next_token` from the **last small block's** verification-logit winner-row
+  tail (`_speculative_small_block` now returns `(j_star, tail_logits)` with
+  a `[1, V]` tail-row clone that never pins the `[N, T, V]` cat backing);
+  the folding chain stays on the winner branch (#43), canvas append / pad
+  overwrite / history snapshots are byte-isomorphic to the off mode.
+- `scripts/ar032_speculative_advance_bench.py`: three-arm real-checkpoint
+  bench (official baseline / reuse-off = AR022-aligned N=4+greedy eager /
+  reuse-on = ② plus the single switch), H1-H4 verdict contracts frozen
+  before data collection, per-arm event-count-parameterized ledger bounds,
+  repro double-run keyed by `(arm, prompt_index)` (a mismatch refutes H4
+  and overall; H1-H3 keep their recomputable verdicts — no blocked tier),
+  formal-artifact overwrite protection (rc=4), `--quick` writes a separate
+  `_quick.json`.
+- UT-3170..3179: config/boundary, default zero-regression (incl. the
+  non-speculative clause), forward-count probes (S=1 and S>1), the
+  `_WinnerRowRecorder` exact winner-row pin, the content-conditioned
+  S>1 wrong-source fixture (defect-injection verified), the tau=1.0 eager
+  bit-exact hard gate, the folding-path consistency record face, advance
+  semantics (pad/growth/history), and the bench verdict/repro contracts.
+
+#### Fixed
+- Red-test helper defect (found during T004 Green): `_quality`'s in-body
+  `None`-sentinel default silently rewrote an explicit `on_lengths=None`
+  back to the defaults, making the None-refutes branch untestable —
+  replaced with a module-level `_DEFAULT_LENGTHS` constant so `None`
+  propagates.
+
+#### Results (Fast-dLLM-v2-1.5B, three arms, reps=30, pre-committed single shot)
+- H1 supported: posthoc gap 0.0 (on == baseline == 0.470001), decode
+  lengths [34, 66] on==off, merged exact-match 1.0/1.0.
+- H2 supported: p50(baseline)/p50(reuse-on) = **7.9698×** (26305.87ms vs
+  3300.68ms; 2-sigma report-only 7584.94ms).
+- H3 supported: p50(reuse-off)/p50(reuse-on) = **1.2875×** (4249.76ms vs
+  3300.68ms) AND the hard count face off_serial(4) − on_serial(2) ==
+  eligible(2), per-prompt delta == 1, on-arm `fastdllm_ar_*` branches 0,
+  batched structure equal.
+- H4 supported: canary 3/3, per-arm ledger within bounds (on 145 ≤ 244,
+  off 174 ≤ 360), reproduction 6/6 strictly equal. Overall: **supported**.
+- Honest caveats recorded verbatim: cross-rung baseline p50 drift across
+  WDDM sessions (same-run ratios internally valid; absolute p50s not
+  comparable across artifacts); the quick timed face (~92s) exceeds the
+  srs 90s gate host-conditionally (baseline-arm wall-clock; the mechanism
+  arm is 3.07s p50).
+
+### AR031: Layer-Adaptive Recompute Budget + Uncertainty-Ordered Validation — Safety/Regularization Rung with an Honest Negative
+
+#### Added
+- `actfold/core/layer_budget.py`: `LayerRecomputeBudgetPolicy` (windowed
+  per-layer allocation: warmup uniform, utility-weighted re-estimation at
+  window boundaries, floor + largest-remainder + surplus redistribution) and
+  the frozen `apply_layer_budget` exact-count cap (exempt rows = stable ∪
+  forced ∪ NaN scores never fold and never consume `B_l`; the graph-face
+  gather selector is capture-safe) + `broadcast_forced_to_mask` (position-level
+  `[T]` forced broadcast at the two cap choke points; the core same-shape
+  contract stays strict).
+- `UncertaintyRolloutValidator` (uncertainty-ordered validation:
+  margin / margin-gap, validated-first + early-stop) in `actfold/speculative/`;
+  the Fast-dLLM sampler gains `uncertainty_validation_order` inline selection
+  with the `uncertainty_stats` read-only probe.
+- `ActFoldConfig` seven consumption-only keys (`layer_budget_*`,
+  `uncertainty_*`), defaults-off zero regression; `BenchmarkRunner` wiring via
+  `_resolve_budget_depth` (raises rather than guessing) and
+  `_layer_budget_policy` (None on disabled, before depth resolution).
+- `scripts/ar031_adaptive_uncertainty_bench.py`: three-arm real-checkpoint
+  bench (baseline / adaptive-off / full) with H1-H4 verdict contracts frozen
+  before data collection, sidecar equivalence/budget probes, and a
+  per-(arm, prompt) double-run reproduction veto.
+
+#### Fixed
+- Real-checkpoint quick-smoke crash: the production forced tensor is
+  position-level `[T]` while the frozen cap requires the mask shape —
+  broadcast added at both cap choke points (UT-3167 eager / UT-3165 graph
+  static body; 3164 belongs to the T006 validator face).
+- Bench reproduction face compared a loop-leaked last-prompt dict against
+  per-prompt pass-B sequences, fabricating cross-prompt mismatches (66-vs-34)
+  and blocking the first formal run — both passes now key by
+  `(arm, prompt_index)` (`repro_mismatch_rows`, UT-3166).
+- Review round (T016): renumbered the eager forced 1-D test UT-3164 ->
+  UT-3167 (collision with the T006 validator face's UT-3164); added
+  UT-3168 (exact-type `SimilarityGate` rejection on the budget face,
+  design erratum E9) and UT-3169 (FR1 AC6 end-to-end guard priority:
+  real `PagedFoldCache` + MFF + bound-armed budget + a demoted cold
+  page — the guard re-diverges every layer-1 row post-cap, observed
+  count 0, output bit-identical to the no-budget holed path, zero NaN).
+
+#### Results (Fast-dLLM-v2-1.5B, three arms, reps=30, pre-committed single shot)
+- H1 supported: posthoc gap 0.0/0.0, decode lengths 34/66 restored, merged
+  block exact-match >= adaptive-off.
+- H2 supported: p50(baseline)/p50(full) = 6.2690x (17279.30ms vs 2756.30ms,
+  delta 14522.99ms > 2-sigma 3535.60ms).
+- H3 REFUTED (honest negative): full vs adaptive-off 1.0004x (delta 1.15ms <<
+  2-sigma 1464.68ms) — the cap never binds at this workload; AR031 is
+  delivered as a safety/regularization rung (bounded recompute + zero quality
+  loss).
+- H4 supported: winner equivalence 100%, per-layer budget violations 0,
+  ledger within bound, reproduction 6/6 rows strictly equal. Overall:
+  refuted (H3 only; quality and safety faces all hold).
+
 ### AR030: Paged Shared Fold Memory for Agent/RSI Rollouts — Page Table + Refcount + COW Page Sharing + Hard Physical-Page Budgets + Rollout Transactions (mechanism delivery; real-checkpoint A/B BLOCKED-DEFERRED)
 
 Spec: `specs/changes/AR030-paged-agent-memory/`. Motivation: Agent/RSI multi-candidate rollouts have N candidates sharing one prompt prefix while each edits only the last few tokens — a dense activation cache stores whole-branch tensors, so bytes grow linearly O(N·T·L) with the candidate count. PSFM manages activation memory like an OS: page table, refcounts, and copy-on-write page sharing, allocating only **diff pages** (O(N·diff_pages)).
@@ -25,7 +132,7 @@ Spec: `specs/changes/AR030-paged-agent-memory/`. Motivation: Agent/RSI multi-can
 #### Results (mechanism, CPU, single-shot)
 
 - E1 exactness: full/pressure `max_abs_diff_vs_dense = 0.0/0.0` (bit-exact against the dense `ActivationCache` oracle); E2 physical pages **32** (16/layer, exactly at the frozen 16-page budget) vs nonshared **144** (recomputed from the dense oracle's actual entries), `paged_hot_bytes = 98304 <= plan_expected_bytes = 98304` (boundary equality), page/byte sharing ratio **0.778** (98304 vs 442368 bytes), evictions=0; E3 fork byte deltas all 0, per-candidate new-page SET == content-diff SET == 2 pages, sharing ratio 0.778 >= 0.5; E4 honesty checks 14/14 true (commit-fail k=0/k=1 atomic, stale-plan rejected, demote/promote round-trip bit-exact, snapshot/restore bit-exact + tier/availability equality, plan availability == executor availability, window reads match the frozen plan view, COW-off skips comparison and in-place mutation, refcount corruption detected, rollout window failure discards only the failing candidate's staged writes, rollout rollback restores the fork baseline, close unfreezes the base, refcount ledger clean) → **E1-E4 supported**, `overall="supported"`, `evidence_level="mechanism"`, `baseline_claim=false`.
-- Full suite: **1376 passed / 4 skipped / 3 deselected**; `black`/`isort`/`pyflakes` clean; `mypy actfold` 0 in 73 files and `mypy scripts` 0 in 28 files.
+- Full suite: **1443 passed / 4 skipped / 3 deselected** (76.98s, T014 verified); `black`/`isort`/`pyflakes` clean; `mypy actfold` 0 in 75 files and `mypy scripts --explicit-package-bases` 0 in 29 files.
 
 ### AR029: Edge Bounded-Memory Pyramid Activation Cache — Per-Layer Budgets, Block Pages, Sentinel Availability Guard (mechanism delivery; real-checkpoint A/B BLOCKED-DEFERRED)
 

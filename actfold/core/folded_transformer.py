@@ -549,7 +549,7 @@ class FoldedTransformerLayer(nn.Module):
     ) -> torch.Tensor:
         """AR031 A1 cap: fold the most-similar non-exempt divergent rows."""
         budget_l = budget_policy.budget_for(self.layer_idx, stable_mask.numel())
-        capped: torch.Tensor = budget_policy.apply_layer_budget(
+        capped: torch.Tensor = budget_policy.cap_with_mask_shape(
             stable_mask, scores, budget_l, forced=forced_divergent
         )
         return capped

@@ -171,6 +171,47 @@ The first run will download model weights from the Hugging Face Hub if they are 
 > verification engine shares the same cache, gate, and scheduler with the folded
 > model.
 
+### 4.5a Adaptive-Uncertainty Three-Arm Benchmark (AR031)
+
+```bash
+# AR019 venv (transformers==4.53.1) + local Fast-dLLM-v2-1.5B weights
+<venv>\Scripts\python.exe -X utf8 -m scripts.ar031_adaptive_uncertainty_bench `
+    --hf-home <hf-cache> --model-path <weights-dir> --reps 30
+```
+
+Three arms (official baseline / adaptive-off / full), H1-H4 verdict contracts
+frozen before data collection, per-(arm, prompt) double-run reproduction veto.
+Expected (pre-committed single run,
+`results/optimization/ar031_adaptive_uncertainty_bench.json`): H1/H2/H4
+supported (quality restored — posthoc gap 0.0, decode lengths 34/66 —
+6.2690x vs baseline, zero per-layer budget violations, reproduction 6/6),
+H3 honest-refuted (no additional speedup over adaptive-off: the budget cap is
+non-binding at this workload; delivered as a safety/regularization rung). See
+`docs/RERUN_CHECKLIST.md` step 19 for the full protocol.
+
+### 4.5b Speculative Advance-Reuse Three-Arm Benchmark (AR032)
+
+```bash
+# AR019 venv (transformers==4.53.1) + local Fast-dLLM-v2-1.5B weights
+<venv>\Scripts\python.exe -X utf8 -m scripts.ar032_speculative_advance_bench `
+    --hf-home <hf-cache> --model-path <weights-dir> --reps 30
+```
+
+Three arms (official baseline / reuse-off = the AR022-aligned N=4+greedy
+eager config / reuse-on = ② plus the single `speculative_advance_reuse`
+switch), H1-H4 verdict contracts frozen before data collection, per-arm
+event-count-parameterized ledger bounds, repro double-run keyed by
+`(arm, prompt_index)` (a mismatch refutes H4 and overall; H1-H3 keep their
+recomputable verdicts). Expected (pre-committed single run,
+`results/optimization/ar032_speculative_advance_bench.json`, ~46min at
+~4.6GB peak on the 16GB WDDM host): overall **supported** — H1 gap 0.0 /
+decode [34,66] on==off / exact-match 1.0/1.0; H2 **7.9698×** vs baseline;
+H3 **1.2875×** vs reuse-off with the hard count face off_serial(4) −
+on_serial(2) == eligible(2); H4 canary 3/3 + ledger within + repro 6/6.
+Same-run A/B ratios are internally valid; absolute p50s are NOT comparable
+across artifacts (WDDM host-state drift — see RERUN step 20). See
+`docs/RERUN_CHECKLIST.md` step 20 for the full protocol.
+
 ### 4.6 Ablation Studies
 
 ```bash

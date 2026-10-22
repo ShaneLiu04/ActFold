@@ -135,6 +135,25 @@ class LayerRecomputeBudgetPolicy:
         """Policy-face wrapper around :func:`apply_layer_budget`."""
         return apply_layer_budget(stable_mask, scores, budget, forced)
 
+    def cap_with_mask_shape(
+        self,
+        stable_mask: Tensor,
+        scores: Tensor,
+        budget: Tensor | int,
+        forced: Tensor | None = None,
+    ) -> Tensor:
+        """Cap with the position-level forced broadcast to the mask shape.
+
+        The production forced tensor is position-level ``[T]`` (#43 — shared
+        by every row of the speculative canvas) while the frozen cap requires
+        the mask's exact shape; a 1-D forced whose length matches the mask's
+        last dim expands before the call. Genuinely incompatible shapes pass
+        through unchanged and the cap's own frozen ValueError decides.
+        """
+        return self.apply_layer_budget(
+            stable_mask, scores, budget, broadcast_forced_to_mask(stable_mask, forced)
+        )
+
     def _reestimate(self) -> None:
         num_layers = self._num_layers
         observed = [layer for layer in range(num_layers) if self._acc_tokens[layer] > 0]
@@ -259,3 +278,25 @@ def apply_layer_budget(
     binding = budget < (~exempt).sum()
     flip = (~exempt) & (scores >= thr) & binding
     return stable_mask | flip
+
+
+def broadcast_forced_to_mask(stable_mask: Tensor, forced: Tensor | None) -> Tensor | None:
+    """Broadcast a position-level 1-D forced tensor to the mask shape.
+
+    Production forced tensors are position-level ``[T]`` (#43 — the AR021
+    forced base tensor is shared by every row of the speculative canvas)
+    while the frozen :func:`apply_layer_budget` requires the mask's exact
+    shape. A 1-D forced whose length matches the mask's last dim expands to
+    ``stable_mask.shape``; anything else returns unchanged and the cap's own
+    shape validation decides (the frozen ValueError for genuinely
+    incompatible shapes). Callers that already pass the mask shape are
+    byte-for-byte unaffected.
+    """
+    if (
+        forced is not None
+        and stable_mask.dim() == 2
+        and forced.dim() == 1
+        and forced.shape[0] == stable_mask.shape[1]
+    ):
+        return forced.expand(stable_mask.shape)
+    return forced

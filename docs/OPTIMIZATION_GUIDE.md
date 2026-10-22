@@ -957,6 +957,81 @@ COW 换页/降层/淘汰）；与 pyramid 同属端侧有界内存档，但 pyra
 refcount>=2 的共享 cold 页被原地 `replace_tensors` 会腐化所有共同持有分支
 （bench 编写中发现并修复，独占防护 UT 钉死）。
 
+## 第三十六部分 AR031 层级自适应重算预算 + 不确定性排序验证（三臂真实基准：质量/安全面全 supported，机制归因诚实 refuted；2026-10-21）
+
+**问题**：AR021/AR022 的折叠量由 tau 门控隐式决定，逐层重算量没有硬上界；
+批量验证的选定与验证顺序解耦。
+
+**机制**：A2 窗口化逐层预算策略（warmup 均匀 + 窗口边界按层稳定度效用加权
+再估；`observe_layer` 设备端零同步累计，跨设备观察显式拒绝）+ A1 精确计数
+cap（豁免位 = stable ∪ forced ∪ NaN 恒重算不记账，非豁免按相似度降序折叠至
+重算 ≤ B_l）+ `broadcast_forced_to_mask`（#43 位置级 forced `[T]` 在两个 cap
+阻塞点广播，核心同形契约严格不放松）+ 不确定性排序验证（margin/margin_gap
+validated-first + early-stop）。`ActFoldConfig` 七键 consumption-only 接线，
+默认全关零回归；runner `_resolve_budget_depth` 真实层数不猜。
+
+**基准与结果**（`scripts/ar031_adaptive_uncertainty_bench.py`，判定函数冻结
+先于数据收集；Fast-dLLM-v2-1.5B 三臂 reps=30 预承诺单次）：质量/安全面全
+supported——posthoc gap 0.0/0.0、解码长度 34/66 恢复、块级 exact ≥ off、
+winner 等价 100%、逐层预算违规 0、reproduction 6/6 行严格相等；H2 6.2690×
+vs baseline；**H3 诚实 refuted**（full vs adaptive-off 1.0004×，Δ=1.15ms <<
+2σ=1464.68ms——tau=0.95 + forced 活跃块下折叠需求恒低于 15% 预算，cap 恒不
+绑定）。交付定位：**安全/正则化面**（重算量硬上界 + 质量零损），ladder 第
+12 档。
+
+**过程中的两个真实缺陷（基准自身抓出）**：①位置级 forced 形状失配（生产
+forced `[T]` vs 掩码 `[1,T]`，eager/graph 两个 cap 阻塞点广播修复，
+UT-3167/3165）；②reproduction 面 pass A 循环泄漏变量导致跨 prompt 误配
+（66-vs-34，第一次 formal 全 blocked；`repro_mismatch_rows` 逐 (arm,prompt)
+配对修复，UT-3166；仪器修复性质单次重跑，两次运行均留档）。这组缺陷本身
+是 reproduction 一票否决面价值的实证。
+
+## 第三十七部分 AR032 投机验证前向的块推进复用（三臂真实基准：H1-H4 全 supported，投机加速 rung 从 7.02× 推至 7.97×；2026-10-22）
+
+**问题**：AR021/AR022 的投机块循环每 block 花费三次折叠前向——draft serial、
+`[N, T]` batched 验证、block-advance serial——而第三次前向的唯一产出一个
+token；验证 logits（业界 SpecInfer/EAGLE 同样）验证完即弃。这是一个前向级
+结构性冗余：验证前向已经对 winner 行（== commit 后 canvas，构造性逐位相同）
+算过全 `[T, V]` logits，其尾位置的 right-shifted logits 在数学上就是推进
+分布本身。
+
+**机制**（opt-in，默认关 = AR031 末态逐字节不变；`speculative_advance_reuse`
+双 config 键，True+N=0 构造期 `ValueError`）：省略 block-advance serial
+forward，`next_token = argmax(tail_logits)`；复用源冻结为**最后一个 small
+block** 的验证前向（S>1 时更早 small block 的 winner 行尾部仍含 mask_id，
+错源必被内容条件化 `(token, position)` fixture + 缺陷注入 UT-3174 捕获）；
+`_speculative_small_block` 改返 `(j_star, shifted[j_star,-1:,:].clone())`——
+`[1, V]` 尾行克隆（D8：整行视图会滞留 `[N,T,V]` cat backing ~250-500MB 瞬态
+显存）；folding chain 直连 winner branch（#43，on 臂不铸造 `fastdllm_ar_*`
+branch——off 臂的 ar 计数即冻结的 eligible 探针）；eager 全重算（tau=1.0，
+CPU 非 split）on/off 轨迹逐位一致为硬门，真实折叠面两类 ULP 漂移（数值源
+切换 + 下游链形变化）为文档化属性而非错误。
+
+**基准与结果**（`scripts/ar032_speculative_advance_bench.py`，AR031 模板；
+判定函数冻结先于数据收集；Fast-dLLM-v2-1.5B 三臂 reps=30 预承诺单次，~46min，
+峰值 ~4.6GB）：**overall supported（四判定全过）**——H1 质量三面（posthoc
+gap 0.0、decode [34,66] on==off、exact-match 1.0/1.0）；H2 **7.9698×** vs
+官方 baseline（26305.87 vs 3300.68ms p50）；H3 **1.2875×** 归因（4249.76 vs
+3300.68ms）+ 计数硬面 off_serial(4)−on_serial(2)==eligible(2) 逐 prompt
+delta==1、on 臂 ar 分支 0、batched 结构相等；H4 canary 3/3 + 逐臂实际事件数
+ledger 界（on 145≤244、off 174≤360，固定公式会假失败——界按各臂 forward
+计数 sidecar 参数化）+ repro 6/6。每个 eligible block 三前向变两前向、质量
+逐位不损——eligible headroom 由 AR031 工件预示（每 prompt 1-2 块），formal
+实测 eligible=1/prompt，H3 1.2875× 如实反映该上界。
+
+**过程纪律（三件，均为范式实证）**：① Green 期修复 Red 测试自身缺陷
+（`_quality` helper 的 in-body None 哨兵默认把显式 `on_lengths=None` 静默
+改写回默认，使 None-refutes 分支不可测——改模块级常量使 None 传播）；②
+T007 审查 PASS 后勘误不改冻结面：spec 措辞与冻结 UT 契约漂移（repro 失配
+语义「全部 blocked」vs 契约「refuted H4/overall、H1-H3 保留」等 4 项）全部
+以 spec 勘误 + 变更记录处理，formal 工件与冻结判定函数一字不动——工件↔代码
+重算一致性高于文档；③ 跨 rung 计时漂移如实记录：baseline p50 同几何
+3096.76ms（AR022，graph 臂）→17279.30ms（AR031）→26305.87ms（AR032，eager
+臂），WDDM 主机状态噪声 + 执行模式差异——ladder 一律按「同 run A/B 比值内部
+有效，跨工件绝对值不可直接比」口径书写；quick timed face ~92s 超出 srs 90s
+门（host-conditional，baseline 臂墙钟主导、机制臂仅 3.07s p50），如实记录
+不移动门柱。
+
 ## 附录：本机实测数据存档（2026-10-08）
 
 ```

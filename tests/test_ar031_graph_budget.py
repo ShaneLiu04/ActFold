@@ -988,3 +988,40 @@ def test_ut3120_fused_gate_bypass(device: str) -> None:
     for layer_idx in range(_NUM_LAYERS):
         assert torch.equal(runner_bypass.mask_buf[layer_idx], runner_fused.mask_buf[layer_idx])
         assert torch.equal(runner_bypass.count_buf[layer_idx], runner_fused.count_buf[layer_idx])
+
+
+# ---------------------------------------------------------------------------
+# UT-3165: position-level 1-D forced static on the budget face
+# ---------------------------------------------------------------------------
+
+
+def test_ut3165_position_level_forced_one_dim_static_body(device: str) -> None:
+    """UT-3165: the #43 position-level ``[T]`` forced static on the graph budget face.
+
+    The static body ANDs ``~forced`` into the gate mask (broadcast) and the
+    in-graph A1 cap consumes the same forced exemption; a 1-D static must
+    not raise the cap's same-shape ValueError and must stay bit-identical
+    to the explicit ``[batch, seq]`` static form (mask buffers and output).
+    """
+    model, profile = _build_model(device, seed=4335)
+    parent, child = _parent_child_tokens(device, changes=4)
+    mff = _make_mff(model, device)
+    with torch.no_grad():
+        mff(parent, branch_id="3165-parent")
+    budget_static = [torch.tensor(2, dtype=torch.int64, device=device) for _ in range(_NUM_LAYERS)]
+    forced = torch.zeros(child.shape[1], dtype=torch.bool, device=device)
+    forced[-6:] = True
+
+    outs = []
+    masks = []
+    for form in (forced, forced.unsqueeze(0).expand(child.shape)):
+        runner = _make_budget_runner(mff, profile, budget_static)
+        runner._forced_divergent_static = form.detach().clone()
+        _allocate_static_buffers(runner, child)
+        assert runner._prefill_parent("3165-parent")
+        with torch.no_grad():
+            outs.append(runner._static_forward())
+        masks.append(runner.mask_buf.clone())
+    for layer_idx in range(_NUM_LAYERS):
+        assert torch.equal(masks[0][layer_idx], masks[1][layer_idx])
+    assert torch.equal(outs[0], outs[1])

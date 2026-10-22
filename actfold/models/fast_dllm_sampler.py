@@ -90,6 +90,17 @@ class FastDLLMSamplerConfig(SamplerConfig):
             ``num_block_candidates > 0``.
         uncertainty_margin: AR031 early-stop margin, ``[0, 1]``.
         uncertainty_margin_gap: AR031 early-stop gap, ``[0, 1]``.
+        speculative_advance_reuse: AR032 opt-in block-advance reuse.
+            ``True`` replaces the speculative path's per-block
+            block-advance serial forward with a read of the LAST small
+            block's winning verification row's tail logits
+            (``next_token = argmax(tail)`` — the winner row's forward input
+            is bitwise the post-commit canvas, so its tail distribution is
+            the advance distribution). Each block-advance-eligible block
+            saves exactly one serial forward; the chain continues directly
+            onto the winner candidate branch (#43). ``False`` (the default)
+            is byte-identical to the AR031 end state; ``True`` requires
+            ``num_block_candidates > 0``.
     """
 
     block_size: int = 32
@@ -104,6 +115,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
     uncertainty_validation_order: bool = False
     uncertainty_margin: float = 0.9
     uncertainty_margin_gap: float = 0.05
+    speculative_advance_reuse: bool = False
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -124,6 +136,12 @@ class FastDLLMSamplerConfig(SamplerConfig):
                 " > 0 (the uncertainty-aware validation order is defined only"
                 f" on the speculative path; got num_block_candidates="
                 f"{self.num_block_candidates})"
+            )
+        if self.speculative_advance_reuse and self.num_block_candidates == 0:
+            raise ValueError(
+                "speculative_advance_reuse=True requires num_block_candidates"
+                " > 0 (advance reuse is defined only on the speculative path;"
+                f" got num_block_candidates={self.num_block_candidates})"
             )
         if not 0.0 <= self.uncertainty_margin <= 1.0:
             raise ValueError(f"uncertainty_margin must be in [0, 1], got {self.uncertainty_margin}")
@@ -417,7 +435,7 @@ class FastDLLMSampler(DiffusionSampler):
         block_idx: int,
         small_block_idx: int,
         history: list[torch.Tensor],
-    ) -> None:
+    ) -> tuple[int, torch.Tensor]:
         """Run one FR3 speculative small block (mutates ``x``/``finished``).
 
         Builds ``N`` candidate continuations of the current canvas by
@@ -449,6 +467,17 @@ class FastDLLMSampler(DiffusionSampler):
         descending validation order + margin/margin-gap early stop, the
         ``uncertainty_stats`` counters); default off keeps the vectorized
         argmax path byte-identical.
+
+        AR032: returns ``(j_star, tail_logits)`` — the winning row index
+        and that row's TAIL right-shifted verification logits
+        ``[1, V]`` (``shifted[j_star, -1:, :].clone()`` — the clone detaches
+        the stash from the full ``[N, T, V]`` ``right_shift_logits`` cat
+        backing, which at real-face geometry would otherwise be retained
+        until the next small block's overwrite). The winner row's forward
+        input is bitwise the post-commit canvas, so its tail distribution
+        IS the block-advance distribution — the sole source for
+        ``speculative_advance_reuse`` (the LAST small block's return value
+        is the one the sample loop stashes).
         """
         cfg = self.config
         num_candidates = int(cfg.num_block_candidates)
@@ -518,6 +547,7 @@ class FastDLLMSampler(DiffusionSampler):
         self._folding_parent = cand_branch_ids[j_star]
         if self.config.return_history:
             history.append(x.clone())
+        return j_star, shifted[j_star, -1:, :].clone()
 
     def _uncertainty_select_inline(
         self,
@@ -674,6 +704,14 @@ class FastDLLMSampler(DiffusionSampler):
             if finished.all():
                 break
 
+            # AR032: the per-block stash for speculative_advance_reuse —
+            # overwritten by every speculative small block, so its value at
+            # the advance seam is the LAST small block's winner tail logits
+            # (only the last small block's winner row equals the post-commit
+            # canvas; earlier small blocks' winner rows still carry mask_id
+            # at later positions).
+            advance_tail_logits: torch.Tensor | None = None
+
             # Denoise the last block.
             for small_block_idx in range(num_small_blocks):
                 start = -block_size + small_block_idx * small_block_size
@@ -734,7 +772,7 @@ class FastDLLMSampler(DiffusionSampler):
                         seq_len_now = int(x.shape[1])
                         sb_start = seq_len_now + start
                         sb_end = seq_len_now + end if end is not None else seq_len_now
-                        self._speculative_small_block(
+                        _j_star, tail_logits = self._speculative_small_block(
                             x,
                             finished,
                             logits,
@@ -748,6 +786,8 @@ class FastDLLMSampler(DiffusionSampler):
                             small_block_idx,
                             history,
                         )
+                        if bool(self.config.speculative_advance_reuse):
+                            advance_tail_logits = tail_logits
                         break
 
                     confidence, x1 = sample_tokens(
@@ -780,34 +820,56 @@ class FastDLLMSampler(DiffusionSampler):
             if remaining <= 0:
                 continue
 
-            branch_id, parent_id = self._next_folding_branch(f"fastdllm_ar_{block_idx}")
-            if folded_model is not None:
-                # AR021 FR2/UT-2111: the block-advance AR forward reuses the
-                # same pinned fold context — its forced region covers exactly
-                # the just-committed block (the P5 partial-flip scenario).
-                ctx = self._fold_ctx_for(x, prompt_len=prompt_len)
-                logits = self._forward(
-                    x,
-                    branch_id=branch_id,
-                    parent_branch_id=parent_id,
-                    folded_model=folded_model,
-                    step_idx=block_idx,
-                    attention_mask=ctx.mask,
-                    position_embeddings=ctx.pe,
-                    forced_divergent=ctx.forced,
-                )
+            if bool(self.config.speculative_advance_reuse) and num_candidates > 0:
+                # AR032: reuse the last small block's winning verification
+                # row's tail logits as the block-advance token — the winner
+                # row's forward input is bitwise the post-commit canvas, so
+                # its tail distribution IS the advance distribution. One
+                # serial forward is omitted per block-advance-eligible
+                # block; the folding chain continues directly onto the
+                # winner candidate branch (#43).
+                if advance_tail_logits is None:
+                    # Unreachable defense: every fresh block has masked
+                    # positions, so the speculative call always ran. A None
+                    # stash means a mechanism bug or a future structural
+                    # change — fail fast, never silently fall back.
+                    raise RuntimeError(
+                        "speculative_advance_reuse=True reached the advance "
+                        "seam without a speculative tail-logit stash (every "
+                        "fresh block has masked positions, so the "
+                        "speculative small block must have run) — this is a "
+                        "mechanism bug, not a supported fallback."
+                    )
+                next_token = advance_tail_logits.argmax(dim=-1).unsqueeze(0)
             else:
-                attention_mask = x != pad_id
-                logits = self._forward(
-                    x,
-                    branch_id=branch_id,
-                    parent_branch_id=parent_id,
-                    folded_model=folded_model,
-                    step_idx=block_idx,
-                    attention_mask=attention_mask,
-                )
-            logits = right_shift_logits(logits)
-            next_token = logits[:, -1:, :].argmax(dim=-1)
+                branch_id, parent_id = self._next_folding_branch(f"fastdllm_ar_{block_idx}")
+                if folded_model is not None:
+                    # AR021 FR2/UT-2111: the block-advance AR forward reuses the
+                    # same pinned fold context — its forced region covers exactly
+                    # the just-committed block (the P5 partial-flip scenario).
+                    ctx = self._fold_ctx_for(x, prompt_len=prompt_len)
+                    logits = self._forward(
+                        x,
+                        branch_id=branch_id,
+                        parent_branch_id=parent_id,
+                        folded_model=folded_model,
+                        step_idx=block_idx,
+                        attention_mask=ctx.mask,
+                        position_embeddings=ctx.pe,
+                        forced_divergent=ctx.forced,
+                    )
+                else:
+                    attention_mask = x != pad_id
+                    logits = self._forward(
+                        x,
+                        branch_id=branch_id,
+                        parent_branch_id=parent_id,
+                        folded_model=folded_model,
+                        step_idx=block_idx,
+                        attention_mask=attention_mask,
+                    )
+                logits = right_shift_logits(logits)
+                next_token = logits[:, -1:, :].argmax(dim=-1)
             next_token[finished] = pad_id
             x = torch.cat([x, next_token], dim=1)
 
