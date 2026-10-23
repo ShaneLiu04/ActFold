@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1463 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线，ST 实测 109.27s）
+# 4) 整仓质量门：期望 1465 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线 1463 + 2 例 deep-experiments 回归 UT `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复 8f133ac 随带）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）

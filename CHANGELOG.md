@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### deep-experiments sync: two cache fixes cherry-picked + cross-platform review in README
+
+#### Fixed
+- `actfold/core/pyramid_cache.py`: pyramid blocks now own their storage
+  (`clone(memory_format=torch.contiguous_format)` instead of `contiguous()`,
+  which at batch 1 returned a **view** pinning the whole source tensor —
+  eviction freed nothing and the AR029 E2 byte-ledger bound held on paper
+  only). Regression UT `test_blocks_own_their_storage` (batch 1/2) pins
+  storage-disjointness. Found by the RTX 6000D D5 memory campaign
+  (`memory_allocated` showed the 0.5 budget still consuming 246.1MB before,
+  109.9MB after); cherry-picked from gitee `deep-experiments` (5151eea).
+- `actfold/core/model_wrapper.py`: `FoldedModel` (deprecated path) drops a
+  caller-supplied `position_embeddings` when the base model's forward does
+  not declare it, so remote-code models no longer receive the rotary pair
+  twice via the `**kwargs` splat (TypeError on sampling through the
+  deprecated path; `ManualFoldedForward` unaffected). Same upstream commit.
+
+#### Changed (docs)
+- README: new "跨平台复核（RTX 6000D 服务器复跑）" section — the full ladder
+  re-run on an 83GB Linux server (AR022 11.17×, AR032 10.36× with all frozen
+  verdicts supported, AR025-real OOM-blocked by fragmentation, AR026
+  inconclusive with zero graph captures), plus per-section restatements:
+  AR019 H2 "bit-exact" → "within the bf16 batching noise floor" (server
+  refuted; Triton-independent, shape-dependent rounding), AR022/031/032
+  quality evidence scoped to the first-block early-stop geometry
+  (34/66 tokens; GSM8K multi-block collapse documented with the D4
+  speed-quality pareto), the AR029 storage erratum, and limitations items
+  13–15. Quality baseline: 1465 passed / 4 skipped / 3 deselected
+  (= 1463 + 2 new regression UTs).
+
 ### AR032: Verification-Logit Advance Reuse — the Speculative Speedup Rung Extended (overall supported)
 
 #### Added

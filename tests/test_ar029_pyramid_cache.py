@@ -391,6 +391,19 @@ def test_ut2951_contains() -> None:
     assert not cache.contains("b", 1)
 
 
+@pytest.mark.parametrize("batch", [1, 2])
+def test_blocks_own_their_storage(batch: int) -> None:
+    """Stored blocks never alias the caller's tensor, so eviction really frees memory."""
+    cache = PyramidActivationCache(_plan(depth=1, per_layer=64))
+    acts = _acts(48, batch=batch)
+    src = {name: t.untyped_storage().data_ptr() for name, t in acts.items()}
+    cache.put("b", 0, acts)
+    for block in cache._layers[0][("b", 0)].blocks.values():
+        for name, tensor in block.items():
+            assert tensor.untyped_storage().data_ptr() != src[name]
+            assert tensor.untyped_storage().nbytes() == tensor.numel() * tensor.element_size()
+
+
 def test_ut2967b_missing_sentinel_protocol() -> None:
     """UT-2967b: the cache advertises the explicit sentinel capability."""
     cache = PyramidActivationCache(_plan(depth=1, per_layer=32))

@@ -201,8 +201,13 @@ class PyramidActivationCache:
         for block_idx in range(n_blocks):
             start = block_idx * block_size
             stop = min(start + block_size, seq_len)
+            # clone, not contiguous(): at batch 1 the transposed slice is already
+            # contiguous, so contiguous() would return a view that pins the whole
+            # source tensor and eviction would free nothing.
             block = {
-                name: tensor[:, start:stop].transpose(0, 1).contiguous()
+                name: tensor[:, start:stop]
+                .transpose(0, 1)
+                .clone(memory_format=torch.contiguous_format)
                 for name, tensor in activations.items()
             }
             entry.blocks[block_idx] = block

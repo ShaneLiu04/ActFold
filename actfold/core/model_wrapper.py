@@ -105,6 +105,7 @@ class FoldedModel(nn.Module):
         # computed once, at construction time.
         self._actfold_kwargs_accepted = self._compute_accepts_actfold_kwargs()
         self._base_accepts_attention_mask = self._compute_accepts_attention_mask()
+        self._base_names_position_embeddings = self._compute_names_position_embeddings()
         self._apply_folding()
 
     def _compute_accepts_actfold_kwargs(self) -> bool:
@@ -131,6 +132,19 @@ class FoldedModel(nn.Module):
         except (TypeError, ValueError):
             return False
         return "attention_mask" in sig.parameters
+
+    def _compute_names_position_embeddings(self) -> bool:
+        """Return whether the base model's forward names ``position_embeddings``.
+
+        A full HF model computes its own rotary pair and splats ``**kwargs``
+        into every decoder layer, so a caller-supplied ``position_embeddings``
+        (the ``ManualFoldedForward`` contract) would reach the layer twice.
+        """
+        try:
+            sig = inspect.signature(self.wrapped_model.forward)
+        except (TypeError, ValueError):
+            return False
+        return "position_embeddings" in sig.parameters
 
     def _accepts_actfold_kwargs(self) -> bool:
         """Return the construction-time ActFold-kwargs acceptance flag."""
@@ -232,6 +246,8 @@ class FoldedModel(nn.Module):
             Model output logits or hidden states.
         """
         actfold_keys = {"branch_id", "parent_branch_id", "step_idx"}
+        if not self._base_names_position_embeddings:
+            kwargs.pop("position_embeddings", None)
 
         # When folding is not applied, run a normal forward. Only pass
         # attention_mask if the wrapped model accepts it.
