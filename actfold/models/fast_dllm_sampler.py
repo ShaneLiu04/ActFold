@@ -101,6 +101,31 @@ class FastDLLMSamplerConfig(SamplerConfig):
             onto the winner candidate branch (#43). ``False`` (the default)
             is byte-identical to the AR031 end state; ``True`` requires
             ``num_block_candidates > 0``.
+        history_cache: AR033 block-causal history KV cache (official
+            Fast-dLLM v2 ``batch_sample`` parity). ``True`` switches the
+            official path to hierarchical caching: a one-time prompt
+            prefill builds the per-layer history KV, every remasking
+            iteration forwards only the active block slice against the
+            frozen history, and each completed block is committed with a
+            single ``update_past_key_values=True`` forward that also
+            produces the block-advance token (the official modeling.py
+            ``generate`` pattern). KV mechanics are delegated to the
+            wrapped model's native cache kwargs (probed at dispatch;
+            missing support raises ``RuntimeError`` — never a silent
+            full-recompute fallback). ``False`` (the default) is
+            byte-identical to the pre-AR033 official path. Mutually
+            exclusive with ``num_block_candidates > 0`` and with a
+            ``folded_model`` (``ValueError`` — distinct compute
+            strategies).
+        history_small_block_cache: AR033 intra-block small-block KV cache
+            (the official ``use_block_cache`` mechanism, boundary-frozen
+            rebuild rule: the small block's preceding-boundary token still
+            masked ⇒ whole-block cache rebuild). ``True`` requires
+            ``history_cache=True``. NOTE (T001 P4 probe): the official
+            replace path is NOT bit-exact against the full-canvas forward
+            on the real checkpoint (sdpa kernel-path drift, maxdiff
+            0.3125 bf16) — the cross-block cache alone is the bit-exact
+            face (P3: maxdiff 0.0).
     """
 
     block_size: int = 32
@@ -116,6 +141,8 @@ class FastDLLMSamplerConfig(SamplerConfig):
     uncertainty_margin: float = 0.9
     uncertainty_margin_gap: float = 0.05
     speculative_advance_reuse: bool = False
+    history_cache: bool = False
+    history_small_block_cache: bool = False
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -149,6 +176,19 @@ class FastDLLMSamplerConfig(SamplerConfig):
             raise ValueError(
                 "uncertainty_margin_gap must be in [0, 1], got " f"{self.uncertainty_margin_gap}"
             )
+        if self.history_cache and self.num_block_candidates > 0:
+            raise ValueError(
+                "history_cache=True is mutually exclusive with "
+                "num_block_candidates > 0 (the speculative path is undefined "
+                "on the cached compute strategy; got "
+                f"num_block_candidates={self.num_block_candidates})."
+            )
+        if self.history_small_block_cache and not self.history_cache:
+            raise ValueError(
+                "history_small_block_cache=True requires history_cache=True "
+                "(the intra-block cache is defined only on the cached "
+                "compute strategy)."
+            )
 
 
 @dataclass
@@ -170,6 +210,37 @@ class _FoldCtx:
     mask: torch.Tensor
     pe: Any | None
     forced: torch.Tensor
+
+
+@dataclass(frozen=True)
+class _HistoryCacheSupport:
+    """Probe result for the wrapped model's native cache-kwarg contract.
+
+    AR033 delegation contract: the sampler owns the orchestration
+    (prefill / per-iteration slice forwards / per-block commit) while the
+    model owns the KV mechanics. The probe inspects the RAW model's
+    forward signature (``self.model.model``) for the official cache
+    kwargs; acceptance means a NAMED parameter (a bare ``**kwargs``
+    catch-all is NOT accepted — fail-fast prefers a strict structural
+    guarantee over a syntactic maybe).
+
+    Attributes:
+        accepted: mapping of probed kwarg name -> named-parameter presence.
+        required_ok: every kwarg of ``_HC_REQUIRED_KWARGS`` is accepted.
+        small_block_ok: every kwarg of ``_HC_SMALL_BLOCK_KWARGS`` is
+            accepted.
+        has_raw_model: the ``self.model.model`` drill reached a callable.
+    """
+
+    accepted: dict[str, bool]
+    required_ok: bool
+    small_block_ok: bool
+    has_raw_model: bool
+
+
+_HC_REQUIRED_KWARGS = ("use_cache", "past_key_values", "update_past_key_values")
+_HC_SMALL_BLOCK_KWARGS = ("use_block_cache", "block_past_key_values", "replace_position")
+_HC_PROBED_KWARGS = _HC_REQUIRED_KWARGS + _HC_SMALL_BLOCK_KWARGS + ("block_size",)
 
 
 class FastDLLMSampler(DiffusionSampler):
@@ -205,6 +276,16 @@ class FastDLLMSampler(DiffusionSampler):
         self._unc_validated_rows = 0
         self._unc_skipped_rows = 0
         self._unc_early_stops = 0
+        # AR033: history-cache orchestration counters (the greedy_win_stats
+        # precedent) — cumulative across ``sample`` calls, incremented only
+        # on the history_cache-armed path (default off stays all-zero).
+        self._hc_prefill_forwards = 0
+        self._hc_slice_forwards = 0
+        self._hc_commit_forwards = 0
+        self._hc_block_rebuilds = 0
+        self._hc_forward_tokens = 0
+        self._hc_degraded_calls = 0
+        self._cache_support: _HistoryCacheSupport | None = None
 
     @property
     def uncertainty_stats(self) -> dict[str, int]:
@@ -240,6 +321,68 @@ class FastDLLMSampler(DiffusionSampler):
             derived by the benchmark script from before/after snapshots.
         """
         return {"greedy_wins": self._greedy_wins, "speculative_calls": self._greedy_spec_calls}
+
+    @property
+    def history_cache_stats(self) -> dict[str, int]:
+        """Read-only history-cache orchestration ledger (AR033).
+
+        Returns:
+            ``{"prefill_forwards", "slice_forwards", "commit_forwards",
+            "block_rebuilds", "forward_tokens", "degraded_calls"}`` —
+            instance-level cumulative counts surviving across ``sample``
+            calls (a FRESH dict per read). ``forward_tokens`` sums the
+            input token count of every cache-path forward (the H3 integer
+            ledger); ``degraded_calls`` counts silent fallbacks and must
+            stay 0 (the armed path fails fast, never degrades).
+        """
+        return {
+            "prefill_forwards": self._hc_prefill_forwards,
+            "slice_forwards": self._hc_slice_forwards,
+            "commit_forwards": self._hc_commit_forwards,
+            "block_rebuilds": self._hc_block_rebuilds,
+            "forward_tokens": self._hc_forward_tokens,
+            "degraded_calls": self._hc_degraded_calls,
+        }
+
+    def _probe_history_cache_support(self) -> _HistoryCacheSupport:
+        """Probe the raw model's forward for the official cache kwargs.
+
+        The probe drills ``self.model.model`` (the raw HF-style module —
+        the ``DiffusionLLM.forward`` wrapper strips outputs down to the
+        logits tensor, so the cache path must call the raw module to
+        receive ``past_key_values`` / ``block_past_key_values`` handles).
+        Acceptance requires a NAMED parameter per kwarg (the
+        ``_supports_branch_ids`` probe's ``**kwargs`` leniency is
+        deliberately NOT granted here: a cache call that silently drops
+        an unknown kwarg would mis-delegate). The result is cached on the
+        instance (the model reference does not change mid-sampler).
+        """
+        if self._cache_support is not None:
+            return self._cache_support
+        raw = getattr(self.model, "model", None)
+        target = getattr(raw, "forward", None) if isinstance(raw, torch.nn.Module) else raw
+        if not callable(target):
+            support = _HistoryCacheSupport(
+                accepted={k: False for k in _HC_PROBED_KWARGS},
+                required_ok=False,
+                small_block_ok=False,
+                has_raw_model=False,
+            )
+            self._cache_support = support
+            return support
+        try:
+            params = dict(inspect.signature(target).parameters)
+        except (TypeError, ValueError):  # pragma: no cover - defensive
+            params = {}
+        accepted = {k: (k in params) for k in _HC_PROBED_KWARGS}
+        support = _HistoryCacheSupport(
+            accepted=accepted,
+            required_ok=all(accepted[k] for k in _HC_REQUIRED_KWARGS),
+            small_block_ok=all(accepted[k] for k in _HC_SMALL_BLOCK_KWARGS),
+            has_raw_model=True,
+        )
+        self._cache_support = support
+        return support
 
     def initialize(self, prompt_ids: torch.Tensor) -> torch.Tensor:
         """Return prompt_ids; block-wise state is built inside :meth:`sample`."""
@@ -469,15 +612,20 @@ class FastDLLMSampler(DiffusionSampler):
         argmax path byte-identical.
 
         AR032: returns ``(j_star, tail_logits)`` — the winning row index
-        and that row's TAIL right-shifted verification logits
-        ``[1, V]`` (``shifted[j_star, -1:, :].clone()`` — the clone detaches
-        the stash from the full ``[N, T, V]`` ``right_shift_logits`` cat
-        backing, which at real-face geometry would otherwise be retained
-        until the next small block's overwrite). The winner row's forward
-        input is bitwise the post-commit canvas, so its tail distribution
-        IS the block-advance distribution — the sole source for
+        and that row's TAIL UNSHIFTED verification logits ``[1, V]``
+        (``batched_logits[j_star, -1:, :].clone()`` — the clone detaches
+        the stash from the full ``[N, T, V]`` batched-forward backing,
+        which at real-face geometry would otherwise be retained until the
+        next small block's overwrite; #51 D8). The winner row's forward
+        input is bitwise the post-commit canvas, so its raw tail row
+        (predicting position T under the R1 convention) IS the
+        block-advance distribution — the sole source for
         ``speculative_advance_reuse`` (the LAST small block's return value
-        is the one the sample loop stashes).
+        is the one the sample loop stashes). AR033 R1 erratum: the
+        historical stash returned the RIGHT-SHIFTED tail (raw[T-2], the
+        decision row of the already-filled position T-1); pre-AR033
+        artifacts carry that old convention on BOTH the reuse-on and
+        reuse-off arms (the A/B stays internally consistent).
         """
         cfg = self.config
         num_candidates = int(cfg.num_block_candidates)
@@ -547,7 +695,12 @@ class FastDLLMSampler(DiffusionSampler):
         self._folding_parent = cand_branch_ids[j_star]
         if self.config.return_history:
             history.append(x.clone())
-        return j_star, shifted[j_star, -1:, :].clone()
+        # AR033 R1 erratum: the advance-reuse stash is the UNSHIFTED
+        # winner-row tail (raw[T-1] — the row that predicts position T,
+        # the same row the fixed legacy advance and the official
+        # modeling.py :745 consume). The pre-AR033 stash was the shifted
+        # tail raw[T-2] on both A/B arms.
+        return j_star, batched_logits[j_star, -1:, :].clone()
 
     def _uncertainty_select_inline(
         self,
@@ -622,6 +775,258 @@ class FastDLLMSampler(DiffusionSampler):
                 break
         return best_row
 
+    def _history_cached_sample(
+        self,
+        x: torch.Tensor,
+        first_block_padding: int,
+        total_len: int,
+    ) -> SamplerOutput:
+        """AR033 cached orchestration branch (design.md §4.2.2).
+
+        Cross-block history KV cache (exact: T001 P3 probe measured
+        maxdiff 0.0 vs the full-canvas forward on the real checkpoint)
+        plus the optional intra-block small-block cache (official-parity
+        APPROXIMATE face: within-block bidirectional attention makes
+        earlier small blocks' layer->=1 KV stale as later siblings
+        unmask, and the official replace path adds sdpa kernel drift —
+        T001 P4, maxdiff 0.3125 bf16). The schedule decisions are the
+        legacy loop verbatim; only the forward source changes.
+
+        R1 token-shift alignment: the decision row for canvas position q
+        is the RAW logit row at q-1. The block's boundary row (block
+        row 0) is the frozen history tail (block 0: the prefill tail;
+        later blocks: the previous commit forward's tail — history
+        positions never see the active block under block-causal
+        attention, so the tail stays fresh). Small-block partial
+        forwards source their boundary row by extending the partial
+        slice one position left (``[sb_lo-1, sb_hi)`` — S+1 rows), which
+        also refreshes the boundary position's block-cache KV; small
+        block 0 uses the frozen block boundary (exact on the fixture).
+
+        Final-partial-block geometry: when ``num_tokens % block_size !=
+        0`` the last mask append is short and the canvas tail is NOT
+        block-aligned — the active block becomes the block-aligned tail
+        slice (shorter than ``block_size``) so the slice forward never
+        overlaps committed history (double-counted KV / wrong rotary
+        positions); window rows left of the active block are committed
+        history, never masked, never consumed (zero filler). The sb
+        sub-cache applies only to full blocks.
+        """
+        cfg = self.config
+        raw_model: Any = getattr(self.model, "model", None)
+        if not callable(raw_model):
+            # Unreachable post-probe (the sample() dispatch already raised
+            # on has_raw_model=False); kept as a fail-fast defense.
+            raise RuntimeError(
+                "history_cache=True requires a callable raw backbone at "
+                "self.model.model (the dispatch-time probe contract was "
+                "violated — this is a mechanism bug, not a fallback)."
+            )
+        B = x.shape[0]
+        device = x.device
+        block_size = cfg.block_size
+        small_block_size = cfg.small_block_size
+        num_small_blocks = block_size // small_block_size
+        max_new_tokens = cfg.num_tokens
+        mask_id = self._mask_token_id
+        stop_id = self._stop_token_id
+        pad_id = self._pad_token_id
+        use_sb_cache = bool(cfg.history_small_block_cache)
+        num_blocks = max(1, (max_new_tokens + block_size - 1) // block_size)
+        history: list[torch.Tensor] = [x.clone()] if cfg.return_history else []
+        finished = torch.zeros(B, dtype=torch.bool, device=device)
+
+        # Prefill: one committed forward over the prompt + alignment
+        # region (everything before the first mask block).
+        hist_len = int(x.shape[1]) - block_size
+        out = raw_model(
+            input_ids=x[:, :hist_len],
+            use_cache=True,
+            update_past_key_values=True,
+            block_size=block_size,
+        )
+        kv = out.past_key_values
+        block_boundary_raw = out.logits[:, -1:, :].clone()
+        self._hc_prefill_forwards += 1
+        self._hc_forward_tokens += hist_len
+
+        for block_idx in range(num_blocks):
+            if finished.all():
+                break
+            block_past: Any = None
+            # Active-block geometry: mid-generation canvases are
+            # block-aligned (prompt+alignment pad and full mask blocks),
+            # but the FINAL block may be short (the mask append is
+            # min(block_size-1, remaining-1)) — the plain
+            # ``x[:, -block_size:]`` window would then overlap committed
+            # history (double-counted KV + wrong rotary positions). The
+            # active block is the block-aligned tail slice
+            # [T - active_len, T); on aligned canvases it equals the
+            # last-block_size: window, so the legacy coordinate system is
+            # unchanged. Window rows left of the active block are
+            # committed history (never masked, never consumed).
+            t_now = int(x.shape[1])
+            active_len = block_size if t_now % block_size == 0 else t_now % block_size
+            win_offset = block_size - active_len
+            # The intra-block sb cache is defined only on FULL blocks (the
+            # official block-cache layout assumes block_size positions);
+            # the short final block takes the exact whole-slice path.
+            sb_available = use_sb_cache and active_len == block_size
+            for small_block_idx in range(num_small_blocks):
+                sb_lo = small_block_idx * small_block_size
+                sb_hi = sb_lo + small_block_size
+                start = -block_size + sb_lo
+                end = None if sb_hi == block_size else start + small_block_size
+                max_iters = small_block_size * 2
+                for _ in range(max_iters):
+                    block_view = x[:, -block_size:]
+                    mask_idx = block_view == mask_id
+                    if mask_idx[:, start:end].sum() == 0:
+                        break
+
+                    if not sb_available:
+                        out = raw_model(
+                            input_ids=x[:, -active_len:],
+                            use_cache=True,
+                            past_key_values=kv,
+                            update_past_key_values=False,
+                            block_size=block_size,
+                        )
+                        aligned = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+                        if win_offset > 0:
+                            # Zero filler for the window's committed-
+                            # history rows (never masked; the small_mask
+                            # -inf where() neutralizes any consumption).
+                            aligned = torch.cat(
+                                [
+                                    aligned.new_zeros((B, win_offset, aligned.shape[-1])),
+                                    aligned,
+                                ],
+                                dim=1,
+                            )
+                        logits = aligned[:, sb_lo:sb_hi]
+                        self._hc_slice_forwards += 1
+                        self._hc_forward_tokens += active_len
+                    else:
+                        boundary_masked = small_block_idx > 0 and bool(
+                            (block_view[:, sb_lo - 1] == mask_id).any()
+                        )
+                        if block_past is None or boundary_masked:
+                            # Official boundary-invalidated rebuild
+                            # (modeling.py:766-774): whole-block forward,
+                            # block cache (re)built.
+                            out = raw_model(
+                                input_ids=block_view,
+                                use_cache=True,
+                                past_key_values=kv,
+                                update_past_key_values=False,
+                                use_block_cache=True,
+                                block_size=block_size,
+                            )
+                            block_past = out.block_past_key_values
+                            aligned = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+                            logits = aligned[:, sb_lo:sb_hi]
+                            self._hc_block_rebuilds += 1
+                            self._hc_slice_forwards += 1
+                            self._hc_forward_tokens += block_size
+                        elif small_block_idx == 0:
+                            # Partial over [0, S): the boundary row is the
+                            # frozen block boundary (history tail — exact).
+                            out = raw_model(
+                                input_ids=block_view[:, 0:small_block_size],
+                                use_cache=True,
+                                past_key_values=kv,
+                                update_past_key_values=False,
+                                use_block_cache=True,
+                                block_past_key_values=block_past,
+                                replace_position=0,
+                                block_size=block_size,
+                            )
+                            aligned = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+                            logits = aligned
+                            self._hc_slice_forwards += 1
+                            self._hc_forward_tokens += small_block_size
+                        else:
+                            # Partial over [sb_lo-1, sb_hi): S+1 rows so the
+                            # boundary decision row is fresh from THIS
+                            # forward (the leading row also refreshes the
+                            # boundary position's block-cache KV).
+                            out = raw_model(
+                                input_ids=block_view[:, sb_lo - 1 : sb_hi],
+                                use_cache=True,
+                                past_key_values=kv,
+                                update_past_key_values=False,
+                                use_block_cache=True,
+                                block_past_key_values=block_past,
+                                replace_position=sb_lo - 1,
+                                block_size=block_size,
+                            )
+                            logits = out.logits[:, 0:small_block_size, :]
+                            self._hc_slice_forwards += 1
+                            self._hc_forward_tokens += small_block_size + 1
+
+                    confidence, x1 = sample_tokens(
+                        logits,
+                        temperature=cfg.temperature,
+                        top_p=cfg.top_p,
+                        top_k=cfg.top_k,
+                    )
+                    probs = F.softmax(logits, dim=-1)
+                    x1_p = torch.gather(probs, dim=-1, index=x1.unsqueeze(-1)).squeeze(-1)
+
+                    small_mask = mask_idx[:, start:end]
+                    x1_p = torch.where(small_mask, x1_p, torch.full_like(x1_p, float("-inf")))
+
+                    unmask = x1_p > cfg.threshold
+                    max_idx = x1_p.argmax(dim=-1)
+                    unmask[torch.arange(B), max_idx] = True
+                    unmask = unmask & small_mask
+
+                    x[:, start:end][unmask] = x1[unmask]
+
+                    finished = finished | ((x1 == stop_id) & unmask).any(dim=1)
+
+                    if cfg.return_history:
+                        history.append(x.clone())
+
+            # Commit + block advance in ONE forward (official
+            # modeling.py:729-747): the completed block's KV is committed
+            # and the unshifted tail row produces the next token (the R1
+            # token-shift row — matching the fixed legacy advance and the
+            # official :745 pattern).
+            remaining = total_len + first_block_padding - x.shape[1]
+            if remaining <= 0:
+                continue
+            out = raw_model(
+                input_ids=x[:, -block_size:],
+                use_cache=True,
+                past_key_values=kv,
+                update_past_key_values=True,
+                block_size=block_size,
+            )
+            kv = out.past_key_values
+            block_boundary_raw = out.logits[:, -1:, :].clone()
+            next_token = out.logits[:, -1:, :].argmax(dim=-1)
+            next_token[finished] = pad_id
+            self._hc_commit_forwards += 1
+            self._hc_forward_tokens += block_size
+            x = torch.cat([x, next_token], dim=1)
+
+            if remaining > 1:
+                fresh_masks = torch.full(
+                    (B, min(block_size - 1, remaining - 1)),
+                    mask_id,
+                    dtype=torch.long,
+                    device=device,
+                )
+                x = torch.cat([x, fresh_masks], dim=1)
+
+            if cfg.return_history:
+                history.append(x.clone())
+
+        decoded = self.decode_final(x)
+        return SamplerOutput(sequences=decoded, history=history)
+
     def sample(
         self,
         prompt_ids: torch.Tensor,
@@ -641,10 +1046,48 @@ class FastDLLMSampler(DiffusionSampler):
             ValueError: If ``folded_model`` is given with a batch larger than
                 1 (the ``[T, T]`` mask cannot express per-row padding); or
                 if ``num_block_candidates > 0`` without a ``folded_model``
-                that supports ``branch_ids`` (never a silent degradation).
+                that supports ``branch_ids`` (never a silent degradation);
+                or if ``history_cache=True`` is combined with a
+                ``folded_model`` (distinct compute strategies).
+            RuntimeError: If ``history_cache=True`` (or
+                ``history_small_block_cache=True``) but the raw model's
+                forward does not accept the official cache kwargs as
+                NAMED parameters (probe fail-fast, never a silent
+                full-recompute fallback).
         """
         if self.config.seed is not None:
             torch.manual_seed(self.config.seed)
+
+        if self.config.history_cache:
+            # AR033 fail-fast guards (design §4.2.2 (g)/(i)): up-front,
+            # before any canvas construction burns compute. The
+            # speculative exclusivity (num_block_candidates > 0) is
+            # already enforced at config construction time.
+            if folded_model is not None:
+                raise ValueError(
+                    "history_cache=True is mutually exclusive with a "
+                    "folded_model (the cached compute strategy drives the "
+                    "raw model's native cache kwargs directly; folding and "
+                    "caching are distinct compute strategies)."
+                )
+            support = self._probe_history_cache_support()
+            if not support.required_ok:
+                raise RuntimeError(
+                    "history_cache=True requires the raw model's forward "
+                    f"to accept the official cache kwargs {_HC_REQUIRED_KWARGS} "
+                    "as NAMED parameters; probe result: "
+                    f"has_raw_model={support.has_raw_model}, "
+                    f"accepted={support.accepted} — a **kwargs catch-all "
+                    "is NOT accepted (fail-fast, never a silent "
+                    "full-recompute fallback)."
+                )
+            if self.config.history_small_block_cache and not support.small_block_ok:
+                raise RuntimeError(
+                    "history_small_block_cache=True requires the raw "
+                    "model's forward to accept the official block-cache "
+                    f"kwargs {_HC_SMALL_BLOCK_KWARGS} as NAMED parameters; "
+                    f"probe result: accepted={support.accepted}."
+                )
 
         num_candidates = int(self.config.num_block_candidates)
         if folded_model is not None and prompt_ids.shape[0] > 1:
@@ -696,6 +1139,17 @@ class FastDLLMSampler(DiffusionSampler):
             [x, torch.full((B, block_size), mask_id, dtype=torch.long, device=device)],
             dim=1,
         )
+
+        if self.config.history_cache:
+            # AR033 cached orchestration branch: the canvas geometry above
+            # (prompt + alignment pad + first mask block) is shared; the
+            # branch owns prefill -> per-iteration slice forwards ->
+            # per-block commit+advance (design §4.2.2).
+            return self._history_cached_sample(
+                x,
+                first_block_padding=first_block_padding,
+                total_len=total_len,
+            )
 
         history: list[torch.Tensor] = [x.clone()] if self.config.return_history else []
         finished = torch.zeros(B, dtype=torch.bool, device=device)
@@ -868,7 +1322,15 @@ class FastDLLMSampler(DiffusionSampler):
                         step_idx=block_idx,
                         attention_mask=attention_mask,
                     )
-                logits = right_shift_logits(logits)
+                # AR033 off-by-one erratum (design §6.5): the advance
+                # token comes from the UNSHIFTED tail row raw[T-1] (which
+                # predicts position T) — the official modeling.py :745
+                # pattern, confirmed by the T001 P2 teacher-forcing probe
+                # (hit_next=0.9028 vs hit_self=0.0000). The historical
+                # code consumed right_shift(full)[:, -1] = raw[T-2] (the
+                # decision row of the already-filled position T-1), one
+                # step stale; pre-AR033 artifacts carry the old convention
+                # on BOTH A/B arms (internally consistent).
                 next_token = logits[:, -1:, :].argmax(dim=-1)
             next_token[finished] = pad_id
             x = torch.cat([x, next_token], dim=1)

@@ -4,6 +4,78 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR033: Block-Causal Exact History Cache (Official v2 Parity) + Strawman Erratum (overall supported)
+
+#### Added
+- `FastDLLMSamplerConfig.history_cache` (default `False` = byte-identical to
+  the AR032 end state) and `history_small_block_cache` (sub-switch, requires
+  `history_cache=True`); `ActFoldConfig` consumes the `history_cache` YAML
+  key (zero unknown-key warnings).
+- The mechanism (actfold/models/fast_dllm_sampler.py): prefill once builds
+  per-layer history KV; each remasking iteration forwards only the active
+  slice (cross-block face B1); intra-block small-block KV follows the
+  official `use_block_cache` semantics — the active small block's
+  left-boundary token still masked ⇒ rebuild the whole block cache,
+  otherwise forward only the small-block slice (`replace_position`
+  alignment, B2); block completion commits the block KV; the AR-token
+  advance forward is sliced + committed. Mutual exclusion with the
+  speculative path (`num_block_candidates > 0`) raises at construction;
+  a wrapped model whose raw forward lacks the cache kwargs as **named
+  parameters** raises `RuntimeError` at first call (a `**kwargs` sink does
+  not count) — never a silent full-recompute fallback.
+- `history_cache_stats`: read-only seven-class integer forward ledger
+  (prefill / commit / rebuild / sb0_partial / sb_partial / cross_slice /
+  legacy_full_canvas), all-zero and probe-free on the default-off path.
+- `scripts/ar033_history_cache_bench.py`: four-arm real-checkpoint bench on
+  the **official v2 geometry block=32/sb=8** (A non-cached baseline / B1
+  cross-block / B2 + sub-block cache / C official native `batch_sample`,
+  report-only, RAW unpadded prompts), H1-H4 frozen before data collection,
+  raw-call recorder with class-geometry assertions rebuilding the exact
+  token ledger, AR031-style one-vote repro blocking (mismatch ⇒ all
+  verdicts blocked), formal overwrite protection (rc=4 / rc=3 with
+  `--force`+`--force-reason`), `--quick` writes a separate `_quick.json`.
+- UT-3301..3307 (15 tests, tests/test_ar033_history_cache.py): fp32 tiny
+  block-causal fixture bit-level A/B (`torch.equal`, multi-block, batch 1/2,
+  pad exclusion, forced regions, token-shift alignment; S=1 three-way), the
+  alignment contract + unshifted-tail advance convention (UT-3302b), sb-cache
+  mechanism faces (rebuild/partial accounting, inert boundary rule,
+  reproducibility), the integer forward ledger on aligned and short-final
+  geometries, default-off zero regression, five mutual-exclusion/fail-fast
+  combinations, capability-probe named-parameter strictness + stats schema.
+
+#### Fixed
+- Block-advance semantics gap found during delivery (spec erratum, AR032
+  frozen artifacts untouched): the final-partial-block face (stop early-exit
+  leaves a partially committed block) and the advance/stash handoff are now
+  UT-pinned; the legacy advance takes the **unshifted** tail row `raw[T-1]`.
+
+#### Evidence
+- Formal artifact `results/optimization/ar033_history_cache_bench.json`
+  (reps=30 pre-committed single run, ~3.5h, Quadro RTX 5000 16GB WDDM):
+  **overall supported** — H1 gap 0.0 / decode [34,66] all-arms / token rate
+  1.0; H2 **B1 1.2989× / B2 1.5431×** vs the non-cached baseline
+  (25592.2 / 19703.0 / 16584.4ms p50; B2 vs B1 1.188×); H3 exact ledger
+  identity A=5280 / B1=2208 / B2=714 tokens (B2/A=0.1352) with the A-arm
+  full-canvas structural face green; H4 canary green (degraded 0, armed
+  engaged) + repro 8/8. C-arm report-only: ActFold B1/B2 faster than the
+  official native `batch_sample` by 1.2821×/1.5232×; official vs non-cached
+  baseline 1.0131×.
+
+#### Changed (docs — the strawman erratum, FR5)
+- The official v2 `batch_sample` is a layered cache recipe (cross-block KV
+  commit `generation_functions.py:81` + intra-block sub-block KV with the
+  boundary invalidation rule :102/:108 + per-iteration current-block slice
+  :111); the ladder's (AR016-AR032) "official baseline arm" was a
+  **non-cached full-recompute variant**. All prior speedups are restated as
+  vs the non-cached block-diffusion baseline — narrative-only, frozen
+  artifacts and verdict functions untouched. README full update (innovation
+  row 18, deep-dive §17, headline results, ladder rung 14 + reading-caliber
+  restatement, quality baseline **1480 passed** / 4 skipped / 3 deselected,
+  quick-start snippet + bench command, roadmap item 16), AGENTS #52
+  (history-cache contract + baseline-caliber law), RERUN_CHECKLIST step 21,
+  ALGORITHM/EXPERIMENTS brief sections. Geometry isolation: sb=8 arms are
+  not cross-artifact comparable with the pre-AR033 lineage (sb=32).
+
 ### deep-experiments sync: two cache fixes cherry-picked + cross-platform review in README
 
 #### Fixed

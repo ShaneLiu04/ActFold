@@ -212,6 +212,34 @@ Same-run A/B ratios are internally valid; absolute p50s are NOT comparable
 across artifacts (WDDM host-state drift — see RERUN step 20). See
 `docs/RERUN_CHECKLIST.md` step 20 for the full protocol.
 
+### 4.5c Block-Causal History-Cache Four-Arm Benchmark (AR033)
+
+```bash
+# AR019 venv (transformers==4.53.1) + local Fast-dLLM-v2-1.5B weights
+<venv>\Scripts\python.exe -X utf8 -m scripts.ar033_history_cache_bench `
+    --model-path <weights-dir> --reps 30        # --quick smoke first
+```
+
+Four arms on the **official v2 geometry block=32/sb=8** (A non-cached
+baseline = the pre-AR033 ladder's reference arm, restated by the strawman
+erratum / B1 `history_cache` cross-block face / B2 + intra-block
+small-block cache with the official boundary invalidation rule / C the
+official native `batch_sample`, report-only timing reference fed RAW
+unpadded prompts). H1-H4 frozen before data collection; the raw-call
+recorder rebuilds the exact token ledger via class-geometry assertions;
+repro double-run keyed by `(arm, prompt_index)` with a one-vote block
+(mismatch ⇒ all verdicts blocked). Expected (pre-committed single run,
+`results/optimization/ar033_history_cache_bench.json`, ~3.5h on the 16GB
+WDDM host): overall **supported** — H1 gap 0.0 / decode [34,66] identical
+across arms / token rate 1.0; H2 **B1 1.2989× / B2 1.5431×** vs the
+non-cached baseline (B2 vs B1 1.188×); H3 exact ledger identity A=5280 /
+B1=2208 / B2=714 tokens (B2/A=0.1352); H4 canary green + repro 8/8. C-arm
+report-only: ActFold B1/B2 run 1.2821×/1.5232× faster than the official
+native recipe; official vs non-cached baseline 1.0131×. Geometry
+isolation: sb=8 arms are NOT cross-artifact comparable with the pre-AR033
+lineage (sb=32). See `docs/RERUN_CHECKLIST.md` step 21 for the full
+protocol.
+
 ### 4.6 Ablation Studies
 
 ```bash

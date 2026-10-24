@@ -589,3 +589,60 @@ strictly equal. Every eligible block converts three forwards into two at
 identical quality — the advance forward's entire cost is reclaimed because
 its single-token product was already computed by the verification forward.
 
+## 18. Block-Causal Exact History Cache (AR033, official v2 parity)
+
+The requirement-phase audit found that the official Fast-dLLM v2
+`batch_sample` is a **layered cache recipe**, not a full-recompute recipe:
+prefill once builds `past_key_values` (`generation_functions.py:37`), each
+completed block gets one commit forward into history (:81), intra-block
+small-block KV caches the settled prefix with the boundary invalidation rule
+"the active small block's left-boundary token still masked ⇒ rebuild the
+whole block cache" (:102), hits forward only the small-block slice via
+`replace_position` (:108), and even with `use_block_cache=False` every
+remasking iteration forwards only the current block against frozen history
+(:111). The ladder's historical "official baseline arm" was therefore a
+non-cached full-recompute variant — the AR033 strawman erratum restates all
+prior speedups as vs the non-cached block-diffusion baseline (narrative
+only; frozen artifacts untouched). The mechanism extracts the same
+structural redundancy the official recipe does — prefix exactness under
+block-causal masking (the D1 finding: activations left of the edit position
+are layer-wise cos≡1.0) — at the KV level (opt-in `history_cache`, default
+off = byte-identical AR032 end state):
+
+- **Cross-block face (B1)**: prefill once builds per-layer history KV;
+  each remasking iteration forwards only the active block slice with the
+  history as read-only context; block completion commits the block KV; the
+  AR-token advance forward is sliced and committed too (official :81
+  semantics), including the final-partial-block face after a stop-early
+  exit.
+- **Intra-block face (B2)**: `history_small_block_cache` caches the
+  current block's settled small blocks under the official boundary rule —
+  a hit forwards only the active small-block slice (`replace_position`
+  alignment), a masked left boundary rebuilds the whole block cache.
+- **Capability contract**: the wrapped raw forward must accept the cache
+  kwargs as named parameters (a `**kwargs` sink does not count); otherwise
+  an explicit `RuntimeError` — never a silent full-recompute fallback. The
+  speculative path is mutually exclusive (construction-time `ValueError`).
+- **Exactness face**: on an fp32 tiny block-causal fixture (real `nn.Linear`
+  layers, same cache-kwargs interface) the cache on/off A/B is bit-exact
+  (`torch.equal`) across multi-block runs, batch 1/2, pad exclusion, forced
+  regions, and token-shift logit alignment; `history_cache_stats` exposes
+  the seven-class integer forward ledger (prefill / commit / rebuild /
+  sb0_partial / sb_partial / cross_slice / legacy_full_canvas), all-zero
+  and probe-free when off.
+
+Empirical face (Fast-dLLM-v2-1.5B, four arms — non-cached baseline /
+B1 cross-block / B2 + sub-block cache / C official native `batch_sample`
+(report-only timing reference) — on the official v2 geometry block=32/sb=8,
+reps=30, pre-committed single shot, artifact
+`results/optimization/ar033_history_cache_bench.json`): overall
+**supported** — H1 gap 0.0, decode lengths [34, 66] identical across arms,
+token rate 1.0; H2 **B1 1.2989× / B2 1.5431×** vs the non-cached baseline
+(25592.2 / 19703.0 / 16584.4ms p50; B2 vs B1 1.188×); H3 exact ledger
+identity A=5280 / B1=2208 / B2=714 tokens (B2/A=0.1352) via the raw-call
+recorder's class-geometry assertions; H4 canary green + repro 8/8. C-arm
+report-only: ActFold's cached arms run 1.2821×/1.5232× faster than the
+official native recipe on the same geometry, official vs non-cached
+baseline 1.0131×. Geometry isolation: sb=8 arms are not cross-artifact
+comparable with the pre-AR033 lineage (sb=32).
+

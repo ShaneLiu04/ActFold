@@ -49,7 +49,6 @@ from actfold.core import ActivationCache, SimilarityGate
 from actfold.models.architecture_utils import ManualFoldedForward
 from actfold.models.base import DiffusionLLM
 from actfold.models.fast_dllm_sampler import FastDLLMSampler, FastDLLMSamplerConfig
-from actfold.models.sampling_utils import right_shift_logits
 from actfold.profiler.stability_profiler import GLOBAL_STABILITY_PROFILER
 from actfold.utils.config_manager import ActFoldConfig
 
@@ -800,13 +799,19 @@ def test_ut3174_s2_wrong_source_capture() -> None:
     wrong small block is detectable. The correct implementation's advance
     stash (captured by wrapping the sampler instance's
     ``_speculative_small_block`` after construction, before ``sample``) is
-    bitwise the LAST small block's batched winner-row tail —
-    ``right_shift_logits(out)[j_star, -1:, :]`` recomputed from the
-    ``_SpyMFF``-recorded batched ``out``. The exact-lookup head also makes
-    the on/off decodes bitwise equal. Defect injection (the capture-power
-    face): a wrapper that returns the FIRST small block's tail for every
-    subsequent call — the classic wrong-source bug — changes the decode,
-    proving this test FAILS when the mechanism is broken.
+    bitwise the LAST small block's batched winner-row UNSHIFTED tail —
+    ``out[j_star, -1:, :]`` recomputed from the ``_SpyMFF``-recorded
+    batched ``out`` (the AR033 R1 erratum: raw[T-1] predicts position T,
+    the same row the fixed legacy advance consumes; the pre-AR033 stash
+    was the right-shifted tail raw[T-2] — at THIS fixture the last two
+    winner-row tokens coincide, so both rows are bitwise equal and the
+    formula pin is documentation-grade; the convention's discriminating
+    face lives in ``test_ar033_history_cache.py`` UT-3302b). The
+    exact-lookup head also makes the on/off decodes bitwise equal.
+    Defect injection (the capture-power face): a wrapper that returns the
+    FIRST small block's tail for every subsequent call — the classic
+    wrong-source bug — changes the decode, proving this test FAILS when
+    the mechanism is broken.
     """
     num_blocks = 2
     small_per_block = _BLOCK_SIZE // _SMALL_BLOCK_SIZE  # S = 2
@@ -901,10 +906,14 @@ def test_ut3174_s2_wrong_source_capture() -> None:
     last_tail_argmax = int(cap_on[1]["tail"].argmax())
     assert first_tail_argmax != last_tail_argmax
     # The stash used at the block-0 advance seam is bitwise the LAST small
-    # block's batched winner-row tail, recomputed from the recorded MFF out.
+    # block's batched winner-row UNSHIFTED tail (AR033 R1 erratum:
+    # raw[T-1] — the row predicting position T), recomputed from the
+    # recorded MFF out. (At this fixture the winner row's last two tokens
+    # coincide, so the shifted variant is bitwise equal too — the formula
+    # pin documents the convention; see the docstring.)
     batched_on = _batched_calls(mff_on)
     assert len(batched_on) == len(cap_on)
-    expected_tail = right_shift_logits(batched_on[1]["out"])[cap_on[1]["j_star"], -1:, :]
+    expected_tail = batched_on[1]["out"][cap_on[1]["j_star"], -1:, :]
     assert torch.equal(cap_on[1]["tail"], expected_tail)
     # Exact-lookup head: the on-arm (stash advance) and off-arm (serial
     # advance) decodes are bitwise equal.

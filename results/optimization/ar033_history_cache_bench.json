@@ -1,0 +1,719 @@
+{
+  "arms": {
+    "baseline": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 21188.422720017843,
+          "n": 30,
+          "p50": 20403.491400065832,
+          "std": 4669.109207284543
+        },
+        "prompt1": {
+          "mean": 30247.159889980685,
+          "n": 30,
+          "p50": 29401.38594992459,
+          "std": 6462.6993096520455
+        }
+      },
+      "whole_gen_ms": {
+        "mean": 25717.791304999264,
+        "n": 60,
+        "p50": 25592.189349990804,
+        "std": 7231.784797467342
+      }
+    },
+    "cache-cross": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 20897.94353333612,
+          "n": 30,
+          "p50": 19719.536149990745,
+          "std": 4234.24432062371
+        },
+        "prompt1": {
+          "mean": 20696.41042999768,
+          "n": 30,
+          "p50": 19590.470650000498,
+          "std": 4306.793348602276
+        }
+      },
+      "whole_gen_ms": {
+        "mean": 20797.1769816669,
+        "n": 60,
+        "p50": 19702.98190001631,
+        "std": 4271.86152105669
+      }
+    },
+    "cache-full": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 19059.279130007297,
+          "n": 30,
+          "p50": 17505.802500003483,
+          "std": 3935.583795858935
+        },
+        "prompt1": {
+          "mean": 16814.05201666057,
+          "n": 30,
+          "p50": 15892.31289998861,
+          "std": 3444.1143032131704
+        }
+      },
+      "whole_gen_ms": {
+        "mean": 17936.665573333932,
+        "n": 60,
+        "p50": 16584.431300056167,
+        "std": 3864.6646389485463
+      }
+    },
+    "official": {
+      "per_prompt_ms": {
+        "prompt0": {
+          "mean": 55915.48012334388,
+          "n": 30,
+          "p50": 54260.61614998616,
+          "std": 8095.118594299253
+        },
+        "prompt1": {
+          "mean": 1730.5412033301156,
+          "n": 30,
+          "p50": 1631.1347999726422,
+          "std": 269.8216552726405
+        }
+      },
+      "whole_gen_ms": {
+        "mean": 28823.010663336998,
+        "n": 60,
+        "p50": 25261.656899994705,
+        "std": 27691.22199961781
+      }
+    }
+  },
+  "canary": {
+    "faces": {
+      "b1_degraded_zero": true,
+      "b2_degraded_zero": true,
+      "b_armed_engaged": true
+    },
+    "pass": true
+  },
+  "hypotheses_declared": {
+    "h1": "quality alignment (each B arm vs A): (a) per-prompt decode lengths strictly equal; (b) generated-region token consistency rate >= 0.98 (B1 expected 1.0 on the P3 bit-exact basis, B2's P4 drift absorbed by the threshold); (c) merged posthoc overall-confidence gap <= 0.01; any None face value refutes that face",
+    "h2": "p50 speedup: p50(A)/p50(B1) > 1.0 AND p50(A)/p50(B2) > 1.0 strictly; every ratio against the official arm C is report-only (parity positioning, no gate); the merged two-sample std is report-only",
+    "h3": "integer ledgers: per (B arm, prompt) the history_cache_stats delta equals the class-wise reconstruction of the observed raw-forward traffic EXACTLY (all five counters, every call length matching its class geometry, degraded delta 0); the A arm's traffic is all full-canvas block-aligned calls; forward_tokens(B) < forward_tokens(A) per prompt and aggregate",
+    "h4": "honest ledger: the armed-path canary (both B arms: degraded delta == 0 everywhere, engagement > 0) AND the internal reproduction double-run strictly row-equal per (arm, prompt_index) -- a mismatch blocks ALL verdicts (the AR031 one-vote veto); a blocked C arm is a legal recorded outcome; overwrite protection refuses an existing formal artifact unless BOTH --force and --force-reason are given"
+  },
+  "hypotheses_verdicts": {
+    "h1": {
+      "faces": {
+        "cache-cross": {
+          "a_decode_lengths_equal": true,
+          "b_token_rate_ge_0.98": true,
+          "c_posthoc_gap_le_0.01": true
+        },
+        "cache-full": {
+          "a_decode_lengths_equal": true,
+          "b_token_rate_ge_0.98": true,
+          "c_posthoc_gap_le_0.01": true
+        }
+      },
+      "numbers": {
+        "cache-cross": {
+          "baseline_decode_lengths": [
+            34,
+            66
+          ],
+          "baseline_posthoc_mean": 0.470001,
+          "compared": 4,
+          "decode_lengths": [
+            34,
+            66
+          ],
+          "matched": 4,
+          "posthoc_gap": 0.0,
+          "posthoc_mean": 0.470001,
+          "token_rate": 1.0
+        },
+        "cache-full": {
+          "baseline_decode_lengths": [
+            34,
+            66
+          ],
+          "baseline_posthoc_mean": 0.470001,
+          "compared": 4,
+          "decode_lengths": [
+            34,
+            66
+          ],
+          "matched": 4,
+          "posthoc_gap": 0.0,
+          "posthoc_mean": 0.470001,
+          "token_rate": 1.0
+        }
+      },
+      "verdict": "supported"
+    },
+    "h2": {
+      "faces": {
+        "a_baseline_over_b1_gt_1": true,
+        "b_baseline_over_b2_gt_1": true
+      },
+      "numbers": {
+        "b1_ms": 19702.98190001631,
+        "b2_ms": 16584.431300056167,
+        "baseline_ms": 25592.189349990804,
+        "official_ms": 25261.656899994705,
+        "report_only_official_ratios": {
+          "b1_vs_official": 1.2821,
+          "b2_vs_official": 1.5232,
+          "official_vs_baseline": 1.0131
+        },
+        "rule": "supported iff p50(A)/p50(B1) > 1.0 AND p50(A)/p50(B2) > 1.0 strictly; official-arm ratios and sigmas are report-only",
+        "sigma_b1": 8399.25664639226,
+        "sigma_b2": 8199.655122529182,
+        "speedup_b1_vs_baseline": 1.2989,
+        "speedup_b1_vs_baseline_raw": 1.2988992975712785,
+        "speedup_b2_vs_baseline": 1.5431,
+        "speedup_b2_vs_baseline_raw": 1.5431454288037076
+      },
+      "verdict": "supported"
+    },
+    "h3": {
+      "faces": {
+        "a_full_canvas_structure": true,
+        "b1_ledger_identity": true,
+        "b1_lt_a": true,
+        "b2_ledger_identity": true,
+        "b2_lt_a": true
+      },
+      "numbers": {
+        "a_forward_tokens_total": 5280,
+        "b1_forward_tokens_total": 2208,
+        "b2_forward_tokens_total": 714,
+        "rule": "per (B arm, prompt): stats delta == class-wise reconstruction (5 counters exact + call-length geometry + degraded 0); A all full-canvas block-aligned; forward_tokens(B) < forward_tokens(A) per prompt and total"
+      },
+      "verdict": "supported"
+    },
+    "h4": {
+      "faces": {
+        "b1_degraded_zero": true,
+        "b2_degraded_zero": true,
+        "b_armed_engaged": true,
+        "reproduction_ok": true
+      },
+      "numbers": {
+        "canary_faces": {
+          "b1_degraded_zero": true,
+          "b2_degraded_zero": true,
+          "b_armed_engaged": true
+        },
+        "repro_rows": []
+      },
+      "verdict": "supported"
+    },
+    "overall": "supported"
+  },
+  "ledger": {
+    "per_prompt": [
+      {
+        "a_total": 2112,
+        "arm": "cache-cross",
+        "b_lt_a": true,
+        "b_total": 1088,
+        "identity": true,
+        "prompt_index": 0,
+        "reconstruction": {
+          "counts": {
+            "commit": 1,
+            "cross_slice": 32,
+            "prefill": 1
+          },
+          "max_call_len": 32,
+          "predicted": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "forward_tokens": 1088,
+            "prefill_forwards": 1,
+            "slice_forwards": 32
+          },
+          "structure_ok": true,
+          "total_tokens": 1088
+        },
+        "stats_delta": {
+          "block_rebuilds": 0,
+          "commit_forwards": 1,
+          "degraded_calls": 0,
+          "forward_tokens": 1088,
+          "prefill_forwards": 1,
+          "slice_forwards": 32
+        }
+      },
+      {
+        "a_total": 2112,
+        "arm": "cache-full",
+        "b_lt_a": true,
+        "b_total": 359,
+        "identity": true,
+        "prompt_index": 0,
+        "reconstruction": {
+          "counts": {
+            "block_rebuild": 1,
+            "commit": 1,
+            "prefill": 1,
+            "sb0_partial": 7,
+            "sb_partial": 23
+          },
+          "max_call_len": 32,
+          "predicted": {
+            "block_rebuilds": 1,
+            "commit_forwards": 1,
+            "forward_tokens": 359,
+            "prefill_forwards": 1,
+            "slice_forwards": 31
+          },
+          "structure_ok": true,
+          "total_tokens": 359
+        },
+        "stats_delta": {
+          "block_rebuilds": 1,
+          "commit_forwards": 1,
+          "degraded_calls": 0,
+          "forward_tokens": 359,
+          "prefill_forwards": 1,
+          "slice_forwards": 31
+        }
+      },
+      {
+        "a_structure_ok": true,
+        "arm": "baseline",
+        "prompt_index": 0,
+        "reconstruction": {
+          "all_full_canvas": true,
+          "block_aligned": true,
+          "by_canvas_len": {
+            "64": 33
+          },
+          "calls": 33,
+          "sum_iter_times_tcall": 2112,
+          "total_tokens": 2112
+        }
+      },
+      {
+        "a_total": 3168,
+        "arm": "cache-cross",
+        "b_lt_a": true,
+        "b_total": 1120,
+        "identity": true,
+        "prompt_index": 1,
+        "reconstruction": {
+          "counts": {
+            "commit": 1,
+            "cross_slice": 32,
+            "prefill": 1
+          },
+          "max_call_len": 64,
+          "predicted": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "forward_tokens": 1120,
+            "prefill_forwards": 1,
+            "slice_forwards": 32
+          },
+          "structure_ok": true,
+          "total_tokens": 1120
+        },
+        "stats_delta": {
+          "block_rebuilds": 0,
+          "commit_forwards": 1,
+          "degraded_calls": 0,
+          "forward_tokens": 1120,
+          "prefill_forwards": 1,
+          "slice_forwards": 32
+        }
+      },
+      {
+        "a_total": 3168,
+        "arm": "cache-full",
+        "b_lt_a": true,
+        "b_total": 355,
+        "identity": true,
+        "prompt_index": 1,
+        "reconstruction": {
+          "counts": {
+            "block_rebuild": 1,
+            "commit": 1,
+            "prefill": 1,
+            "sb0_partial": 7,
+            "sb_partial": 19
+          },
+          "max_call_len": 64,
+          "predicted": {
+            "block_rebuilds": 1,
+            "commit_forwards": 1,
+            "forward_tokens": 355,
+            "prefill_forwards": 1,
+            "slice_forwards": 27
+          },
+          "structure_ok": true,
+          "total_tokens": 355
+        },
+        "stats_delta": {
+          "block_rebuilds": 1,
+          "commit_forwards": 1,
+          "degraded_calls": 0,
+          "forward_tokens": 355,
+          "prefill_forwards": 1,
+          "slice_forwards": 27
+        }
+      },
+      {
+        "a_structure_ok": true,
+        "arm": "baseline",
+        "prompt_index": 1,
+        "reconstruction": {
+          "all_full_canvas": true,
+          "block_aligned": true,
+          "by_canvas_len": {
+            "96": 33
+          },
+          "calls": 33,
+          "sum_iter_times_tcall": 3168,
+          "total_tokens": 3168
+        }
+      }
+    ],
+    "totals": {
+      "a_forward_tokens": 5280,
+      "b1_forward_tokens": 2208,
+      "b2_forward_tokens": 714
+    }
+  },
+  "meta": {
+    "arm_configs": {
+      "baseline": {
+        "description": "the official Fast-dLLM v2 recipe as implemented in ActFold: full-canvas recompute, section-6.5 advance erratum applied (unshifted tail row)",
+        "folded_model": null,
+        "history_cache": false,
+        "history_small_block_cache": false
+      },
+      "cache-cross": {
+        "description": "cross-block history KV cache -- the EXACT face (T001 P3: maxdiff 0.0 vs the full canvas)",
+        "folded_model": null,
+        "history_cache": true,
+        "history_small_block_cache": false
+      },
+      "cache-full": {
+        "description": "cross-block + intra-block small-block KV cache -- the official-parity APPROXIMATE face (T001 P4: 0.3125 bf16 replace-path drift)",
+        "folded_model": null,
+        "history_cache": true,
+        "history_small_block_cache": true
+      },
+      "official": {
+        "description": "the checkpoint's own generate() (modeling.py:652-831) -- report-only parity positioning arm",
+        "native_generate": true,
+        "prompt": "raw unpadded ids (native mask-alignment semantics)",
+        "use_block_cache": true
+      }
+    },
+    "command": "python -m scripts.ar033_history_cache_bench --reps 30 --model-path D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "cuda_version": "12.1",
+    "device": "Quadro RTX 5000",
+    "geometry": {
+      "block_size": 32,
+      "note": "official v2 geometry for every arm (the AR019-AR032 lineage ran small_block_size=BLOCK -- cross-artifact p50/decode-length comparison invalid)",
+      "small_block_size": 8,
+      "temperature": 0.0,
+      "threshold": 0.95
+    },
+    "gpu_driver_version": "556.18",
+    "interleaving": "per-rep round-robin over the active arms; rep r starts at position r%n (anti-drift, WDDM fairness)",
+    "limitation_notes": [
+      "this bench moves every ActFold arm to the OFFICIAL v2 geometry (block_size=32, small_block_size=8); the AR019-AR032 lineage ran small_block_size=BLOCK, so cross-artifact p50 / decode-length comparison against pre-AR033 artifacts is INVALID (the #51 cross-rung timing caveat; schedule granularity changes the iteration structure by design)",
+      "the baseline arm carries the section-6.5 advance erratum fix (unshifted tail row raw[T-1]); its block-advance tokens are official-semantics, unlike every pre-AR033 multi-block artifact (whose A/B internal comparisons remain valid -- both arms carried the old convention)",
+      "B2's intra-block small-block cache is an official-parity APPROXIMATE face (T001 P4: 0.3125 bf16 kernel-path drift on the replace path); B1 (cross-block only) is the exact face (T001 P3: maxdiff 0.0, the basis for the expected 1.0 token rate); the UT fixture keeps both bit-pinned on fp32 CPU",
+      "the official arm C runs the checkpoint's native generate() on the RAW unpadded prompt (its own mask-alignment semantics); its p50 is report-only parity positioning, never a quality face",
+      "pad tokens are NOT excluded on the real remote model (eval unconditionally overwrites the external attention_mask with the pure block-causal mask -- the B5 erratum note); all arms share the semantics",
+      "timing follows the #39 wall-clock discipline (perf_counter + synchronize, warmup discarded, per-rep round-robin); the Windows WDDM display-driver mode does not lock clocks (#46) -- p50 over reps with interleaving is the noise mitigation",
+      "the raw-forward recorder adds one host-only Python frame per forward, installed uniformly across all arms (shared perturbation)"
+    ],
+    "model": "Fast-dLLM-v2-1.5B (Efficient-Large-Model, remote code)",
+    "model_details": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "official_arm": {
+      "probe": {
+        "reason": "",
+        "signature_params": [
+          "block_size",
+          "input_ids",
+          "kwargs",
+          "mask_id",
+          "max_length",
+          "max_new_tokens",
+          "output_hidden_states",
+          "output_scores",
+          "return_dict_in_generate",
+          "small_block_size",
+          "stop_token",
+          "stopping_criteria",
+          "temperature",
+          "threshold",
+          "tokenizer",
+          "top_p",
+          "use_block_cache"
+        ],
+        "supported": true
+      },
+      "ran": true,
+      "status": "ran",
+      "tokenizer_ids": {
+        "mask_token_id": 151665,
+        "pad_token_id": 151643,
+        "stop_token_id": 151645
+      }
+    },
+    "prompts": {
+      "blocks": 4,
+      "count": 2,
+      "num_tokens": 128,
+      "padded_token_lens": [
+        32,
+        64
+      ],
+      "raw_token_lens": [
+        21,
+        37
+      ],
+      "texts": [
+        "Explain the key ideas of the theory of relativity in a few short sentences for a general audience.",
+        "The ocean appears blue because water absorbs red light more strongly than blue light. Describe how photosynthesis works in plants, why chlorophyll matters, and list the first five prime numbers."
+      ]
+    },
+    "quick": false,
+    "recorder_note": "the raw-forward recorder wraps the remote module's forward at the instance level (pinned __signature__, probe-exact); host metadata only, installed uniformly across arms",
+    "reproduction_declaration": "the untimed sidecar generation runs TWICE per (arm, prompt); pass A records the quality faces and ledgers, and pass B must be strictly payload-equal on every (arm, prompt) row (decode length + the full committed token list); any mismatch blocks ALL verdicts (the AR031 one-vote veto); the check binds quick and formal alike",
+    "reps": 30,
+    "run_date_utc": "2026-10-24T06:42:54.900301+00:00",
+    "seed": 2026,
+    "single_run_discipline": "pre-committed single-shot verdict, no rerun fishing",
+    "t001_probe_results": {
+      "p1_remote_cache_kwargs": "all accepted as named parameters: use_cache / past_key_values / update_past_key_values / block_size / use_block_cache / block_past_key_values / replace_position",
+      "p2_advance_convention": "teacher-forcing hit_next(R1)=0.9028 / hit_self(R2)=0.0000 -- the unshifted tail row is the official advance convention",
+      "p3_cache_row_alignment": "prefill/slice cache forward vs full canvas maxdiff=0.000000 (bitwise exact), argmax match 1.0 -- the cross-block history cache is exact on this checkpoint",
+      "p4_block_replace_path": "block-cache partial forward maxdiff=0.3125 -- sdpa kernel-path numerical drift under mask-semantics-equivalent calls (bf16 28-layer accumulation)"
+    },
+    "timing_method": "host perf_counter + torch.cuda.synchronize (#39); whole-generation wall clock; the quality sidecar (posthoc re-scoring, match grids, ledger reconstruction) runs only on the untimed passes",
+    "torch_version": "2.5.1+cu121",
+    "transformers_version": "4.53.1",
+    "venv": true,
+    "warmup_strategy": "one full discarded sample per (arm, prompt) before any timing; the untimed sidecar pass A records the quality faces and the integer ledgers, pass B is the internal reproduction self-check"
+  },
+  "quality": {
+    "faces": {
+      "cache-cross": {
+        "baseline_decode_lengths": [
+          34,
+          66
+        ],
+        "baseline_posthoc_mean": 0.470001,
+        "compared": 4,
+        "decode_lengths": [
+          34,
+          66
+        ],
+        "decode_lengths_equal": true,
+        "matched": 4,
+        "posthoc_gap": 0.0,
+        "posthoc_mean": 0.470001,
+        "token_rate": 1.0
+      },
+      "cache-full": {
+        "baseline_decode_lengths": [
+          34,
+          66
+        ],
+        "baseline_posthoc_mean": 0.470001,
+        "compared": 4,
+        "decode_lengths": [
+          34,
+          66
+        ],
+        "decode_lengths_equal": true,
+        "matched": 4,
+        "posthoc_gap": 0.0,
+        "posthoc_mean": 0.470001,
+        "token_rate": 1.0
+      }
+    },
+    "per_arm_sidecar": [
+      {
+        "official_decode_length": 129,
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "cache-cross": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "cache-full": {
+            "overall_mean": 0.369661,
+            "overall_min": 0.150954,
+            "per_block": {
+              "block0": {
+                "mean": 0.369661,
+                "min": 0.150954
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "official_decode_length": 38,
+        "posthoc_confidence": {
+          "baseline": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "cache-cross": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          },
+          "cache-full": {
+            "overall_mean": 0.570341,
+            "overall_min": 0.275356,
+            "per_block": {
+              "block0": {
+                "mean": 0.570341,
+                "min": 0.275356
+              },
+              "block1": null,
+              "block2": null,
+              "block3": null
+            }
+          }
+        },
+        "prompt_index": 1
+      }
+    ],
+    "per_prompt": [
+      {
+        "block_match_counts": {
+          "cache-cross": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "cache-full": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 34,
+          "cache-cross": 34,
+          "cache-full": 34,
+          "official": 129
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.369661,
+          "cache-cross": 0.369661,
+          "cache-full": 0.369661
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_match_counts": {
+          "cache-cross": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "cache-full": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 66,
+          "cache-cross": 66,
+          "cache-full": 66,
+          "official": 38
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.570341,
+          "cache-cross": 0.570341,
+          "cache-full": 0.570341
+        },
+        "prompt_index": 1
+      }
+    ]
+  },
+  "reproduction": {
+    "mismatches": [],
+    "mode": "internal-double-run",
+    "ok": true,
+    "rows_compared": 8
+  },
+  "schema": "ar033_history_cache_bench",
+  "schema_version": 1,
+  "speedups_p50": {
+    "b1_vs_baseline": 1.2989,
+    "b2_vs_b1": 1.188,
+    "b2_vs_baseline": 1.5431,
+    "report_only": {
+      "b1_vs_official": 1.2821,
+      "b2_vs_official": 1.5232,
+      "official_vs_baseline": 1.0131
+    }
+  }
+}

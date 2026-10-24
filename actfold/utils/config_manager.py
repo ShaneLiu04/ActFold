@@ -176,6 +176,13 @@ class ActFoldConfig:
     # operational field and its True+N=0 construction-time validation live
     # on FastDLLMSamplerConfig.
     speculative_advance_reuse: bool = False
+    # AR033: YAML consumption faces for the block-causal history cache.
+    # Same consumption-only pattern: the operational fields and their
+    # validations live on FastDLLMSamplerConfig (the sampler probes the
+    # wrapped model's forward signature and fails fast when the cache
+    # kwargs are unsupported).
+    history_cache: bool = False
+    history_small_block_cache: bool = False
 
     def __post_init__(self) -> None:
         if self.max_new_tokens <= 0:

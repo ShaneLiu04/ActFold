@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1465 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线 1463 + 2 例 deep-experiments 回归 UT `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复 8f133ac 随带）
+# 4) 整仓质量门：期望 1480 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线 1463 + 2 例 deep-experiments 回归 UT `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复 8f133ac 随带 + 15 例 AR033 套件 UT-3301~3307）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -421,6 +421,47 @@ python -m scripts.ar030_paged_agent_bench --quick
 #      （AR032，eager 臂）——WDDM 主机状态噪声 + 执行模式差异；同 run
 #      A/B 比值内部有效，跨工件绝对值不可直接比（AR032 工件内部：
 #      off_vs_baseline 6.19×、on_vs_baseline 7.9698×、on_vs_off 1.2875×）。
+# 21) AR033 block-causal 精确历史缓存四臂基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#     a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录
+#        （--model-path 或环境变量 FASTDLLM_MODEL_PATH）；判定函数冻结于脚本内
+#        （数据收集前预注册；预承诺单次纪律，不重跑钓鱼）
+#     b) quick 冒烟（reps=3/单 prompt/64 token，独立 _quick 工件）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar033_history_cache_bench `
+#     --quick --model-path <本地权重目录>
+#     c) 正式面（reps=30、**官方 v2 几何 num_tokens=128/block=32/small_block=8**、
+#        2 prompts 四臂；本机 16GB WDDM 实测 ~3.5h，warmup 8 + sidecar
+#        (A/B 各 8 代) + 30 reps×2 prompts×4 臂 ≈264 代；#39 计时 +
+#        round-robin 交错 + 逐 (arm,prompt) 双跑 reproduction（失配 ⇒ 全部
+#        verdict blocked，一票否决）；正式工件覆盖保护：默认路径已存在
+#        拒绝 rc=4，--force 须配 --force-reason（rc=3），理由入审计日志）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar033_history_cache_bench `
+#     --model-path <本地权重目录> --reps 30
+#     工件：results/optimization/ar033_history_cache_bench.json
+#     （四臂 = A 非缓存基线臂（FastDLLMSampler 官方路径全量重算，即
+#      AR016-AR032 阶梯的既有对照物——strawman 勘误后称谓重述）/ B1
+#      history_cache 跨块位级面 / B2 B1+块内 sub-block 缓存（官方 :102/:108
+#      边界失效规则）/ C 官方原生 batch_sample 参照臂（report-only，喂 RAW
+#      未填充 prompt，官方自带 mask 对齐语义，仅计时定位，无质量面）；
+#      H1 质量对齐（gap ≤1e-3 + decode 全臂一致 + token rate ≥0.98）；
+#      H2 p50(A)/p50(B1) 与 p50(A)/p50(B2) 均 >1.0 严格（C 比值 report-only）；
+#      H3 raw-call recorder 七类分类 + 类几何断言重建 token 账本与计数器
+#      预测精确恒等 + A 臂全量画布结构面 + degraded==0；H4 canary 合取 +
+#      repro 双跑严格相等）
+#     对照数字：H1-H4 全 supported——H1 gap 0.0、decode [34,66] 四臂一致、
+#      token rate 1.0（4/4）；H2 B1 1.2989× / B2 1.5431×（25592.2 /
+#      19703.0 / 16584.4ms p50，B2 vs B1 1.188×）；H3 账本 A=5280/B1=2208/
+#      B2=714 tokens（B2/A=0.1352，p0 分类 {prefill:1, cross_slice:32,
+#      commit:1}、sb 臂 {rebuild:1, sb0_partial:7, sb_partial:23}）；H4
+#      canary 全绿（degraded 0、armed engaged）+ repro 8/8；C report-only：
+#      B1/B2 快于官方 1.2821×/1.5232×、official_vs_baseline 1.0131×
+#      （25261.7ms）
+#     几何隔离注记（重要）：本基准用官方 v2 几何 sb=8（A/B 质量对必须共享
+#      官方调度语义），与 pre-AR033 血缘工件（sb=32）不可跨工件比较
+#      p50/decode 长度；baseline 臂计时含 block_timer.note 消隐（消除 A 臂
+#      wrapper 每块 sync 的反保守偏置——B 臂走裸模块无 sync）。strawman
+#      勘误：官方 v2 batch_sample 本就是分层缓存配方（:37/:81/:102/:108/:111），
+#      既有阶梯加速比全部重述为 vs 非缓存 block-diffusion 基线臂（叙事级，
+#      冻结工件零回改，详见 AGENTS #52 基线口径律）。
 ```
 
 ## 4. 方法学要求（重跑必须满足）
