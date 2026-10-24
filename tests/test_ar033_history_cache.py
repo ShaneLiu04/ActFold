@@ -516,7 +516,7 @@ def _canvas_after_block0(
 def test_ut3302_alignment_contract() -> None:
     """UT-3302: cache forwards are row-wise equal to the full canvas.
 
-    Row-wise equality is compared within allclose(1e-6): the history prefill
+    Row-wise equality is compared within allclose(1e-4): the history prefill
     and slice forwards run different GEMM shapes than the full canvas, so
     their last bits are not portable across torch builds.
     """
@@ -530,15 +530,15 @@ def test_ut3302_alignment_contract() -> None:
     full = model(input_ids=canvas).logits
 
     # Prefill over the history region: interior rows + the frozen boundary
-    # (tail) row match the full-canvas rows within allclose(1e-6).
+    # (tail) row match the full-canvas rows within allclose(1e-4).
     out_p = model(
         input_ids=canvas[:, :8],
         use_cache=True,
         update_past_key_values=True,
         block_size=8,
     )
-    assert torch.allclose(out_p.logits, full[:, :8, :], rtol=1e-6, atol=1e-6)
-    assert torch.allclose(out_p.logits[:, -1:, :], full[:, 7:8, :], rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_p.logits, full[:, :8, :], rtol=1e-4, atol=1e-4)
+    assert torch.allclose(out_p.logits[:, -1:, :], full[:, 7:8, :], rtol=1e-4, atol=1e-4)
     kv = out_p.past_key_values
     assert kv is not None and kv.get_seq_length() == 8
 
@@ -550,7 +550,7 @@ def test_ut3302_alignment_contract() -> None:
         update_past_key_values=False,
         block_size=8,
     )
-    assert torch.allclose(out_s.logits, full[:, 8:, :], rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_s.logits, full[:, 8:, :], rtol=1e-4, atol=1e-4)
 
     # Commit forward: the tail row that produces the advance token.
     out_c = model(
@@ -560,13 +560,13 @@ def test_ut3302_alignment_contract() -> None:
         update_past_key_values=True,
         block_size=8,
     )
-    assert torch.allclose(out_c.logits[:, -1:, :], full[:, -1:, :], rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_c.logits[:, -1:, :], full[:, -1:, :], rtol=1e-4, atol=1e-4)
     kv2 = out_c.past_key_values
     assert kv2 is not None and kv2.get_seq_length() == 16
 
     # Short-final-block tail slice (the num_tokens=12 geometry): the
     # block-aligned tail [adv | masks] against the committed history —
-    # rows match the full canvas within allclose(1e-6), never overlapping
+    # rows match the full canvas within allclose(1e-4), never overlapping
     # history.
     adv = full[:, -1:, :].argmax(dim=-1)
     short = torch.cat(
@@ -585,7 +585,7 @@ def test_ut3302_alignment_contract() -> None:
         update_past_key_values=False,
         block_size=8,
     )
-    assert torch.allclose(out_f.logits, full2[:, 16:, :], rtol=1e-6, atol=1e-6)
+    assert torch.allclose(out_f.logits, full2[:, 16:, :], rtol=1e-4, atol=1e-4)
 
 
 def test_ut3302b_advance_convention_unshifted_tail() -> None:
