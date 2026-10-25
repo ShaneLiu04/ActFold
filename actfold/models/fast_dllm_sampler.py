@@ -155,6 +155,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
     free_verify_floor: float = 0.3
     remask_fallback: bool = False
     remask_fallback_threshold: float = 0.5
+    commit_chunk_size: int = 0
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -230,6 +231,16 @@ class FastDLLMSamplerConfig(SamplerConfig):
                     "speculative_commit_gate=True (the gated commit changes the "
                     "committed set; ACB assumes whole-block commit)."
                 )
+        if self.commit_chunk_size < 0:
+            raise ValueError(f"commit_chunk_size must be >= 0, got {self.commit_chunk_size}")
+        if self.commit_chunk_size > 0 and not (
+            self.history_cache and self.num_block_candidates > 0
+        ):
+            raise ValueError(
+                "commit_chunk_size > 0 requires history_cache=True and "
+                "num_block_candidates > 0 (chunked commit is a composition-arm "
+                "in-block progressive unmasking scheme)."
+            )
         if self.remask_fallback and not (self.history_cache and self.num_block_candidates > 0):
             raise ValueError(
                 "remask_fallback=True requires history_cache=True and "
@@ -480,6 +491,7 @@ class FastDLLMSampler(DiffusionSampler):
         self._hc_free_verify_low_conf = 0
         self._fv_rearm = False
         self._hc_remask_fallbacks = 0
+        self._hc_spec_chunk_forwards = 0
         self._hc_remask_fallback_blocks: set[int] = set()
         self._hc_fusion_disabled = False
         self._hc_draft_stash: dict[str, Any] | None = None
@@ -554,6 +566,7 @@ class FastDLLMSampler(DiffusionSampler):
             "free_verify_blocks": self._hc_free_verify_blocks,
             "free_verify_low_conf": self._hc_free_verify_low_conf,
             "spec_remask_fallbacks": self._hc_remask_fallbacks,
+            "spec_chunk_forwards": self._hc_spec_chunk_forwards,
         }
 
     def _probe_history_cache_support(self) -> _HistoryCacheSupport:
@@ -1089,6 +1102,49 @@ class FastDLLMSampler(DiffusionSampler):
             self._hc_remask_fallback_blocks.add(int(block_idx))
             self._hc_remask_fallbacks += 1
             return False
+
+        chunk = int(getattr(cfg, "commit_chunk_size", 0))
+        if chunk > 0 and num_masked > 0:
+            # AR042: progressive in-block unmasking. Each round fills the
+            # `chunk` most confident still-masked positions, then the block is
+            # re-forwarded (bidirectional in-block attention lets later rounds
+            # see the earlier fills). chunk=1 ~ per-position unmasking,
+            # chunk>=masks ~ the one-shot commit.
+            fill = block_view.clone()
+            remaining = masked_local
+            cur_logits = small_logits
+            while int(remaining.shape[0]) > 0:
+                probs = F.softmax(cur_logits[0].float(), dim=-1)
+                tok = cur_logits[0].argmax(dim=-1)
+                p = probs[remaining, tok[remaining]]
+                take = min(chunk, int(remaining.shape[0]))
+                order = torch.argsort(p, descending=True)[:take]
+                chosen = remaining[order]
+                fill[0, chosen + sb_lo] = tok[chosen]
+                keep = torch.ones(remaining.shape[0], dtype=torch.bool, device=remaining.device)
+                keep[order] = False
+                remaining = remaining[keep]
+                if int(remaining.shape[0]) == 0:
+                    break
+                x[:, start:end] = fill[:, sb_lo:sb_hi]
+                out = raw_model(
+                    input_ids=x[:, -active_len:],
+                    use_cache=True,
+                    past_key_values=kv,
+                    update_past_key_values=False,
+                    block_size=bs,
+                )
+                a2 = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+                if win_offset > 0:
+                    a2 = torch.cat([a2.new_zeros((B, win_offset, a2.shape[-1])), a2], dim=1)
+                cur_logits = a2[:, sb_lo:sb_hi]
+                self._hc_spec_chunk_forwards += 1
+                self._hc_forward_tokens += active_len
+            x[:, start:end] = fill[:, sb_lo:sb_hi]
+            finished |= (x[:, start:end] == stop_id).any(dim=1)
+            if cfg.return_history:
+                history.append(x.clone())
+            return True
 
         if bool(getattr(cfg, "verification_free_commit", False)) and num_masked > 0:
             if self._fv_rearm:

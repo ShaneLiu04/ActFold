@@ -111,6 +111,7 @@ def test_ut3504_ledger_schema() -> None:
         "free_verify_blocks",
         "free_verify_low_conf",
         "spec_remask_fallbacks",
+        "spec_chunk_forwards",
     }
 
 

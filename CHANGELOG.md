@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR042 — 分块提交（CBC）：中间地带实测为混沌，H1 单调性被证伪
+
+- 新增 `commit_chunk_size`（默认 0）：块内渐进解掩（每轮填最高置信 chunk 位 + 重前向该块），账本 `spec_chunk_forwards`。
+- 实测（3 prompts × 160 token，chunk∈{4,8,16,32}）：质量与 chunk **无单调关系**，最优 chunk 逐 prompt 漂移，
+  同一 chunk 可远优于基线（p2 C16 −0.3138）或灾难性更差（p2 C32 −2.1406、p3 C16 −2.8313）。
+- C32 ≈ VFG，与 AR039/AR040 自洽（实现正确）。结论：默认关、仅作消融，不可作为质量旋钮；
+  质量安全仍走 AR041 回退档。
+- UT-4201~4205；全量 **1524 passed / 4 skipped**。
+
 ### AR041 — 置信度触发重掩码回退（CTR-F）：质量安全模式
 
 - 新增 `remask_fallback`（默认关）+ `remask_fallback_threshold`：低置信块回退到官方阈值重掩码迭代

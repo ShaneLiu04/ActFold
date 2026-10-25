@@ -884,3 +884,15 @@ Runs A and D once per prompt, then the fallback arm at each threshold. Expected 
 (3 prompts x 160 tokens): A 107-192 s with logp -1.1528 / -0.8482 / -0.8086; D 10-15 s with
 -1.3118 / -0.9904 / -1.5370; R at tau >= 0.2 falls back on all blocks and reproduces A's logp
 exactly at 77-134 s. At tau = 0.1 prompt 2 releases one block and degrades to -0.8914.
+
+### 4.5l AR042 chunked-commit Pareto probe
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar042_chunked_commit_probe --chunks 4,8,16,32
+```
+
+Runs A, D and the chunked arm at each chunk size per prompt, printing ms / mean log p / chunk-forward
+count. Expected reference numbers: A 87-135 s; D ~8 s; C4 23 s; C8 13 s; C16 ~8 s; C32 ~5 s, with
+log p bouncing wildly across chunks (no monotone trade-off). Use it as an ablation map, not a tuning
+recipe.

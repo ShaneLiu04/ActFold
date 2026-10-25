@@ -679,3 +679,14 @@ Cost: the baseline arm dominates (~2-3 min per prompt under contention). Expecte
 `logp` equals the A arm's on every prompt (bit-identical), `fb` equals the block count at
 tau >= 0.2, and at tau = 0.1 one prompt releases a block and `logp` degrades. This is the
 quality-safe mode used by the README's recommendation table.
+
+## 30. AR042 chunked-commit Pareto (host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar042_chunked_commit_probe --chunks 4,8,16,32
+```
+
+Cost: ~6-8 min per prompt (the baseline arm dominates). Expected: `cf` equals the re-forward count
+(35 / 15 / 5 / 0 for chunks 4 / 8 / 16 / 32 across the 7 blocks) and log p values that do NOT trend
+with chunk size. C32 must match the AR039 V-arm numbers closely.
