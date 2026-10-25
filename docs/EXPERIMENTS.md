@@ -240,6 +240,26 @@ isolation: sb=8 arms are NOT cross-artifact comparable with the pre-AR033
 lineage (sb=32). See `docs/RERUN_CHECKLIST.md` step 21 for the full
 protocol.
 
+### 4.5d KV-Cached Speculative Block-Decoding Four-Arm Benchmark (AR034)
+
+```bash
+# AR019 venv (transformers==4.53.1) + local Fast-dLLM-v2-1.5B weights
+<venv>\Scripts\python.exe -X utf8 -m scripts.ar034_kv_speculative_bench `
+    --model-path <weights-dir> --reps 30        # --quick smoke first
+```
+
+Four arms on the AR022-lineage geometry (block=32, small_block=32): A
+non-cached baseline / B2 AR033 cache / D composition (`history_cache` +
+`num_block_candidates=4` + greedy anchoring) / C native `batch_sample`
+(report-only, RAW prompt). H1-H4 are frozen before data collection; the class
+ledger plus a forward-count comparison (D < B2) is H3; a reproduction mismatch
+blocks all verdicts. Expected (pre-committed single run, ~2.5h on the 16GB WDDM
+host): overall **supported** -- H1 gap 0.0 / decode [34, 66] / token rate 1.0;
+H2 **8.7308x vs A** and **6.9743x vs B2**; H3 D 8 forwards vs B2 62; H4
+canary green + repro 8/8. Geometry law: `small_block_size` must equal
+`block_size` (at sb=8 random rows can beat the greedy row, T007). See
+`docs/RERUN_CHECKLIST.md` step 22.
+
 ### 4.6 Ablation Studies
 
 ```bash
@@ -774,3 +794,93 @@ rollout, dual-metric, pre-committed, `reps>=30`) first requires a new
 `run_formal_queue` FaceSpec plus a >=24 GiB quiet GPU server; see
 `docs/RERUN_CHECKLIST.md` step 18 for the unblocking conditions and the
 protocol draft.
+
+### 4.5e AR035 gated speculative commit (cost/quality knob)
+
+`python -m scripts.ar035_gated_spec_bench --quick` (three arms A/D/G, block=32/sb=32, 64 tokens,
+reps=2, tau=0.95). Quick artifact: `results/optimization/ar035_gated_spec_bench_quick.json`.
+Frozen gates: H1 quality (token-exact vs A, mask-free), H2 cost (A/G > 1.0, G/D published),
+H3 ledger (`spec_gated_iterations == spec_verify_forwards > 0`, no degraded calls), H4 repro
+double-run equality blocking all verdicts on mismatch. Quick outcome: H1/H3/H4 supported,
+**H2 refuted** (A/G 0.7385, G/D 9.5832). Never cite the quick artifact as a speedup claim.
+
+### 4.5f AR036 commit-draft fusion (A/D/F)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar036_commit_draft_fusion_bench --quick `
+  --num-tokens 160 --no-eos --prompt-text "Write a long detailed technical explanation of ..."
+```
+
+Three arms A (non-cached baseline) / D (AR034 composition) / F (D + `commit_draft_fusion`), frozen
+H1-H4 (H2 threshold `p50(D)/p50(F) >= 1.15`). **Geometry requirement**: ordinary prompts early-stop
+at ~34 tokens (one block), so fusion never triggers; `--num-tokens 160 --no-eos` gives 5 blocks and
+`stop_token_id=-1` disables early exit. Quick artifact:
+`results/optimization/ar036_commit_draft_fusion_bench_quick.json`; formal:
+`ar036_commit_draft_fusion_bench.json` (reps=30, quiet server). `--arms` subsets write a `smoke`
+payload without verdicts.
+
+### 4.5g AR037 long-horizon measurement + adaptive candidate budget
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar037_long_quality_probe            # A vs D, 192 tokens
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion
+```
+
+EOS is disabled inside the probes (`stop_token_id=-1`). Report **mean log p under the same model**
+as the quality metric — never token agreement with the baseline at long horizons (whole-block
+greedy commit legitimately diverges from thresholded remasking). Expected reference host numbers:
+A 172.4s / D 18.3s / D+CDF 16.0s / D+CDF+ACB(tau=0.5) 11.8s, all composed arms at log p -2.0870.
+Sweep tau in {0.9, 0.7, 0.5}: 0% / 33% / 50% skip rates on the reference prompt.
+
+### 4.5h AR038 confidence-scheduled cascade (escalation ablation)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion `
+  --escalate --escalate-threshold 0.9 --escalate-candidates 8
+```
+
+Expected reference numbers (real checkpoint, Quadro RTX 5000): ACB+CDF 11.84 s / 3 skips;
+D+CDF 16.02 s; escalation N=8 23.35 s — **all at mean log p -2.0870**. Escalation is therefore an
+ablation, not a feature: do not enable it in production configs.
+
+### 4.5i AR039 free verification + verification-free greedy commit
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion --vfg
+```
+
+Runs three arms in one pass (D = CDF, S = ACB+CDF, V = VFG+CDF). Expected reference numbers:
+D 14.50s / S 10.16s / V 8.84s, all at mean log p -2.0870; V shows
+`vfg=4 fv=4/2 verify=2` (four verification-free blocks, two free-verify re-arms).
+
+### 4.5j AR040 matrix benchmark (prompt × length, four arms)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar040_matrix_bench --quick     # 3 prompts x 160, ~8 min
+<venv>\Scripts\python.exe -m scripts.ar040_matrix_bench             # 6 prompts x {160,320}, ~2 h
+```
+
+Frozen gates: H1 quality cells (logp(V) >= logp(A) - 0.05 on >=90% cells), H2 median speedup >=10x
+and V<S<D ordering on >=80% cells, H3 V-arm ledger identities, H4 per-cell V reproduction.
+Quick result on the reference host: **H1 1/3, H2 ordering 1/3, H3/H4 pass -> refuted**, with median
+speedup 16.17x. The lesson is in the artifact, not just the verdict: speed generalizes, quality does
+not — always report both, per prompt.
+
+### 4.5k AR041 remask fallback threshold sweep
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar041_remask_fallback_probe --thresholds 0.5,0.3,0.2,0.1
+```
+
+Runs A and D once per prompt, then the fallback arm at each threshold. Expected reference numbers
+(3 prompts x 160 tokens): A 107-192 s with logp -1.1528 / -0.8482 / -0.8086; D 10-15 s with
+-1.3118 / -0.9904 / -1.5370; R at tau >= 0.2 falls back on all blocks and reproduces A's logp
+exactly at 77-134 s. At tau = 0.1 prompt 2 releases one block and degrades to -0.8914.

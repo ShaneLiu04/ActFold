@@ -4,6 +4,118 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR041 — 置信度触发重掩码回退（CTR-F）：质量安全模式
+
+- 新增 `remask_fallback`（默认关）+ `remask_fallback_threshold`：低置信块回退到官方阈值重掩码迭代
+  （复用既有切片路径 + 块级闩锁），账本 `spec_remask_fallbacks`。
+- 实测（160 token，AR040 三 prompt）：回退档 logp 与基线**逐位相同**（−1.1528 / −0.8482 / −0.8086），
+  且快 1.38–1.53×（KV 缓存）→ **质量安全模式**。
+- 阈值标定：τ=0.5/0.3/0.2 在 15/15 块全部回退（块级最小值过于悲观）；τ=0.1 放行 1 块即掉质量
+  （p2 −0.8482→−0.8914）→ 速度与质量须显式二选一。
+- UT-4101~4104；全量 **1519 passed / 4 skipped**。
+
+### AR040 — 多 prompt × 多长度矩阵基准（速度鲁棒 / 质量有条件）
+
+- 新增 `scripts/ar040_matrix_bench.py`：真实长文 prompt 集 × 长度 × 四臂（A/D/S/V），同模型 mean log p 质量代理，
+  V 臂逐 cell 复现，冻结 H1-H4；`--quick` 与正式工件路径分离。
+- quick 实测（3×160）：中位加速 **16.17×**（3/3），但质量仅 **1/3** cell 达标 → **overall refuted**；
+  prompt-2/3 上连保留验证的 D/S 也劣于基线（−1.537 vs −0.809），VFG 在 p1 最优、p3 最差。
+- 结论修正：此前的「质量不降」为单 prompt 特例；默认推荐 D/S，VFG 需按 workload 复验。
+- 只读脚本，无采样语义变更；1515 tests 不变。
+
+### AR039 — 免费验证（FV）+ 无验证贪心提交（VFG）
+
+- 新增 `verification_free_commit`（默认关，须 CDF）/ `free_verify_floor`：置信时跳过 `[N,B]` 验证直接整块提交贪心草稿；
+  融合前向的决策行被复用为**零成本复评**，低置信即**再武装**下一块走完整验证。
+- **修复真实缺陷**：跳过路径此前未把草稿尾行 argmax 交接给 `_hc_pending_advance`，导致跳过块之后 CDF 静默失效；
+  修复后 ACB 自身 11.84 s → 10.16 s。
+- UT-3901~3905；全量 **1515 passed / 4 skipped**。
+- 实测（192 token）：VFG 8.84 s、logp −2.0870 与 ACB 逐位一致、6 块中 4 块免验证、2 次免费验证报警；
+  对非缓存基线 **19.5×**（ACB+CDF 14.6×）。
+
+### AR038 — 置信度分级验证调度（CSVC，升档档位为实测负面）
+
+- 新增 `candidate_budget_escalate` / `escalate_candidates` / `escalate_threshold`（默认关）：
+  与 AR037 的 skip 档共用块级置信度 `g_min`，三档分流 skip / standard / escalate；账本 `spec_budget_escalations`。
+- UT-3801~3805；全量 **1510 passed / 4 skipped**。
+- 实测（192 token）：升档 N=8 的 mean log p 与 N=4 **完全相同**（−2.0870），成本 **+46%**（23.35 vs 16.02 s）；
+  ACB+escalate 15.23 s 也劣于 ACB 单独 11.84 s → **escalate 档判定为无效档位（默认关，保留为消融证据）**。
+
+### AR037 — 长几何质量测量（推翻塌缩假设）+ 自适应候选预算（ACB）
+
+- **测量修正**：192/320 token 长几何（`stop_token_id=-1`）实测，逐位一致率 0.43/0.40 是轨迹分歧，
+  同模型 mean log p D **−2.0870 优于** A −2.1162 → README 限制项 14「多块长生成质量塌缩」**不成立**；
+  长几何真实加速 9.4×/10.0×（高于短几何 8.73×）。
+- **新机制** `adaptive_candidate_budget` + `candidate_budget_threshold`（默认关）：草稿仍掩码位最小概率达标即跳过
+  `[N,B]` 验证，账本 `spec_budget_skips`；与 AR035 门控互斥。
+- UT-3701~3704；全量 **1505 passed / 4 skipped**。
+- 实测（192 token）：τ=0.5 跳过率 50%，D+CDF 18.8→11.8 s（1.35×），log p 逐位不变；全栈对基线 **14.6×**。
+- 探针脚本 `scripts/ar037_long_quality_probe.py` / `scripts/ar037_acb_probe.py`（含 `--fusion`）。
+
+### AR036 — 提交-草稿融合（CDF）
+
+- 新增 `FastDLLMSamplerConfig.commit_draft_fusion`（默认关；须 history_cache + 投机候选；与 `speculative_commit_gate` 互斥）：
+  一次 `[1,2B]` 前向同时提交第 b 块 KV 与计算第 b+1 块决策行，`_crop_history_kv` 裁掉多余 KV，草稿 stash 给下一块消费。
+- 探针 `scripts/ar036_cdf_probe.py`：P1/P2/P3 全部 maxdiff 0.0，P4 crop 可用。
+- UT-3601~3604（默认关零回归 / 无裁剪回退 / 融合账本恒等 / 非法组合）；全量 **1501 passed / 4 skipped**。
+- 基准 `scripts/ar036_commit_draft_fusion_bench.py`（A/D/F，H1-H4 冻结；`--no-eos`/`--prompt-text`/`--num-tokens` 为几何必需）。
+  冒烟：fused+draft==verify、192 token 同长、D/F 1.235×（单 rep，宿主争用）；formal reps=30 待静默服务器。
+
+### AR035 — 置信度门控投机提交（成本/质量旋钮，诚实负面）
+
+- 新增 `FastDLLMSamplerConfig.speculative_commit_gate`（默认关；须 history_cache + 投机候选同时开启）：
+  winner 行确定后只提交验证概率 ≥ `threshold` 的掩码位，空集时强制接受 argmax 位；账本增 `spec_gated_iterations`。
+- UT-3501~3505（6 例）：默认关零回归、确定性/mask-free、`threshold=1.1` 强制推进、账本 schema、非法组合 fail-fast；
+  AR033/AR034 的 stats 键集断言同步放宽到各自键面。全量 **1497 passed / 4 skipped**。
+- 三臂 bench `scripts/ar035_gated_spec_bench.py`（A/D/G，H1-H4 冻结）：快速面 H1/H3/H4 supported、**H2 refuted**
+  （p50 A/G 0.7385、G/D 9.5832，τ=0.95 把 1 轮提交打散成 ~12 轮）。定位为安全/保守度旋钮，不计入加速阶梯。
+
+### AR034: KV-Cached Speculative Block Decoding -- Cache x Speculation Composition (overall supported)
+
+#### Added
+- `FastDLLMSamplerConfig.history_cache=True` + `num_block_candidates>0` is now a
+  legal composition arm (the AR033 config-time exclusion is lifted; default off
+  stays byte-identical). Guards: `history_small_block_cache` / `folded_model` /
+  `uncertainty_validation_order` combinations raise `ValueError`.
+- `_history_speculative_small_block` (fast_dllm_sampler.py): whole-active-block
+  draft forward -> AR022-frozen candidate construction (row 0 greedy argmax,
+  frozen seed formula) -> `[N, block]` batched verify over the expanded read-only
+  history KV -> min-prob winner committed as a whole small block; the existing
+  `[1, block]` commit forward commits the KV and yields the advance token.
+- `_expand_history_kv(kv, n)`: explicit container rebuild + detached
+  `repeat_interleave` (no deepcopy; `batch_repeat_interleave` mutates in place).
+- `history_cache_stats` gains `spec_draft_forwards` / `spec_verify_forwards`.
+- `scripts/ar034_kv_speculative_bench.py`: four arms (A non-cached baseline /
+  B2 AR033 cache / D composition / C native `batch_sample` report-only) on the
+  AR022-lineage geometry (block=32, small_block=32), H1-H4 frozen before data
+  collection, class ledger + forward-count H3, one-vote repro blocking,
+  overwrite protection (rc=4/rc=3), `--quick` on a separate path.
+- UT-3401..3406 (11 tests, tests/test_ar034_kv_speculative.py): multi-geometry
+  determinism, forward-count identity + D < B2, `_expand_history_kv` copy
+  semantics and read-only history invariance, default-off zero regression, four
+  illegal-combination fail-fast faces, greedy-row participation.
+
+#### Evidence
+- Formal artifact `results/optimization/ar034_kv_speculative_bench.json`
+  (reps=30 pre-committed single run, ~2.5h, Quadro RTX 5000 16GB WDDM):
+  **overall supported** -- H1 gap 0.0 / decode [34, 66] / token rate 1.0
+  (posthoc 0.470001 == A); H2 **8.7308x vs A** and **6.9743x vs B2**
+  (28101.0 / 22447.4 / 3218.6ms p50; D 7.94x faster than the native
+  `batch_sample`, report-only); H3 D 8 forwards vs B2 62 (4 vs 31 per prompt),
+  token rows 288 vs 1952 vs A 4576, exact class ledger; H4 canary green +
+  repro 8/8.
+- Geometry finding (T007): at sb=8 the frozen min-prob rule lets random top-k
+  rows beat the greedy row (2/8 wins -> decode 96 vs 34, gap 0.398); N=1 greedy
+  and sb=32 are token-exact vs A. The committed geometry is hence
+  `small_block_size == block_size` (AR022-validated semantics).
+
+#### Changed (docs)
+- README full update: innovation row 19, deep-dive 18, latest-results headline,
+  ladder rung 15 + reading-caliber sentence, quality baseline **1491 passed**
+  (+11 AR034 UTs), quick-start snippet + step-22 command, roadmap item 17
+  (geometry boundary + roadmap items), docs refs. AGENTS #53 (composition
+  contract + geometry law), RERUN step 22, ALGORITHM 19, EXPERIMENTS 4.5d.
+
 ### AR033: Block-Causal Exact History Cache (Official v2 Parity) + Strawman Erratum (overall supported)
 
 #### Added

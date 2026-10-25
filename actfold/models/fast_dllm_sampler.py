@@ -17,14 +17,14 @@ AR021 production generation-loop folding:
 - FR1: ``_fold_ctx_for`` pins a per-``(T, prompt_len)`` fold context (the
   block-causal AND non-pad ``[T, T]`` attention mask built from host pad
   metadata, the model's own rotary ``position_embeddings`` or ``None``, and
-  the ``forced`` base tensor covering exactly the active block) — zero
+  the ``forced`` base tensor covering exactly the active block) —zero
   device readback, object-pinned across denoise iterations and ``sample``
   calls.
 - FR2: every folded forward (denoise iterations and the block-advance AR
   step) threads the pinned mask / rotary / forced trio through
   ``DiffusionSampler._forward``'s new tail parameters.
 - FR3: ``num_block_candidates > 0`` switches each small block to batched
-  speculative verification — one draft serial forward, one ``[N, T]``
+  speculative verification —one draft serial forward, one ``[N, T]``
   batched-branch call over top-k candidate fills (per-candidate seeds from
   the frozen formula), min-prob argmax selection, chain continuation onto
   the selected candidate branch, and baseline-identical stop-token
@@ -37,6 +37,7 @@ Reference:
 from __future__ import annotations
 
 import inspect
+import warnings
 from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any
@@ -67,7 +68,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
             candidates (top-k tokens of the draft logits). Consumed only
             when ``num_block_candidates > 0``.
         candidate_include_greedy: AR022 greedy anchoring. ``True`` pins
-            candidate row 0 to the greedy hypothesis — the still-masked
+            candidate row 0 to the greedy hypothesis —the still-masked
             small-block positions are filled with the draft's argmax (the
             top-k ordered-set first entry, by the srs-frozen definition)
             deterministically, with zero device readback and zero generator
@@ -79,7 +80,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
             state; ``True`` requires ``num_block_candidates > 0``.
         uncertainty_validation_order: AR031 FR4 opt-in uncertainty-aware
             validation order (the inline twin of the shared SpeculativeCore
-            face — see
+            face —see
             :class:`~actfold.models.llada_sampler.LLaDASamplerConfig`).
             ``True`` reorders the inline row scoring in prior-descending
             order (the same frozen draft-side prior) and may early-stop
@@ -94,7 +95,7 @@ class FastDLLMSamplerConfig(SamplerConfig):
             ``True`` replaces the speculative path's per-block
             block-advance serial forward with a read of the LAST small
             block's winning verification row's tail logits
-            (``next_token = argmax(tail)`` — the winner row's forward input
+            (``next_token = argmax(tail)`` —the winner row's forward input
             is bitwise the post-commit canvas, so its tail distribution is
             the advance distribution). Each block-advance-eligible block
             saves exactly one serial forward; the chain continues directly
@@ -111,20 +112,20 @@ class FastDLLMSamplerConfig(SamplerConfig):
             produces the block-advance token (the official modeling.py
             ``generate`` pattern). KV mechanics are delegated to the
             wrapped model's native cache kwargs (probed at dispatch;
-            missing support raises ``RuntimeError`` — never a silent
+            missing support raises ``RuntimeError`` —never a silent
             full-recompute fallback). ``False`` (the default) is
             byte-identical to the pre-AR033 official path. Mutually
             exclusive with ``num_block_candidates > 0`` and with a
-            ``folded_model`` (``ValueError`` — distinct compute
+            ``folded_model`` (``ValueError`` —distinct compute
             strategies).
         history_small_block_cache: AR033 intra-block small-block KV cache
             (the official ``use_block_cache`` mechanism, boundary-frozen
             rebuild rule: the small block's preceding-boundary token still
-            masked ⇒ whole-block cache rebuild). ``True`` requires
+            masked →whole-block cache rebuild). ``True`` requires
             ``history_cache=True``. NOTE (T001 P4 probe): the official
             replace path is NOT bit-exact against the full-canvas forward
             on the real checkpoint (sdpa kernel-path drift, maxdiff
-            0.3125 bf16) — the cross-block cache alone is the bit-exact
+            0.3125 bf16) —the cross-block cache alone is the bit-exact
             face (P3: maxdiff 0.0).
     """
 
@@ -143,6 +144,17 @@ class FastDLLMSamplerConfig(SamplerConfig):
     speculative_advance_reuse: bool = False
     history_cache: bool = False
     history_small_block_cache: bool = False
+    speculative_commit_gate: bool = False
+    commit_draft_fusion: bool = False
+    adaptive_candidate_budget: bool = False
+    candidate_budget_threshold: float = 0.9
+    candidate_budget_escalate: bool = False
+    escalate_candidates: int = 8
+    escalate_threshold: float = 0.3
+    verification_free_commit: bool = False
+    free_verify_floor: float = 0.3
+    remask_fallback: bool = False
+    remask_fallback_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -176,12 +188,13 @@ class FastDLLMSamplerConfig(SamplerConfig):
             raise ValueError(
                 "uncertainty_margin_gap must be in [0, 1], got " f"{self.uncertainty_margin_gap}"
             )
-        if self.history_cache and self.num_block_candidates > 0:
+        if self.history_cache and self.num_block_candidates > 0 and self.history_small_block_cache:
             raise ValueError(
-                "history_cache=True is mutually exclusive with "
-                "num_block_candidates > 0 (the speculative path is undefined "
-                "on the cached compute strategy; got "
-                f"num_block_candidates={self.num_block_candidates})."
+                "history_cache=True + num_block_candidates > 0 is the AR034 "
+                "composition arm, defined only on the cross-block (exact) face; "
+                "history_small_block_cache=True is not composed with speculation "
+                "in v1 (the intra-block partial path with N candidate rows is a "
+                "documented roadmap item). Set history_small_block_cache=False."
             )
         if self.history_small_block_cache and not self.history_cache:
             raise ValueError(
@@ -189,6 +202,90 @@ class FastDLLMSamplerConfig(SamplerConfig):
                 "(the intra-block cache is defined only on the cached "
                 "compute strategy)."
             )
+        if self.uncertainty_validation_order and self.history_cache:
+            raise ValueError(
+                "uncertainty_validation_order=True is not composed with "
+                "history_cache (AR031's uncertainty ordering is defined on the "
+                "folded speculative path; the AR034 composition arm uses the "
+                "plain min-prob rule). Leave uncertainty_validation_order=False."
+            )
+        if self.speculative_commit_gate and not (
+            self.history_cache and self.num_block_candidates > 0
+        ):
+            raise ValueError(
+                "speculative_commit_gate=True requires history_cache=True and "
+                "num_block_candidates > 0 (the gated commit is defined only on "
+                "the AR034 composition arm)."
+            )
+        if self.adaptive_candidate_budget:
+            if not (self.history_cache and self.num_block_candidates > 0):
+                raise ValueError(
+                    "adaptive_candidate_budget=True requires history_cache=True and "
+                    "num_block_candidates > 0 (ACB skips the composition arm's "
+                    "[N, block] verification using the draft confidence)."
+                )
+            if self.speculative_commit_gate:
+                raise ValueError(
+                    "adaptive_candidate_budget=True is not composed with "
+                    "speculative_commit_gate=True (the gated commit changes the "
+                    "committed set; ACB assumes whole-block commit)."
+                )
+        if self.remask_fallback and not (self.history_cache and self.num_block_candidates > 0):
+            raise ValueError(
+                "remask_fallback=True requires history_cache=True and "
+                "num_block_candidates > 0 (the fallback routes the composition "
+                "arm's low-confidence blocks back to the official remasking loop)."
+            )
+        if self.verification_free_commit:
+            if not (self.history_cache and self.num_block_candidates > 0):
+                raise ValueError(
+                    "verification_free_commit=True requires history_cache=True and "
+                    "num_block_candidates > 0 (it replaces the composition arm's "
+                    "verification with a free re-score of the fused forward)."
+                )
+            if not self.commit_draft_fusion:
+                raise ValueError(
+                    "verification_free_commit=True requires commit_draft_fusion=True "
+                    "(the one-forward-per-block claim and the free verification both "
+                    "come from the fused forward)."
+                )
+            if self.speculative_commit_gate:
+                raise ValueError(
+                    "verification_free_commit=True is not composed with "
+                    "speculative_commit_gate=True."
+                )
+        if self.candidate_budget_escalate:
+            if not (self.history_cache and self.num_block_candidates > 0):
+                raise ValueError(
+                    "candidate_budget_escalate=True requires history_cache=True and "
+                    "num_block_candidates > 0 (the cascade only widens the "
+                    "composition arm's candidate rows)."
+                )
+            if self.escalate_candidates <= self.num_block_candidates:
+                raise ValueError(
+                    "candidate_budget_escalate=True requires escalate_candidates > "
+                    f"num_block_candidates, got {self.escalate_candidates} <= "
+                    f"{self.num_block_candidates}"
+                )
+            if self.speculative_commit_gate:
+                raise ValueError(
+                    "candidate_budget_escalate=True is not composed with "
+                    "speculative_commit_gate=True."
+                )
+        if self.commit_draft_fusion:
+            if not (self.history_cache and self.num_block_candidates > 0):
+                raise ValueError(
+                    "commit_draft_fusion=True requires history_cache=True and "
+                    "num_block_candidates > 0 (AR036 fuses the composition "
+                    "arm's block-commit forward with the next block's draft)."
+                )
+            if self.speculative_commit_gate:
+                raise ValueError(
+                    "commit_draft_fusion=True is not composed with "
+                    "speculative_commit_gate=True: fusion assumes the whole "
+                    "small block is committed (AR035's gated commit changes "
+                    "the committed set). Use one of the two knobs."
+                )
 
 
 @dataclass
@@ -202,7 +299,7 @@ class _FoldCtx:
             ``rotary_emb`` under the constant-position scheme, or ``None``
             when the model has no detectable rotary module.
         forced: ``[T]`` boolean tensor whose True positions cover exactly
-            the active (last) block — the freshly committed / actively
+            the active (last) block —the freshly committed / actively
             denoised region is always recomputed, never gate-certified
             stable against a stale parent.
     """
@@ -221,7 +318,7 @@ class _HistoryCacheSupport:
     model owns the KV mechanics. The probe inspects the RAW model's
     forward signature (``self.model.model``) for the official cache
     kwargs; acceptance means a NAMED parameter (a bare ``**kwargs``
-    catch-all is NOT accepted — fail-fast prefers a strict structural
+    catch-all is NOT accepted —fail-fast prefers a strict structural
     guarantee over a syntactic maybe).
 
     Attributes:
@@ -241,6 +338,91 @@ class _HistoryCacheSupport:
 _HC_REQUIRED_KWARGS = ("use_cache", "past_key_values", "update_past_key_values")
 _HC_SMALL_BLOCK_KWARGS = ("use_block_cache", "block_past_key_values", "replace_position")
 _HC_PROBED_KWARGS = _HC_REQUIRED_KWARGS + _HC_SMALL_BLOCK_KWARGS + ("block_size",)
+
+
+def _crop_history_kv(kv: Any, keep: int) -> Any | None:
+    """Crop a history KV cache back to ``keep`` positions (AR036).
+
+    The fused ``[1, 2B]`` forward writes the committed block's KV **and** the
+    next block's still-masked canvas KV; only the first ``keep = hist + B``
+    positions belong to history (AR036 T001 P3: cropped KV maxdiff 0.0 vs the
+    standalone commit forward).
+
+    Args:
+        kv: the cache returned by the fused forward (``DynamicCache`` is the
+            real-checkpoint face; ``crop`` is the transformers 4.53.1 API).
+        keep: the exact sequence length the history must end at.
+
+    Returns:
+        The cropped cache, or ``None`` when the cache type has no usable
+        ``crop`` (caller falls back to the unfused commit path — never a
+        silent wrong-history forward).
+    """
+    crop = getattr(kv, "crop", None)
+    if not callable(crop):
+        return None
+    try:
+        result = crop(keep)
+        cropped = kv if result is None else result
+        seq_len = getattr(cropped, "get_seq_length", None)
+        if callable(seq_len) and int(seq_len()) != keep:
+            return None
+        return cropped
+    except Exception:  # pragma: no cover - defensive for exotic caches
+        return None
+
+
+def _expand_history_kv(kv: Any, n: int) -> Any:
+    """Return a batch-``n`` copy of a batch-1 history KV cache (AR034).
+
+    The composition arm verifies ``n`` candidate canvases in one batched
+    forward over a shared, read-only history. The expanded cache must be a
+    **copy**: the real ``DynamicCache.batch_repeat_interleave`` mutates in
+    place and returns ``None`` (AR034 T001 P1/P4 probe), and the list-based
+    test fixture has no such method, so both faces are handled explicitly.
+
+    Args:
+        kv: the batch-1 history KV handle (``DynamicCache`` or a
+            ``key_cache``/``value_cache`` list container).
+        n: the row multiplier (``num_block_candidates``).
+
+    Returns:
+        A new cache object with every layer's K/V repeated ``n`` times over
+        the batch dimension (rows ``j``'s block is a copy of row 0's).
+
+    Raises:
+        RuntimeError: If the cache exposes neither a
+            ``batch_repeat_interleave`` method nor ``key_cache``/
+            ``value_cache`` lists —a fail-fast, never a silent no-cache
+            forward.
+    """
+    import copy
+
+    # NOTE: ``copy.deepcopy`` is NOT usable here —the cache tensors can be
+    # non-leaf under autograd tracking (torch rejects deepcopy of non-leaf
+    # tensors), and the real ``batch_repeat_interleave`` mutates in place.
+    # Rebuild the container explicitly and copy each tensor detached.
+    if hasattr(kv, "key_cache") and hasattr(kv, "value_cache"):
+        try:
+            expanded: Any = type(kv)()
+        except Exception:  # pragma: no cover - defensive for exotic caches
+            expanded = copy.copy(kv)
+        expanded.key_cache = [t.detach().repeat_interleave(n, dim=0) for t in kv.key_cache]
+        expanded.value_cache = [t.detach().repeat_interleave(n, dim=0) for t in kv.value_cache]
+        return expanded
+    layers = getattr(kv, "layers", None)
+    if layers is not None:  # pragma: no cover - newer transformers API face
+        expanded = copy.copy(kv)
+        expanded.layers = [copy.copy(layer) for layer in layers]
+        for layer_copy, layer in zip(expanded.layers, layers):
+            layer_copy.keys = layer.keys.detach().repeat_interleave(n, dim=0)
+            layer_copy.values = layer.values.detach().repeat_interleave(n, dim=0)
+        return expanded
+    raise RuntimeError(
+        "AR034 composition arm requires a history KV cache exposing "
+        "key_cache/value_cache or layers (got "
+        f"{type(kv).__name__}) —fail-fast, never a silent uncached forward."
+    )
 
 
 class FastDLLMSampler(DiffusionSampler):
@@ -271,13 +453,13 @@ class FastDLLMSampler(DiffusionSampler):
         self._greedy_wins = 0
         self._greedy_spec_calls = 0
         # AR031: instance-level uncertainty observation counters (the
-        # greedy_win_stats precedent) — survive across ``sample`` calls,
+        # greedy_win_stats precedent) —survive across ``sample`` calls,
         # incremented only on the uncertainty-armed speculative path.
         self._unc_validated_rows = 0
         self._unc_skipped_rows = 0
         self._unc_early_stops = 0
         # AR033: history-cache orchestration counters (the greedy_win_stats
-        # precedent) — cumulative across ``sample`` calls, incremented only
+        # precedent) —cumulative across ``sample`` calls, incremented only
         # on the history_cache-armed path (default off stays all-zero).
         self._hc_prefill_forwards = 0
         self._hc_slice_forwards = 0
@@ -285,6 +467,23 @@ class FastDLLMSampler(DiffusionSampler):
         self._hc_block_rebuilds = 0
         self._hc_forward_tokens = 0
         self._hc_degraded_calls = 0
+        # AR034: composition-arm (history KV x speculative verification)
+        # counters —the AR033 precedent; zero unless the composition arm ran.
+        self._hc_spec_draft_forwards = 0
+        self._hc_spec_verify_forwards = 0
+        self._hc_spec_gated_iterations = 0
+        self._hc_spec_fused_forwards = 0
+        self._hc_spec_budget_skips = 0
+        self._hc_spec_budget_escalations = 0
+        self._hc_spec_vfg_blocks = 0
+        self._hc_free_verify_blocks = 0
+        self._hc_free_verify_low_conf = 0
+        self._fv_rearm = False
+        self._hc_remask_fallbacks = 0
+        self._hc_remask_fallback_blocks: set[int] = set()
+        self._hc_fusion_disabled = False
+        self._hc_draft_stash: dict[str, Any] | None = None
+        self._hc_pending_advance: torch.Tensor | None = None
         self._cache_support: _HistoryCacheSupport | None = None
 
     @property
@@ -293,7 +492,7 @@ class FastDLLMSampler(DiffusionSampler):
 
         Returns:
             ``{"validated_rows": int, "skipped_rows": int, "early_stops":
-            int}`` — instance-level cumulative counts surviving across
+            int}`` —instance-level cumulative counts surviving across
             ``sample`` calls (a FRESH dict per read; mutating the return
             never leaks in). Only the ``uncertainty_validation_order=True``
             speculative path increments them (default off stays
@@ -312,7 +511,7 @@ class FastDLLMSampler(DiffusionSampler):
         """Read-only greedy_win observation face (AR022 FR2).
 
         Returns:
-            ``{"greedy_wins": int, "speculative_calls": int}`` — instance-
+            ``{"greedy_wins": int, "speculative_calls": int}`` —instance-
             level cumulative counts surviving across ``sample`` calls (the
             ``graph_pool_stats`` precedent). Only the
             ``candidate_include_greedy=True`` speculative path increments
@@ -328,12 +527,15 @@ class FastDLLMSampler(DiffusionSampler):
 
         Returns:
             ``{"prefill_forwards", "slice_forwards", "commit_forwards",
-            "block_rebuilds", "forward_tokens", "degraded_calls"}`` —
-            instance-level cumulative counts surviving across ``sample``
+            "block_rebuilds", "forward_tokens", "degraded_calls",
+            "spec_draft_forwards", "spec_verify_forwards"}`` —            instance-level cumulative counts surviving across ``sample``
             calls (a FRESH dict per read). ``forward_tokens`` sums the
             input token count of every cache-path forward (the H3 integer
             ledger); ``degraded_calls`` counts silent fallbacks and must
-            stay 0 (the armed path fails fast, never degrades).
+            stay 0 (the armed path fails fast, never degrades). The two
+            ``spec_*`` keys count the AR034 composition arm's whole-block
+            draft and batched verification forwards (zero on the AR033
+            path).
         """
         return {
             "prefill_forwards": self._hc_prefill_forwards,
@@ -342,13 +544,22 @@ class FastDLLMSampler(DiffusionSampler):
             "block_rebuilds": self._hc_block_rebuilds,
             "forward_tokens": self._hc_forward_tokens,
             "degraded_calls": self._hc_degraded_calls,
+            "spec_draft_forwards": self._hc_spec_draft_forwards,
+            "spec_verify_forwards": self._hc_spec_verify_forwards,
+            "spec_gated_iterations": self._hc_spec_gated_iterations,
+            "spec_fused_forwards": self._hc_spec_fused_forwards,
+            "spec_budget_skips": self._hc_spec_budget_skips,
+            "spec_budget_escalations": self._hc_spec_budget_escalations,
+            "spec_verification_free_blocks": self._hc_spec_vfg_blocks,
+            "free_verify_blocks": self._hc_free_verify_blocks,
+            "free_verify_low_conf": self._hc_free_verify_low_conf,
+            "spec_remask_fallbacks": self._hc_remask_fallbacks,
         }
 
     def _probe_history_cache_support(self) -> _HistoryCacheSupport:
         """Probe the raw model's forward for the official cache kwargs.
 
-        The probe drills ``self.model.model`` (the raw HF-style module —
-        the ``DiffusionLLM.forward`` wrapper strips outputs down to the
+        The probe drills ``self.model.model`` (the raw HF-style module —        the ``DiffusionLLM.forward`` wrapper strips outputs down to the
         logits tensor, so the cache path must call the raw module to
         receive ``past_key_values`` / ``block_past_key_values`` handles).
         Acceptance requires a NAMED parameter per kwarg (the
@@ -433,10 +644,10 @@ class FastDLLMSampler(DiffusionSampler):
         """Return the pinned fold context for ``(x.shape[1], prompt_len)``.
 
         The context (FR1 mask / rotary / forced trio) is constructed once per
-        ``(T, prompt_len)`` window from HOST metadata only — the pad pattern
+        ``(T, prompt_len)`` window from HOST metadata only —the pad pattern
         comes from ``prompt_len`` and the block arithmetic, never from a
         device readback (``.item`` / ``.tolist`` / ``.cpu`` are forbidden on
-        this path) — and is object-pinned: the same key returns the SAME
+        this path) —and is object-pinned: the same key returns the SAME
         mask / pe / forced objects across denoise iterations, canvas growth,
         and ``sample`` calls. Same ``T`` with a different ``prompt_len`` is a
         different key with different pad content (never shared). The cache is
@@ -494,7 +705,7 @@ class FastDLLMSampler(DiffusionSampler):
         fp32 dummy on a bf16 checkpoint yields fp32 cos/sin whose rotary
         application promotes q/k against a bf16 v and breaks the attention
         dtype contract (RuntimeError on the real Fast-dLLM checkpoint; the
-        fp32 synthetic mini models never see it — AR021 T003 smoke).
+        fp32 synthetic mini models never see it —AR021 T003 smoke).
         """
         raw = getattr(self.model, "model", None)
         rotary: Any = None
@@ -544,7 +755,7 @@ class FastDLLMSampler(DiffusionSampler):
 
         Non-callables and signatures that would reject ``branch_ids`` (an
         explicit parameter list without it and without a ``**kwargs``
-        catch-all) fail the probe — the caller raises ``ValueError`` instead
+        catch-all) fail the probe —the caller raises ``ValueError`` instead
         of letting the batched call degrade silently. A ``**kwargs``
         passthrough (e.g. a recording subclass of
         ``ManualFoldedForward``) is accepted: the kwarg is syntactically
@@ -585,7 +796,7 @@ class FastDLLMSampler(DiffusionSampler):
         sampling each still-masked small-block position from the draft's
         top-k token set (per-candidate frozen seed formula
         ``(seed*1_000_003 + block*8_191 + small*131 + j) & 0x7FFF_FFFF`` on
-        a dedicated CPU generator — deterministic across runs and unaffected
+        a dedicated CPU generator —deterministic across runs and unaffected
         by the global RNG), verifies all candidates in ONE ``[N, T]``
         batched-branch call sharing the draft parent, and commits the row
         whose per-position minimum token probability (softmax over the
@@ -595,8 +806,8 @@ class FastDLLMSampler(DiffusionSampler):
         ``finished`` semantics.
 
         AR022 greedy anchoring (``candidate_include_greedy=True``): row 0
-        is the greedy hypothesis — the still-masked positions filled with
-        the draft argmax (the top-k ordered-set first entry) — built with
+        is the greedy hypothesis —the still-masked positions filled with
+        the draft argmax (the top-k ordered-set first entry) —built with
         pure device indexing (zero readback, zero generator consumption);
         the random rows become ``j=1..N-1`` with ``j`` keeping its row
         number in the frozen seed formula. The greedy row competes under
@@ -606,20 +817,20 @@ class FastDLLMSampler(DiffusionSampler):
 
         AR031 A6: with ``uncertainty_validation_order`` on, the row
         selection routes through ``_uncertainty_select_inline`` (the
-        shared-helpers inline twin of the core segment-B face — prior-
+        shared-helpers inline twin of the core segment-B face —prior-
         descending validation order + margin/margin-gap early stop, the
         ``uncertainty_stats`` counters); default off keeps the vectorized
         argmax path byte-identical.
 
-        AR032: returns ``(j_star, tail_logits)`` — the winning row index
+        AR032: returns ``(j_star, tail_logits)`` —the winning row index
         and that row's TAIL UNSHIFTED verification logits ``[1, V]``
-        (``batched_logits[j_star, -1:, :].clone()`` — the clone detaches
+        (``batched_logits[j_star, -1:, :].clone()`` —the clone detaches
         the stash from the full ``[N, T, V]`` batched-forward backing,
         which at real-face geometry would otherwise be retained until the
         next small block's overwrite; #51 D8). The winner row's forward
         input is bitwise the post-commit canvas, so its raw tail row
         (predicting position T under the R1 convention) IS the
-        block-advance distribution — the sole source for
+        block-advance distribution —the sole source for
         ``speculative_advance_reuse`` (the LAST small block's return value
         is the one the sample loop stashes). AR033 R1 erratum: the
         historical stash returned the RIGHT-SHIFTED tail (raw[T-2], the
@@ -696,7 +907,7 @@ class FastDLLMSampler(DiffusionSampler):
         if self.config.return_history:
             history.append(x.clone())
         # AR033 R1 erratum: the advance-reuse stash is the UNSHIFTED
-        # winner-row tail (raw[T-1] — the row that predicts position T,
+        # winner-row tail (raw[T-1] —the row that predicts position T,
         # the same row the fixed legacy advance and the official
         # modeling.py :745 consume). The pre-AR033 stash was the shifted
         # tail raw[T-2] on both A/B arms.
@@ -714,14 +925,14 @@ class FastDLLMSampler(DiffusionSampler):
         """AR031 A6 inline twin: prior-descending validation + early stop.
 
         Consumes the SAME shared helpers as the core segment B (E4:
-        ``plan_uncertainty_order`` / ``should_early_stop`` — imported
+        ``plan_uncertainty_order`` / ``should_early_stop`` —imported
         function-locally because ``speculative_core`` imports
         ``_MAX_FOLD_CTX_ENTRIES`` from this module at load time; UT-3141
         pins the inline/core parity). The prior is the same frozen
         draft-side formula (the minimum over the fill positions of the
         draft softmax at the candidate tokens); the per-row posterior
         keeps this face's frozen whole-small-block min-prob domain (rows
-        are scored one at a time — a skipped row is never scored). The
+        are scored one at a time —a skipped row is never scored). The
         winner tracks vectorized-argmax tie semantics (strictly greater,
         ties to the smaller row index); counters:
         ``validated + skipped == N`` per small block, ``early_stops``
@@ -749,7 +960,7 @@ class FastDLLMSampler(DiffusionSampler):
         margin = float(self.config.uncertainty_margin)
         margin_gap = float(self.config.uncertainty_margin_gap)
         # Frozen prior: min over the fill positions of the draft softmax
-        # at the candidate tokens — [M, V].gather(-1, [M, N]) -> [M, N],
+        # at the candidate tokens —[M, V].gather(-1, [M, N]) -> [M, N],
         # min over the fill dim -> [N].
         draft_probs = F.softmax(small_logits, dim=-1)  # [1, S, V]
         cand_fill = cands[:, masked_local + sb_start]  # [N, M]
@@ -775,6 +986,241 @@ class FastDLLMSampler(DiffusionSampler):
                 break
         return best_row
 
+    def _history_speculative_small_block(
+        self,
+        *,
+        x: torch.Tensor,
+        kv: Any,
+        block_boundary_raw: torch.Tensor,
+        block_view: torch.Tensor,
+        mask_idx: torch.Tensor,
+        active_len: int,
+        win_offset: int,
+        sb_lo: int,
+        sb_hi: int,
+        start: int,
+        end: int | None,
+        finished: torch.Tensor,
+        block_idx: int,
+        small_block_idx: int,
+        history: list[torch.Tensor],
+        draft_aligned: torch.Tensor | None = None,
+    ) -> bool:
+        """One AR034 composition step: draft -> N-row verify -> commit a small block.
+
+        The draft and the batched verification both forward the **whole
+        active block** (not a slice): inside a block the official
+        ``eval_block_diff_mask`` is bidirectional, so a smaller slice cannot
+        attend to the block's later (still masked) positions —AR034 T001 P5
+        measured maxdiff 1.5-8.9 for slice-vs-block, while whole-block
+        forwards are per-row bit-exact (P2/P3). The history KV is expanded to
+        ``N`` rows as a read-only copy (P1: the input cache is unchanged).
+
+        Candidate construction is the AR022 frozen semantics verbatim (row 0
+        = greedy argmax when ``candidate_include_greedy``; the random rows
+        use the frozen seed formula; row ``j`` keeps its row number); the
+        min-prob winner over the still-masked positions is committed as a
+        whole small block, and the caller's ``max_iters`` loop breaks.
+        """
+        cfg = self.config
+        raw_model: Any = getattr(self.model, "model", None)
+        num_candidates = int(cfg.num_block_candidates)
+        stop_id = self._stop_token_id
+        B = x.shape[0]
+        device = x.device
+        bs = cfg.block_size
+
+        # --- draft rows: reused from the AR036 fused forward when stashed ---
+        if draft_aligned is not None:
+            # AR036: the previous block's fused ``[1, 2B]`` forward already
+            # produced this block's decision rows (T001 P2: maxdiff 0.0 vs an
+            # independent draft, argmax 100%). No draft forward is launched.
+            aligned = draft_aligned
+        else:
+            out = raw_model(
+                input_ids=x[:, -active_len:],
+                use_cache=True,
+                past_key_values=kv,
+                update_past_key_values=False,
+                block_size=bs,
+            )
+            aligned = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+            if win_offset > 0:
+                aligned = torch.cat(
+                    [
+                        aligned.new_zeros((B, win_offset, aligned.shape[-1])),
+                        aligned,
+                    ],
+                    dim=1,
+                )
+            self._hc_spec_draft_forwards += 1
+            self._hc_forward_tokens += active_len
+
+        small_logits = aligned[:, sb_lo:sb_hi]  # [1, sb, V]
+        vocab = int(small_logits.shape[-1])
+        k_eff = max(1, min(int(cfg.candidate_top_k), vocab))
+        topk_idx = torch.topk(small_logits, k_eff, dim=-1).indices  # [1, sb, k]
+        masked_local = mask_idx[0, sb_lo:sb_hi].nonzero(as_tuple=False).reshape(-1)
+        num_masked = int(masked_local.shape[0])
+
+        # AR037/AR038: one block-level confidence number drives the whole
+        # cascade. `g_min` is the weakest greedy token probability over the
+        # still-masked positions of this block.
+        g_min: float | None = None
+        g_tokens: torch.Tensor | None = None
+        if num_masked > 0 and (
+            bool(getattr(cfg, "adaptive_candidate_budget", False))
+            or bool(getattr(cfg, "candidate_budget_escalate", False))
+            or bool(getattr(cfg, "verification_free_commit", False))
+            or bool(getattr(cfg, "remask_fallback", False))
+        ):
+            g_probs = F.softmax(small_logits[0].float(), dim=-1)
+            g_tokens = topk_idx[0, masked_local, 0]
+            g_min = float(g_probs[masked_local, g_tokens].min())
+
+        if (
+            bool(getattr(cfg, "remask_fallback", False))
+            and g_min is not None
+            and g_min < float(cfg.remask_fallback_threshold)
+        ):
+            # AR041: a low-confidence block is exactly where the one-shot greedy
+            # commit degrades. Latch the block and return False so the caller
+            # falls through to the official thresholded remasking iterations.
+            self._hc_remask_fallback_blocks.add(int(block_idx))
+            self._hc_remask_fallbacks += 1
+            return False
+
+        if bool(getattr(cfg, "verification_free_commit", False)) and num_masked > 0:
+            if self._fv_rearm:
+                # AR039: the previous block's free verification flagged a
+                # low-confidence commit -> pay for the full verification here.
+                self._fv_rearm = False
+            else:
+                assert g_tokens is not None
+                fill = block_view.clone()
+                fill[0, masked_local + sb_lo] = g_tokens
+                x[:, start:end] = fill[:, sb_lo:sb_hi]
+                finished |= (x[:, start:end] == stop_id).any(dim=1)
+                self._hc_pending_advance = aligned[0, -1:, :].argmax(dim=-1).unsqueeze(-1)
+                self._hc_spec_vfg_blocks += 1
+                if cfg.return_history:
+                    history.append(x.clone())
+                return True
+
+        n_rows = num_candidates
+        if g_min is not None:
+            if bool(getattr(cfg, "adaptive_candidate_budget", False)) and (
+                g_min >= float(cfg.candidate_budget_threshold)
+            ):
+                # skip tier: the verification's only job is picking among rows,
+                # and the greedy row already is the confident winner.
+                assert g_tokens is not None
+                fill = block_view.clone()
+                fill[0, masked_local + sb_lo] = g_tokens
+                x[:, start:end] = fill[:, sb_lo:sb_hi]
+                finished |= (x[:, start:end] == stop_id).any(dim=1)
+                self._hc_pending_advance = aligned[0, -1:, :].argmax(dim=-1).unsqueeze(-1)
+                self._hc_spec_budget_skips += 1
+                if cfg.return_history:
+                    history.append(x.clone())
+                return True
+            if bool(getattr(cfg, "candidate_budget_escalate", False)) and (
+                g_min < float(cfg.escalate_threshold)
+            ):
+                # escalate tier: uncertainty is high, widen the candidate set.
+                n_rows = max(n_rows, int(cfg.escalate_candidates))
+                self._hc_spec_budget_escalations += 1
+
+        # --- candidate canvases over the block window (AR022 frozen build) ---
+        cands = block_view.repeat(n_rows, 1)  # [N, block]
+        if num_masked > 0:
+            draft_set = topk_idx[0, masked_local, :]  # [M, k]
+            if cfg.candidate_include_greedy:
+                cands[0, masked_local + sb_lo] = draft_set[:, 0]
+            base_seed = int(cfg.seed) if cfg.seed is not None else 0
+            for j in range(1 if cfg.candidate_include_greedy else 0, n_rows):
+                seed_j = (
+                    base_seed * 1_000_003 + int(block_idx) * 8_191 + int(small_block_idx) * 131 + j
+                ) & 0x7FFF_FFFF
+                generator = torch.Generator(device="cpu").manual_seed(seed_j)
+                choice = torch.randint(0, k_eff, (num_masked,), generator=generator).to(device)
+                cand_tokens = torch.gather(draft_set, 1, choice.unsqueeze(1)).squeeze(1)
+                cands[j, masked_local + sb_lo] = cand_tokens
+
+        # --- batched verification over the expanded read-only history KV ---
+        verify_out = raw_model(
+            input_ids=cands[:, win_offset:],
+            use_cache=True,
+            past_key_values=_expand_history_kv(kv, n_rows),
+            update_past_key_values=False,
+            block_size=bs,
+        )
+        v_aligned = torch.cat(
+            [block_boundary_raw.expand(n_rows, -1, -1), verify_out.logits[:, :-1, :]],
+            dim=1,
+        )
+        if win_offset > 0:
+            v_aligned = torch.cat(
+                [
+                    v_aligned.new_zeros((n_rows, win_offset, v_aligned.shape[-1])),
+                    v_aligned,
+                ],
+                dim=1,
+            )
+        self._hc_spec_verify_forwards += 1
+        self._hc_forward_tokens += n_rows * active_len
+
+        vrows = v_aligned[:, sb_lo:sb_hi]  # [N, sb, V]
+        committed = cands[:, sb_lo:sb_hi]  # [N, sb]
+        if num_masked > 0:
+            probs = F.softmax(vrows, dim=-1)
+            scores = torch.gather(probs, -1, committed.unsqueeze(-1)).squeeze(-1)  # [N, sb]
+            masked_scores = scores[:, masked_local]  # [N, M]
+            min_scores = masked_scores.min(dim=-1).values  # [N]
+            j_star = int(min_scores.argmax())
+        else:
+            j_star = 0
+
+        if cfg.candidate_include_greedy:
+            self._greedy_spec_calls += 1
+            if j_star == 0:
+                self._greedy_wins += 1
+
+        if bool(getattr(cfg, "commit_draft_fusion", False)):
+            # AR036: the committed canvas's verification tail row is the
+            # AR032 input-equivalence source of the next block's advance
+            # token (the fused commit forward needs it *before* it runs).
+            self._hc_pending_advance = v_aligned[j_star, -1:, :].argmax(dim=-1).unsqueeze(-1)
+
+        if bool(getattr(cfg, "speculative_commit_gate", False)):
+            # AR035: confidence-gated commit. Accept only still-masked
+            # positions whose verification probability clears ``threshold``;
+            # force-accept the argmax-probability position so every gated
+            # verification advances at least one token (progress guarantee).
+            self._hc_spec_gated_iterations += 1
+            win_probs = F.softmax(vrows[j_star], dim=-1)  # [sb, V]
+            win_tokens = committed[j_star]  # [sb]
+            win_p = torch.gather(win_probs, -1, win_tokens.unsqueeze(-1)).squeeze(-1)
+            sb_mask = mask_idx[0, sb_lo:sb_hi]  # [sb]
+            accept = (win_p >= cfg.threshold) & sb_mask
+            if num_masked > 0 and not bool(accept.any()):
+                fallback = int(win_p.masked_fill(~sb_mask, float("-inf")).argmax())
+                accept = accept.clone()
+                accept[fallback] = bool(sb_mask[fallback])
+            x[:, start:end] = torch.where(
+                accept.unsqueeze(0), win_tokens.unsqueeze(0), x[:, start:end]
+            )
+            complete = not bool(mask_idx[0, sb_lo:sb_hi].clone().logical_and(~accept).any())
+        else:
+            # commit the WHOLE small block (AR022 semantics: skip the remaining
+            # remasking iterations for this block)
+            x[:, start:end] = cands[j_star, sb_lo:sb_hi].unsqueeze(0)
+            complete = True
+        finished |= (x[:, start:end] == stop_id).any(dim=1)
+        if cfg.return_history:
+            history.append(x.clone())
+        return complete
+
     def _history_cached_sample(
         self,
         x: torch.Tensor,
@@ -788,24 +1234,23 @@ class FastDLLMSampler(DiffusionSampler):
         plus the optional intra-block small-block cache (official-parity
         APPROXIMATE face: within-block bidirectional attention makes
         earlier small blocks' layer->=1 KV stale as later siblings
-        unmask, and the official replace path adds sdpa kernel drift —
-        T001 P4, maxdiff 0.3125 bf16). The schedule decisions are the
+        unmask, and the official replace path adds sdpa kernel drift —        T001 P4, maxdiff 0.3125 bf16). The schedule decisions are the
         legacy loop verbatim; only the forward source changes.
 
         R1 token-shift alignment: the decision row for canvas position q
         is the RAW logit row at q-1. The block's boundary row (block
         row 0) is the frozen history tail (block 0: the prefill tail;
-        later blocks: the previous commit forward's tail — history
+        later blocks: the previous commit forward's tail —history
         positions never see the active block under block-causal
         attention, so the tail stays fresh). Small-block partial
         forwards source their boundary row by extending the partial
-        slice one position left (``[sb_lo-1, sb_hi)`` — S+1 rows), which
+        slice one position left (``[sb_lo-1, sb_hi)`` —S+1 rows), which
         also refreshes the boundary position's block-cache KV; small
         block 0 uses the frozen block boundary (exact on the fixture).
 
         Final-partial-block geometry: when ``num_tokens % block_size !=
         0`` the last mask append is short and the canvas tail is NOT
-        block-aligned — the active block becomes the block-aligned tail
+        block-aligned —the active block becomes the block-aligned tail
         slice (shorter than ``block_size``) so the slice forward never
         overlaps committed history (double-counted KV / wrong rotary
         positions); window rows left of the active block are committed
@@ -820,13 +1265,14 @@ class FastDLLMSampler(DiffusionSampler):
             raise RuntimeError(
                 "history_cache=True requires a callable raw backbone at "
                 "self.model.model (the dispatch-time probe contract was "
-                "violated — this is a mechanism bug, not a fallback)."
+                "violated —this is a mechanism bug, not a fallback)."
             )
         B = x.shape[0]
         device = x.device
         block_size = cfg.block_size
         small_block_size = cfg.small_block_size
         num_small_blocks = block_size // small_block_size
+        num_candidates = int(cfg.num_block_candidates)
         max_new_tokens = cfg.num_tokens
         mask_id = self._mask_token_id
         stop_id = self._stop_token_id
@@ -838,6 +1284,9 @@ class FastDLLMSampler(DiffusionSampler):
 
         # Prefill: one committed forward over the prompt + alignment
         # region (everything before the first mask block).
+        self._hc_remask_fallback_blocks = set()
+        self._hc_pending_advance = None
+        self._hc_draft_stash = None
         hist_len = int(x.shape[1]) - block_size
         out = raw_model(
             input_ids=x[:, :hist_len],
@@ -857,7 +1306,7 @@ class FastDLLMSampler(DiffusionSampler):
             # Active-block geometry: mid-generation canvases are
             # block-aligned (prompt+alignment pad and full mask blocks),
             # but the FINAL block may be short (the mask append is
-            # min(block_size-1, remaining-1)) — the plain
+            # min(block_size-1, remaining-1)) —the plain
             # ``x[:, -block_size:]`` window would then overlap committed
             # history (double-counted KV + wrong rotary positions). The
             # active block is the block-aligned tail slice
@@ -883,6 +1332,43 @@ class FastDLLMSampler(DiffusionSampler):
                     mask_idx = block_view == mask_id
                     if mask_idx[:, start:end].sum() == 0:
                         break
+
+                    if num_candidates > 0 and block_idx not in self._hc_remask_fallback_blocks:
+                        # AR034 composition arm: one whole-block draft + one
+                        # [N, block] batched verify over the expanded read-only
+                        # history KV replaces this small block's entire
+                        # remasking-iteration sequence (AR022 commit semantics).
+                        stash = self._hc_draft_stash
+                        draft_aligned: torch.Tensor | None = None
+                        if stash is not None and int(stash["block_idx"]) == int(block_idx):
+                            if active_len == block_size:
+                                draft_aligned = stash["aligned"]
+                            else:
+                                self._hc_draft_stash = None
+                        elif stash is not None and int(stash["block_idx"]) < int(block_idx):
+                            self._hc_draft_stash = None
+                        complete = self._history_speculative_small_block(
+                            x=x,
+                            kv=kv,
+                            block_boundary_raw=block_boundary_raw,
+                            block_view=block_view,
+                            mask_idx=mask_idx,
+                            active_len=active_len,
+                            win_offset=win_offset,
+                            sb_lo=sb_lo,
+                            sb_hi=sb_hi,
+                            start=start,
+                            end=end,
+                            finished=finished,
+                            block_idx=block_idx,
+                            small_block_idx=small_block_idx,
+                            history=history,
+                            draft_aligned=draft_aligned,
+                        )
+                        if draft_aligned is not None:
+                            self._hc_draft_stash = None
+                        if complete:
+                            break
 
                     if not sb_available:
                         out = raw_model(
@@ -931,7 +1417,7 @@ class FastDLLMSampler(DiffusionSampler):
                             self._hc_forward_tokens += block_size
                         elif small_block_idx == 0:
                             # Partial over [0, S): the boundary row is the
-                            # frozen block boundary (history tail — exact).
+                            # frozen block boundary (history tail —exact).
                             out = raw_model(
                                 input_ids=block_view[:, 0:small_block_size],
                                 use_cache=True,
@@ -992,24 +1478,98 @@ class FastDLLMSampler(DiffusionSampler):
             # Commit + block advance in ONE forward (official
             # modeling.py:729-747): the completed block's KV is committed
             # and the unshifted tail row produces the next token (the R1
-            # token-shift row — matching the fixed legacy advance and the
+            # token-shift row —matching the fixed legacy advance and the
             # official :745 pattern).
             remaining = total_len + first_block_padding - x.shape[1]
             if remaining <= 0:
                 continue
-            out = raw_model(
-                input_ids=x[:, -block_size:],
-                use_cache=True,
-                past_key_values=kv,
-                update_past_key_values=True,
-                block_size=block_size,
+            fusion_on = (
+                bool(getattr(cfg, "commit_draft_fusion", False))
+                and num_candidates > 0
+                and not self._hc_fusion_disabled
+                and active_len == block_size
+                and remaining - 1 >= block_size
+                and self._hc_pending_advance is not None
             )
-            kv = out.past_key_values
-            block_boundary_raw = out.logits[:, -1:, :].clone()
-            next_token = out.logits[:, -1:, :].argmax(dim=-1)
+            fused_out: Any = None
+            cropped: Any = None
+            if fusion_on:
+                # AR036: one [1, 2B] forward commits this block's KV and
+                # computes the next block's decision rows (T001 P1/P2/P3 all
+                # maxdiff 0.0 on the real checkpoint). The next block's
+                # advance token comes from the verify tail row (AR032 input
+                # equivalence), so the canvas is fully known before the
+                # forward runs.
+                advance = self._hc_pending_advance
+                assert advance is not None
+                next_canvas = torch.cat(
+                    [
+                        advance,
+                        torch.full(
+                            (B, block_size - 1),
+                            mask_id,
+                            dtype=x.dtype,
+                            device=device,
+                        ),
+                    ],
+                    dim=1,
+                )
+                fused_out = raw_model(
+                    input_ids=torch.cat([x[:, -block_size:], next_canvas], dim=1),
+                    use_cache=True,
+                    past_key_values=kv,
+                    update_past_key_values=True,
+                    block_size=block_size,
+                )
+                cropped = _crop_history_kv(fused_out.past_key_values, int(x.shape[1]))
+                if cropped is None:
+                    self._hc_fusion_disabled = True
+                    warnings.warn(
+                        "commit_draft_fusion disabled: the model's KV cache does "
+                        "not support crop(); using the unfused commit path.",
+                        RuntimeWarning,
+                        stacklevel=2,
+                    )
+                    fusion_on = False
+            self._hc_pending_advance = None
+            if fusion_on:
+                kv = cropped
+                fused_aligned = torch.cat([block_boundary_raw, fused_out.logits[:, :-1, :]], dim=1)
+                if bool(getattr(cfg, "verification_free_commit", False)):
+                    # AR039 free verification: the fused forward re-read the
+                    # committed block, so its decision rows score those tokens
+                    # at zero extra cost. A low-confidence flag re-arms the full
+                    # verification for the next block.
+                    probs = F.softmax(fused_aligned[:, :block_size][0].float(), dim=-1)
+                    committed_tokens = x[0, -block_size:]
+                    idx = torch.arange(block_size, device=probs.device)
+                    p = probs[idx, committed_tokens]
+                    self._hc_free_verify_blocks += 1
+                    if float(p.min()) < float(cfg.free_verify_floor):
+                        self._hc_free_verify_low_conf += 1
+                        self._fv_rearm = True
+                block_boundary_raw = fused_aligned[:, block_size : block_size + 1].clone()
+                next_token = fused_out.logits[:, block_size - 1 : block_size].argmax(dim=-1)
+                self._hc_spec_fused_forwards += 1
+                self._hc_forward_tokens += 2 * block_size
+                self._hc_draft_stash = {
+                    "block_idx": block_idx + 1,
+                    "aligned": fused_aligned[:, block_size:],
+                }
+            else:
+                out = raw_model(
+                    input_ids=x[:, -block_size:],
+                    use_cache=True,
+                    past_key_values=kv,
+                    update_past_key_values=True,
+                    block_size=block_size,
+                )
+                kv = out.past_key_values
+                block_boundary_raw = out.logits[:, -1:, :].clone()
+                next_token = out.logits[:, -1:, :].argmax(dim=-1)
+                self._hc_commit_forwards += 1
+                self._hc_forward_tokens += block_size
             next_token[finished] = pad_id
-            self._hc_commit_forwards += 1
-            self._hc_forward_tokens += block_size
             x = torch.cat([x, next_token], dim=1)
 
             if remaining > 1:
@@ -1060,15 +1620,22 @@ class FastDLLMSampler(DiffusionSampler):
 
         if self.config.history_cache:
             # AR033 fail-fast guards (design §4.2.2 (g)/(i)): up-front,
-            # before any canvas construction burns compute. The
-            # speculative exclusivity (num_block_candidates > 0) is
-            # already enforced at config construction time.
+            # before any canvas construction burns compute.
             if folded_model is not None:
                 raise ValueError(
                     "history_cache=True is mutually exclusive with a "
                     "folded_model (the cached compute strategy drives the "
                     "raw model's native cache kwargs directly; folding and "
                     "caching are distinct compute strategies)."
+                )
+            if int(self.config.num_block_candidates) > 0 and folded_model is not None:
+                # AR034: the composition arm is the native batched-verify
+                # path; folding is a distinct compute strategy (#33 family).
+                raise ValueError(
+                    "history_cache=True + num_block_candidates>0 (AR034 "
+                    "composition arm) requires folded_model=None (the "
+                    "candidate rows are verified by the raw model's native "
+                    "batched forward over the expanded history KV)."
                 )
             support = self._probe_history_cache_support()
             if not support.required_ok:
@@ -1077,7 +1644,7 @@ class FastDLLMSampler(DiffusionSampler):
                     f"to accept the official cache kwargs {_HC_REQUIRED_KWARGS} "
                     "as NAMED parameters; probe result: "
                     f"has_raw_model={support.has_raw_model}, "
-                    f"accepted={support.accepted} — a **kwargs catch-all "
+                    f"accepted={support.accepted} —a **kwargs catch-all "
                     "is NOT accepted (fail-fast, never a silent "
                     "full-recompute fallback)."
                 )
@@ -1096,7 +1663,7 @@ class FastDLLMSampler(DiffusionSampler):
                 f"[T, T] fold-context mask cannot express per-row padding "
                 f"(got batch {prompt_ids.shape[0]})."
             )
-        if num_candidates > 0:
+        if num_candidates > 0 and not self.config.history_cache:
             if folded_model is None:
                 raise ValueError(
                     "num_block_candidates > 0 requires a folded_model for the "
@@ -1158,8 +1725,7 @@ class FastDLLMSampler(DiffusionSampler):
             if finished.all():
                 break
 
-            # AR032: the per-block stash for speculative_advance_reuse —
-            # overwritten by every speculative small block, so its value at
+            # AR032: the per-block stash for speculative_advance_reuse —            # overwritten by every speculative small block, so its value at
             # the advance seam is the LAST small block's winner tail logits
             # (only the last small block's winner row equals the post-commit
             # canvas; earlier small blocks' winner rows still carry mask_id
@@ -1276,7 +1842,7 @@ class FastDLLMSampler(DiffusionSampler):
 
             if bool(self.config.speculative_advance_reuse) and num_candidates > 0:
                 # AR032: reuse the last small block's winning verification
-                # row's tail logits as the block-advance token — the winner
+                # row's tail logits as the block-advance token —the winner
                 # row's forward input is bitwise the post-commit canvas, so
                 # its tail distribution IS the advance distribution. One
                 # serial forward is omitted per block-advance-eligible
@@ -1286,12 +1852,12 @@ class FastDLLMSampler(DiffusionSampler):
                     # Unreachable defense: every fresh block has masked
                     # positions, so the speculative call always ran. A None
                     # stash means a mechanism bug or a future structural
-                    # change — fail fast, never silently fall back.
+                    # change —fail fast, never silently fall back.
                     raise RuntimeError(
                         "speculative_advance_reuse=True reached the advance "
                         "seam without a speculative tail-logit stash (every "
                         "fresh block has masked positions, so the "
-                        "speculative small block must have run) — this is a "
+                        "speculative small block must have run) —this is a "
                         "mechanism bug, not a supported fallback."
                     )
                 next_token = advance_tail_logits.argmax(dim=-1).unsqueeze(0)
@@ -1299,7 +1865,7 @@ class FastDLLMSampler(DiffusionSampler):
                 branch_id, parent_id = self._next_folding_branch(f"fastdllm_ar_{block_idx}")
                 if folded_model is not None:
                     # AR021 FR2/UT-2111: the block-advance AR forward reuses the
-                    # same pinned fold context — its forced region covers exactly
+                    # same pinned fold context —its forced region covers exactly
                     # the just-committed block (the P5 partial-flip scenario).
                     ctx = self._fold_ctx_for(x, prompt_len=prompt_len)
                     logits = self._forward(
@@ -1324,7 +1890,7 @@ class FastDLLMSampler(DiffusionSampler):
                     )
                 # AR033 off-by-one erratum (design §6.5): the advance
                 # token comes from the UNSHIFTED tail row raw[T-1] (which
-                # predicts position T) — the official modeling.py :745
+                # predicts position T) —the official modeling.py :745
                 # pattern, confirmed by the T001 P2 teacher-forcing probe
                 # (hit_next=0.9028 vs hit_self=0.0000). The historical
                 # code consumed right_shift(full)[:, -1] = raw[T-2] (the

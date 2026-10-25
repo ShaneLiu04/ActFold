@@ -2,7 +2,7 @@
 
 T003 fixture: an fp32 tiny REAL block-causal decoder
 (``_TinyBlockCausal``) carrying the same native cache-kwarg contract as
-the real Fast-dLLM v2 ``modeling.py`` — NAMED ``use_cache`` /
+the real Fast-dLLM v2 ``modeling.py`` —NAMED ``use_cache`` /
 ``past_key_values`` / ``update_past_key_values`` / ``block_size`` /
 ``use_block_cache`` / ``block_past_key_values`` / ``replace_position``
 forward parameters, the ``eval_block_diff_mask`` block-causal attention
@@ -11,42 +11,41 @@ eval, mirroring the real remote model's unconditional overwrite), rotary
 positions from ``cache_position`` (absolute), per-layer history KV
 append/commit, block-cache first-build + in-place ``replace_position``
 writes, and ``attention_mask=None`` on the block-cache replace path. The
-fixture is a real ``nn.Module`` (real projections/attention/MLP, fp32) —
-zero mock outputs (#10).
+fixture is a real ``nn.Module`` (real projections/attention/MLP, fp32) —zero mock outputs (#10).
 
 UT faces (design §6.1):
-- UT-3301: bit-level A/B — the cache-off and cross-block-only arms
+- UT-3301: bit-level A/B —the cache-off and cross-block-only arms
   produce ``torch.equal`` token sequences over >= 4 shape points (block
   sizes 8/16, aligned AND short-final-block canvases, batch 1/2, with
   and without in-prompt pad). The intra-block sb arm joins the equality
   at S=1 (``small_block_size == block_size``: the block cache is fully
   rewritten every iteration, provably exact); at S>1 it is the
   documented official-parity APPROXIMATION face (stale layer>=1 KV of
-  earlier small blocks as later siblings unmask — T001 P4; the official
+  earlier small blocks as later siblings unmask —T001 P4; the official
   ``batch_sample`` shares the semantics), pinned by mechanism/counters
   in UT-3303 instead of token equality.
-- UT-3302: the alignment contract — prefill/slice/commit cache forwards
+- UT-3302: the alignment contract —prefill/slice/commit cache forwards
   are row-wise bitwise equal to the full-canvas forward (the
   fixture-level P3), including the short-final-block tail slice; the
   frozen boundary row equals the full-canvas history tail row.
-- UT-3302b: the R1 advance convention — the fixed legacy advance takes
+- UT-3302b: the R1 advance convention —the fixed legacy advance takes
   the UNSHIFTED tail row raw[T-1] (AR033 §6.5 erratum), pinned on a
   canvas whose raw tail rows have DIFFERENT argmaxes (the discriminating
-  fixture the AR032 table model cannot provide — its winner-row last two
+  fixture the AR032 table model cannot provide —its winner-row last two
   tokens coincide).
-- UT-3303: sb-cache mechanism faces — rebuild/partial accounting, the
+- UT-3303: sb-cache mechanism faces —rebuild/partial accounting, the
   boundary-rule inertness in this flow structure (each small block
-  completes before the next starts — the official loop shares the
+  completes before the next starts —the official loop shares the
   property), degraded == 0, double-run reproducibility.
-- UT-3304: the integer forward ledger — ``history_cache_stats`` counters
+- UT-3304: the integer forward ledger —``history_cache_stats`` counters
   equal exact geometry predictions (``threshold > 1`` forces exactly one
   argmax-guaranteed unmask per iteration), aligned and short-final-block
   geometries.
-- UT-3305: default-off zero regression — all counters zero, the probe is
+- UT-3305: default-off zero regression —all counters zero, the probe is
   never called, and the output is deterministic across runs.
-- UT-3306: mutual exclusion and fail-fast — five illegal combinations
+- UT-3306: mutual exclusion and fail-fast —five illegal combinations
   with exception types and message key phrases.
-- UT-3307: capability probe — named-parameter strictness (a ``**kwargs``
+- UT-3307: capability probe —named-parameter strictness (a ``**kwargs``
   catch-all is NOT accepted), result caching, stats schema / fresh-dict
   reads / cumulativeness across ``sample`` calls.
 """
@@ -94,7 +93,7 @@ class _TinyRotary(nn.Module):
         self, hidden_states: torch.Tensor, position_ids: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor]:
         # position_ids arrives as [1, L]; the output is [1, L, head_dim]
-        # (the real rotary contract — _apply_rotary adds the head axis).
+        # (the real rotary contract —_apply_rotary adds the head axis).
         pos = position_ids.to(torch.float32)
         exponent = torch.arange(0, self.head_dim, 2, device=pos.device).float()
         inv_freq = 1.0 / (10000.0 ** (exponent / self.head_dim))
@@ -253,7 +252,7 @@ class _TinyBlockCausal(nn.Module):
     ``eval_block_diff_mask`` block-causal semantics over ABSOLUTE
     coordinates; the external ``attention_mask`` is ignored in eval
     (the real modeling.py:490-496 unconditionally overwrites it). The
-    cache kwargs are NAMED forward parameters — the face the AR033
+    cache kwargs are NAMED forward parameters —the face the AR033
     probe inspects.
     """
 
@@ -317,7 +316,7 @@ class _TinyBlockCausal(nn.Module):
                 block_start = past_seen
             cache_position = torch.arange(block_start, block_start + seq_len)
         if use_block_cache and block_past_key_values.get_seq_length() != 0:
-            attn_bool = None  # modeling.py:493-494 — replace path, full attention
+            attn_bool = None  # modeling.py:493-494 —replace path, full attention
         else:
             q_pos = cache_position
             kv_pos = torch.arange(past_seen + seq_len)
@@ -471,7 +470,7 @@ def test_ut3301_s1_three_way_equality(block_size: int, num_tokens: int) -> None:
     With ``small_block_size == block_size`` every intra-block partial
     forward rewrites the WHOLE block cache before attention (the in-place
     ``replace_position=0`` write covers all positions), so the block
-    cache is never stale — the sb arm is provably exact and all three
+    cache is never stale —the sb arm is provably exact and all three
     switch states must agree bitwise.
     """
     llm = _build_llm(block_size=block_size)
@@ -498,7 +497,7 @@ def _canvas_after_block0(
     """Run the legacy sampler once; return ``(output, completed-block0 canvas)``.
 
     The canvas is the last history snapshot at the initial canvas length
-    whose window carries no masks — the exact input the block-advance
+    whose window carries no masks —the exact input the block-advance
     decision consumes.
     """
     out = sampler.sample(prompt)
@@ -565,9 +564,7 @@ def test_ut3302_alignment_contract() -> None:
     assert kv2 is not None and kv2.get_seq_length() == 16
 
     # Short-final-block tail slice (the num_tokens=12 geometry): the
-    # block-aligned tail [adv | masks] against the committed history —
-    # rows match the full canvas within allclose(1e-4), never overlapping
-    # history.
+    # block-aligned tail [adv | masks] against the committed history —    # rows match the full canvas within allclose(1e-4), never overlapping history.
     adv = full[:, -1:, :].argmax(dim=-1)
     short = torch.cat(
         [
@@ -595,7 +592,7 @@ def test_ut3302b_advance_convention_unshifted_tail() -> None:
     teacher-forcing hit_next=0.9028); the historical code consumed the
     right-shifted tail raw[T-2] (the decision row of the already-filled
     position T-1). Pinned on a canvas whose two tail rows have DIFFERENT
-    argmaxes — the discriminating fixture.
+    argmaxes —the discriminating fixture.
     """
     llm = _build_llm()
     model = llm.model
@@ -628,11 +625,11 @@ def test_ut3303_sb_cache_mechanism_faces() -> None:
     iteration, so the forward counts are geometry-exact:
 
     - block 0: sb0 4 iterations (1 rebuild + 3 four-row partials), sb1
-      4 iterations (4 five-row partials — the S+1 boundary-refresh
+      4 iterations (4 five-row partials —the S+1 boundary-refresh
       slice); block rebuilds == one first-build per block (the boundary
       rule is inert in this flow structure: each small block completes
       before the next starts, so the boundary token is never masked at
-      the next small block's entry — the official ``batch_sample`` loop
+      the next small block's entry —the official ``batch_sample`` loop
       shares the property);
     - block 1: sb0 3 iterations (1 rebuild + 2 partials), sb1 4
       iterations (4 partials).
@@ -651,13 +648,31 @@ def test_ut3303_sb_cache_mechanism_faces() -> None:
     out2 = sampler.sample(prompt)
     stats2 = dict(sampler.history_cache_stats)
 
-    assert stats1 == {
+    # AR034 adds two additive ledger keys (spec_draft/spec_verify); the
+    # AR033 cache path keeps them at zero.
+    assert {
+        k: v
+        for k, v in stats1.items()
+        if k
+        not in (
+            "spec_gated_iterations",
+            "spec_fused_forwards",
+            "spec_budget_skips",
+            "spec_budget_escalations",
+            "spec_verification_free_blocks",
+            "free_verify_blocks",
+            "free_verify_low_conf",
+            "spec_remask_fallbacks",
+        )
+    } == {
         "prefill_forwards": 1,
         "slice_forwards": 15,  # 8 (block 0) + 7 (block 1), rebuilds included
         "commit_forwards": 1,  # block 0 only; block 1 is final
         "block_rebuilds": 2,  # one first-build per block; boundary rule inert
         "forward_tokens": 8 + (8 + 3 * 4 + 4 * 5 + 8) + (8 + 2 * 4 + 4 * 5),
         "degraded_calls": 0,
+        "spec_draft_forwards": 0,
+        "spec_verify_forwards": 0,
     }
     # Cumulative across sample calls; the second run adds the same ledger.
     assert stats2["prefill_forwards"] == 2 * stats1["prefill_forwards"]
@@ -684,13 +699,29 @@ def test_ut3304_cross_block_ledger_aligned() -> None:
     llm = _build_llm()
     sampler = FastDLLMSampler(llm, config=_cfg(history_cache=True))
     sampler.sample(_prompt())
-    assert sampler.history_cache_stats == {
+    assert {
+        k: v
+        for k, v in sampler.history_cache_stats.items()
+        if k
+        not in (
+            "spec_gated_iterations",
+            "spec_fused_forwards",
+            "spec_budget_skips",
+            "spec_budget_escalations",
+            "spec_verification_free_blocks",
+            "free_verify_blocks",
+            "free_verify_low_conf",
+            "spec_remask_fallbacks",
+        )
+    } == {
         "prefill_forwards": 1,
         "slice_forwards": 8 + 7,
         "commit_forwards": 1,
         "block_rebuilds": 0,
         "forward_tokens": 8 + 8 * 8 + 8 + 7 * 8,
         "degraded_calls": 0,
+        "spec_draft_forwards": 0,
+        "spec_verify_forwards": 0,
     }
 
 
@@ -699,20 +730,36 @@ def test_ut3304_cross_block_ledger_short_final() -> None:
 
     Block 1's canvas tail is not block-aligned (``min(block_size-1,
     remaining-1)`` mask append): the active block is the 4-token
-    block-aligned tail ``[adv | 3 masks]`` — slice forwards carry 4
+    block-aligned tail ``[adv | 3 masks]`` —slice forwards carry 4
     tokens (never overlapping committed history), and small block 0 of
     the final window (pure committed history) never fires a forward.
     """
     llm = _build_llm()
     sampler = FastDLLMSampler(llm, config=_cfg(history_cache=True, num_tokens=12))
     sampler.sample(_prompt())
-    assert sampler.history_cache_stats == {
+    assert {
+        k: v
+        for k, v in sampler.history_cache_stats.items()
+        if k
+        not in (
+            "spec_gated_iterations",
+            "spec_fused_forwards",
+            "spec_budget_skips",
+            "spec_budget_escalations",
+            "spec_verification_free_blocks",
+            "free_verify_blocks",
+            "free_verify_low_conf",
+            "spec_remask_fallbacks",
+        )
+    } == {
         "prefill_forwards": 1,
         "slice_forwards": 8 + 3,  # block 0: 8; final block: sb1 only, 3 unmasks
         "commit_forwards": 1,
         "block_rebuilds": 0,
         "forward_tokens": 8 + 8 * 8 + 8 + 3 * 4,
         "degraded_calls": 0,
+        "spec_draft_forwards": 0,
+        "spec_verify_forwards": 0,
     }
 
 
@@ -746,13 +793,29 @@ def test_ut3305_default_off_zero_regression(monkeypatch: pytest.MonkeyPatch) -> 
     out1 = sampler.sample(_prompt())
     out2 = sampler.sample(_prompt())
     assert torch.equal(out1.sequences, out2.sequences)
-    assert sampler.history_cache_stats == {
+    assert {
+        k: v
+        for k, v in sampler.history_cache_stats.items()
+        if k
+        not in (
+            "spec_gated_iterations",
+            "spec_fused_forwards",
+            "spec_budget_skips",
+            "spec_budget_escalations",
+            "spec_verification_free_blocks",
+            "free_verify_blocks",
+            "free_verify_low_conf",
+            "spec_remask_fallbacks",
+        )
+    } == {
         "prefill_forwards": 0,
         "slice_forwards": 0,
         "commit_forwards": 0,
         "block_rebuilds": 0,
         "forward_tokens": 0,
         "degraded_calls": 0,
+        "spec_draft_forwards": 0,
+        "spec_verify_forwards": 0,
     }
 
 
@@ -814,13 +877,20 @@ class _PartialCacheModel(nn.Module):
 
 def test_ut3306_mutual_exclusion_and_fail_fast() -> None:
     """UT-3306: five illegal combinations, exact exception semantics."""
-    # (1) speculative path x cache (config construction).
-    with pytest.raises(ValueError, match="mutually exclusive with"):
-        FastDLLMSamplerConfig(history_cache=True, num_block_candidates=4)
+    # (1) AR034 supersedes the plain cache x speculation exclusion: the
+    #     cross-block composition is now legal; the intra-block sb cache is
+    #     the v1-undefined face and must still fail fast.
+    with pytest.raises(ValueError, match="history_small_block_cache"):
+        FastDLLMSamplerConfig(
+            history_cache=True,
+            history_small_block_cache=True,
+            num_block_candidates=4,
+        )
+    FastDLLMSamplerConfig(history_cache=True, num_block_candidates=4)  # legal (AR034)
     # (2) sb sub-switch without the cached strategy.
     with pytest.raises(ValueError, match="requires history_cache=True"):
         FastDLLMSamplerConfig(history_small_block_cache=True)
-    # (3) folded_model x cache (sample-time — folded_model is a runtime arg).
+    # (3) folded_model x cache (sample-time —folded_model is a runtime arg).
     sampler = FastDLLMSampler(_build_llm(), config=_cfg(history_cache=True))
     with pytest.raises(ValueError, match="mutually exclusive with a"):
         sampler.sample(_prompt(), folded_model=object())
@@ -853,7 +923,7 @@ def test_ut3307_capability_probe() -> None:
     # The probe result is cached on the instance (same object on re-read).
     assert sampler._probe_history_cache_support() is support
 
-    # A **kwargs catch-all is NOT acceptance — fail fast at sample().
+    # A **kwargs catch-all is NOT acceptance —fail fast at sample().
     catch_all = FastDLLMSampler(
         _TinyDiffusionLLM(_KwargsCatchAllModel()), config=_cfg(history_cache=True)
     )
@@ -874,6 +944,16 @@ def test_ut3307_stats_schema_and_cumulation() -> None:
         "block_rebuilds",
         "forward_tokens",
         "degraded_calls",
+        "spec_draft_forwards",
+        "spec_verify_forwards",
+        "spec_gated_iterations",
+        "spec_fused_forwards",
+        "spec_budget_skips",
+        "spec_budget_escalations",
+        "spec_verification_free_blocks",
+        "free_verify_blocks",
+        "free_verify_low_conf",
+        "spec_remask_fallbacks",
     }
     assert set(sampler.history_cache_stats) == keys
     read = sampler.history_cache_stats

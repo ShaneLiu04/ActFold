@@ -1,0 +1,844 @@
+{
+  "meta": {
+    "arm_configs": {
+      "baseline": {
+        "description": "non-cached full-canvas baseline (ladder reference)",
+        "history_cache": false
+      },
+      "cache-full": {
+        "description": "AR033 cache arm (cache-only reference)",
+        "history_cache": true,
+        "history_small_block_cache": true
+      },
+      "cache-spec": {
+        "candidate_include_greedy": true,
+        "candidate_top_k": 10,
+        "description": "AR034 composition: whole-block draft + [N, block] batched verify over the expanded read-only history KV",
+        "history_cache": true,
+        "history_small_block_cache": false,
+        "num_block_candidates": 4
+      },
+      "official": {
+        "description": "checkpoint native generate() -- report-only",
+        "native_generate": true,
+        "prompt": "raw unpadded ids (native mask-alignment semantics)",
+        "use_block_cache": true
+      }
+    },
+    "force": false,
+    "force_reason": null,
+    "frozen_rules": {
+      "H1": "gap<=1e-3, decode lengths equal A, token rate>=0.98",
+      "H2": "p50(A)/p50(D)>1 AND p50(B2)/p50(D)>1 strictly",
+      "H3": "class ledger identity + spec balanced + D forward count < B2 + A structure",
+      "H4": "canary conjunction + strict (arm,prompt) reproduction",
+      "precedence": "blocked > refuted > supported"
+    },
+    "geometry": {
+      "block_size": 32,
+      "candidate_top_k": 10,
+      "note": "AR022 lineage geometry (block=32, small_block=32) for every arm",
+      "num_candidates": 4,
+      "rationale": "the speculative commit unit must match the config whose greedy-anchored semantics AR022 validated; at sb=8 the frozen min-prob rule lets random top-k rows beat the greedy row (T007: 2/8 wins -> 96 vs 34 tokens, quality divergence), while sb=32 keeps greedy wins at 100% and is token-exact vs A",
+      "small_block_size": 32,
+      "temperature": 0.0,
+      "threshold": 0.95
+    },
+    "gpu": "Quadro RTX 5000",
+    "gpu_driver": "556.18",
+    "model": {
+      "config": {
+        "hidden_size": 1536,
+        "num_hidden_layers": 28,
+        "vocab_size": 151936
+      },
+      "model_path": "D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+      "weights_sha256": "8d267bb8b935f2e15148ba1175b67dba70261a696ec931dd0a3b0f27f9f3c434"
+    },
+    "official_arm": {
+      "probe": {
+        "reason": "",
+        "signature_params": [
+          "block_size",
+          "input_ids",
+          "kwargs",
+          "mask_id",
+          "max_length",
+          "max_new_tokens",
+          "output_hidden_states",
+          "output_scores",
+          "return_dict_in_generate",
+          "small_block_size",
+          "stop_token",
+          "stopping_criteria",
+          "temperature",
+          "threshold",
+          "tokenizer",
+          "top_p",
+          "use_block_cache"
+        ],
+        "supported": true
+      },
+      "ran": true,
+      "status": "ran",
+      "tokenizer_ids": {
+        "mask_token_id": 151665,
+        "pad_token_id": 151643,
+        "stop_token_id": 151645
+      }
+    },
+    "prompts": {
+      "blocks": 4,
+      "count": 2,
+      "num_tokens": 128,
+      "padded_token_lens": [
+        32,
+        64
+      ],
+      "raw_token_lens": [
+        21,
+        37
+      ],
+      "texts": [
+        "Explain the key ideas of the theory of relativity in a few short sentences for a general audience.",
+        "The ocean appears blue because water absorbs red light more strongly than blue light. Describe how photosynthesis works in plants, why chlorophyll matters, and list the first five prime numbers."
+      ]
+    },
+    "quick": false,
+    "recorder_note": "instance-level raw-forward recorder, pinned __signature__, batch+len metadata only, installed uniformly across arms",
+    "reps": 30,
+    "run_utc": "2026-10-24T12:21:08.983644+00:00",
+    "seed": 2026,
+    "t001_probe_results": {
+      "P1_kv_unchanged": true,
+      "P2_n2_batched_equals_single": [
+        true,
+        true
+      ],
+      "P3_argmax_match_per_row": [
+        1.0,
+        1.0,
+        1.0,
+        1.0
+      ],
+      "P3_maxdiff_per_row": [
+        0.0,
+        0.0,
+        0.0,
+        0.0
+      ],
+      "P4_expand_vram_mb": 4.36,
+      "P4_peak_delta_mb": 9.63,
+      "P5_conclusion": "whole-block draft/verify required (intra-block bidirectional attention)",
+      "P5_slice_vs_block_maxdiff": {
+        "sb0": 1.5,
+        "sb16": 8.875,
+        "sb8": 7.21875
+      },
+      "date": "2026-10-24",
+      "device": "Quadro RTX 5000"
+    },
+    "timing_note": "perf_counter + cuda.synchronize around the whole generation, warmup discarded, per-rep round-robin; same-run A/B ratios are internally valid, absolute p50s are not cross-artifact comparable",
+    "transformers_version": "4.53.1"
+  },
+  "overall": "supported",
+  "schema": "ar034_kv_speculative_bench",
+  "schema_version": 1,
+  "sidecar": {
+    "ledger_rows": [
+      {
+        "a": {
+          "all_full_canvas": true,
+          "block_aligned": true,
+          "by_canvas_len": {
+            "64": 31
+          },
+          "calls": 31,
+          "sum_iter_times_tcall": 1984,
+          "total_tokens": 1984
+        },
+        "b2": {
+          "delta": {
+            "block_rebuilds": 1,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 1024,
+            "prefill_forwards": 1,
+            "slice_forwards": 30,
+            "spec_draft_forwards": 0,
+            "spec_verify_forwards": 0
+          },
+          "identity": true,
+          "reconstruction": {
+            "counts": {
+              "block_rebuild": 1,
+              "commit": 1,
+              "prefill": 1,
+              "sb0_partial": 29
+            },
+            "max_call_len": 32,
+            "predicted": {
+              "block_rebuilds": 1,
+              "commit_forwards": 1,
+              "forward_tokens": 1024,
+              "prefill_forwards": 1,
+              "slice_forwards": 30
+            },
+            "structure_ok": true,
+            "total_tokens": 1024
+          }
+        },
+        "d": {
+          "balanced": true,
+          "delta": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 224,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_draft_forwards": 1,
+            "spec_verify_forwards": 1
+          },
+          "identity": true,
+          "lt_b2": true,
+          "reconstruction": {
+            "counts": {
+              "commit": 1,
+              "prefill": 1,
+              "spec_draft": 1,
+              "spec_verify": 1
+            },
+            "predicted": {
+              "block_rebuilds": 0,
+              "commit_forwards": 1,
+              "prefill_forwards": 1,
+              "slice_forwards": 0,
+              "spec_draft_forwards": 1,
+              "spec_verify_forwards": 1
+            },
+            "structure_ok": true,
+            "total_tokens": 128
+          }
+        },
+        "prompt_index": 0
+      },
+      {
+        "a": {
+          "all_full_canvas": true,
+          "block_aligned": true,
+          "by_canvas_len": {
+            "96": 27
+          },
+          "calls": 27,
+          "sum_iter_times_tcall": 2592,
+          "total_tokens": 2592
+        },
+        "b2": {
+          "delta": {
+            "block_rebuilds": 1,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 928,
+            "prefill_forwards": 1,
+            "slice_forwards": 26,
+            "spec_draft_forwards": 0,
+            "spec_verify_forwards": 0
+          },
+          "identity": true,
+          "reconstruction": {
+            "counts": {
+              "block_rebuild": 1,
+              "commit": 1,
+              "prefill": 1,
+              "sb0_partial": 25
+            },
+            "max_call_len": 64,
+            "predicted": {
+              "block_rebuilds": 1,
+              "commit_forwards": 1,
+              "forward_tokens": 928,
+              "prefill_forwards": 1,
+              "slice_forwards": 26
+            },
+            "structure_ok": true,
+            "total_tokens": 928
+          }
+        },
+        "d": {
+          "balanced": true,
+          "delta": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 256,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_draft_forwards": 1,
+            "spec_verify_forwards": 1
+          },
+          "identity": true,
+          "lt_b2": true,
+          "reconstruction": {
+            "counts": {
+              "commit": 1,
+              "prefill": 1,
+              "spec_draft": 1,
+              "spec_verify": 1
+            },
+            "predicted": {
+              "block_rebuilds": 0,
+              "commit_forwards": 1,
+              "prefill_forwards": 1,
+              "slice_forwards": 0,
+              "spec_draft_forwards": 1,
+              "spec_verify_forwards": 1
+            },
+            "structure_ok": true,
+            "total_tokens": 160
+          }
+        },
+        "prompt_index": 1
+      }
+    ],
+    "per_prompt": [
+      {
+        "block_match_counts": {
+          "cache-full": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "cache-spec": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 34,
+          "cache-full": 34,
+          "cache-spec": 34,
+          "official": 129
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.369661,
+          "cache-full": 0.369661,
+          "cache-spec": 0.369661
+        },
+        "prompt_index": 0
+      },
+      {
+        "block_match_counts": {
+          "cache-full": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          },
+          "cache-spec": {
+            "compared": 2,
+            "matched": 2,
+            "rate": 1.0
+          }
+        },
+        "decode_length": {
+          "baseline": 66,
+          "cache-full": 66,
+          "cache-spec": 66,
+          "official": 38
+        },
+        "posthoc_overall_mean": {
+          "baseline": 0.570341,
+          "cache-full": 0.570341,
+          "cache-spec": 0.570341
+        },
+        "prompt_index": 1
+      }
+    ],
+    "reproduction": {
+      "mismatches": [],
+      "rows": 8
+    }
+  },
+  "timing": {
+    "per_arm_full_stats": {
+      "baseline": {
+        "mean": 27196.822874995025,
+        "n": 60,
+        "p50": 28100.966099940706,
+        "std": 6282.485866395001
+      },
+      "cache-full": {
+        "mean": 22747.076836664928,
+        "n": 60,
+        "p50": 22447.446850012057,
+        "std": 5914.000789151827
+      },
+      "cache-spec": {
+        "mean": 3359.7965300044357,
+        "n": 60,
+        "p50": 3218.60610001022,
+        "std": 797.9652127122741
+      },
+      "official": {
+        "mean": 39829.171613330254,
+        "n": 60,
+        "p50": 25546.858199988492,
+        "std": 39638.31530983395
+      }
+    },
+    "per_arm_p50_ms": {
+      "baseline": 28100.966099940706,
+      "cache-full": 22447.446850012057,
+      "cache-spec": 3218.60610001022,
+      "official": 25546.858199988492
+    },
+    "per_arm_per_prompt_stats": {
+      "baseline": {
+        "prompt0": {
+          "mean": 24737.014253328864,
+          "n": 30,
+          "p50": 23891.367250005715,
+          "std": 5328.601231260895
+        },
+        "prompt1": {
+          "mean": 29656.631496661186,
+          "n": 30,
+          "p50": 29264.76479996927,
+          "std": 6200.3184862283
+        }
+      },
+      "cache-full": {
+        "prompt0": {
+          "mean": 24040.301780002967,
+          "n": 30,
+          "p50": 22794.281799986493,
+          "std": 6056.406840367906
+        },
+        "prompt1": {
+          "mean": 21453.85189332689,
+          "n": 30,
+          "p50": 19969.786699977703,
+          "std": 5470.4556797380565
+        }
+      },
+      "cache-spec": {
+        "prompt0": {
+          "mean": 3295.1894533393593,
+          "n": 30,
+          "p50": 3179.638299974613,
+          "std": 782.485696514045
+        },
+        "prompt1": {
+          "mean": 3424.4036066695116,
+          "n": 30,
+          "p50": 3235.6216000625864,
+          "std": 808.0005862859296
+        }
+      },
+      "official": {
+        "prompt0": {
+          "mean": 77405.81849999337,
+          "n": 30,
+          "p50": 75909.1094500618,
+          "std": 17835.17363992124
+        },
+        "prompt1": {
+          "mean": 2252.524726667131,
+          "n": 30,
+          "p50": 2136.144449992571,
+          "std": 538.4050032765701
+        }
+      }
+    },
+    "per_arm_std_ms": {
+      "baseline": 6282.485866395001,
+      "cache-full": 5914.000789151827,
+      "cache-spec": 797.9652127122741,
+      "official": 39638.31530983395
+    },
+    "samples_ms": {
+      "baseline": {
+        "prompt0": [
+          23086.258600000292,
+          23301.934399991296,
+          25214.976400020532,
+          23973.58480002731,
+          16850.977499969304,
+          26068.58760002069,
+          26529.636399936862,
+          25187.65420001,
+          24412.627100013196,
+          16481.902900035493,
+          15999.26139996387,
+          15934.135399991646,
+          15649.805100052617,
+          20890.81020001322,
+          25577.583400066942,
+          23809.14969998412,
+          23124.41049993504,
+          22900.055999984033,
+          22641.286699916236,
+          22857.46279999148,
+          22337.926400010474,
+          22527.446200023405,
+          32534.09259999171,
+          32076.42419997137,
+          31971.991700003855,
+          31905.300099984743,
+          32162.306899903342,
+          32064.93680004496,
+          31998.645500047132,
+          32039.256099960767
+        ],
+        "prompt1": [
+          28357.568399980664,
+          28750.13780000154,
+          30218.017100007273,
+          29719.891599961556,
+          24554.72439993173,
+          30596.543699968606,
+          31736.055099987425,
+          29910.513199982233,
+          20090.074399951845,
+          20424.93320000358,
+          18965.280000003986,
+          18613.58750006184,
+          18253.90640005935,
+          31715.861600008793,
+          30211.791199981235,
+          28809.637999976985,
+          28739.190599997528,
+          28218.328499933705,
+          28264.077799976803,
+          27983.603699947707,
+          28465.10760008823,
+          27713.124600006267,
+          45529.61560001131,
+          36094.81779998168,
+          36246.66940001771,
+          35970.26430000551,
+          36192.340299952775,
+          36595.18720000051,
+          36628.67240002379,
+          36129.421500023454
+        ]
+      },
+      "cache-full": {
+        "prompt0": [
+          21754.34859993402,
+          22792.90270002093,
+          24117.245299974456,
+          21019.07190005295,
+          17665.483199991286,
+          24941.567500005476,
+          26422.03670006711,
+          23289.852499961853,
+          16719.821500009857,
+          16290.839400026016,
+          15675.741199986078,
+          15315.726600005291,
+          15210.40240000002,
+          15436.324900016189,
+          24677.66289995052,
+          23050.331800011918,
+          22795.660899952054,
+          22530.66899999976,
+          22275.004400056787,
+          22494.050199980848,
+          22562.711599981412,
+          22131.91870006267,
+          33648.37249997072,
+          32550.837899907492,
+          32592.631000094116,
+          32467.752899974585,
+          32713.84570002556,
+          32715.18100006506,
+          32717.059900052845,
+          32633.998599951155
+        ],
+        "prompt1": [
+          19088.470800081268,
+          20216.92559996154,
+          29076.733499998227,
+          14407.850499963388,
+          22859.830200090073,
+          23281.265900004655,
+          22400.843500043266,
+          19846.76500002388,
+          14583.349699969403,
+          14708.317099954002,
+          13525.848499964923,
+          13488.16320009064,
+          13767.872700002044,
+          14046.287899953313,
+          21440.869400044903,
+          20092.808399931528,
+          19085.332199931145,
+          19724.96359993238,
+          19723.176199942827,
+          19636.406599893235,
+          19629.249199992046,
+          19620.20769994706,
+          29603.12830004841,
+          28352.8529999312,
+          28651.81389998179,
+          28469.72559997812,
+          28532.45549998246,
+          28661.028300062753,
+          28528.27080001589,
+          28564.744000090286
+        ]
+      },
+      "cache-spec": {
+        "prompt0": [
+          3056.324900011532,
+          3582.484500017017,
+          3156.5432000206783,
+          2324.2682000854984,
+          3849.7599998954684,
+          3529.3794999597594,
+          3492.9051999934018,
+          3153.611100045964,
+          2298.8206000300124,
+          2346.381100011058,
+          2307.9633999150246,
+          2131.5215999493375,
+          2120.8884000079706,
+          2167.7321000024676,
+          3802.4341000709683,
+          3176.702299970202,
+          3071.8923000385985,
+          3182.5742999790236,
+          3224.8281000647694,
+          3183.152199955657,
+          3067.7593000000343,
+          3156.817900016904,
+          2504.692399990745,
+          4403.904399950989,
+          4476.89380007796,
+          4437.860400066711,
+          4339.723299955949,
+          4433.499000035226,
+          4438.331300043501,
+          4436.034700018354
+        ],
+        "prompt1": [
+          3105.576500063762,
+          4312.2463000472635,
+          3229.003900079988,
+          2370.712799951434,
+          3633.3644000114873,
+          3688.787500024773,
+          3787.6981999725103,
+          3216.7099999496713,
+          2338.9007000951096,
+          2380.883500096388,
+          2421.8795999186113,
+          2167.2269999980927,
+          2174.7297999681905,
+          2204.570100060664,
+          3783.8729999493808,
+          3242.239300045185,
+          3093.8858999870718,
+          3211.8807999650016,
+          3123.367599910125,
+          3220.5022000707686,
+          3328.824699972756,
+          3131.5581999951974,
+          3811.9382999138907,
+          4470.45360004995,
+          4575.783799984492,
+          4500.08499994874,
+          4592.928200028837,
+          4502.135699964128,
+          4578.472500084899,
+          4531.889099976979
+        ]
+      },
+      "official": {
+        "prompt0": [
+          69624.81609999668,
+          75352.91550005786,
+          76465.30340006575,
+          77525.57990001515,
+          81586.2735999981,
+          83601.65550000966,
+          78905.42829991318,
+          77064.03870007489,
+          52076.93600002676,
+          52207.19059999101,
+          50774.56369996071,
+          49391.79270004388,
+          47973.000899888575,
+          56367.67419998068,
+          82036.66500002146,
+          72169.08739996143,
+          69644.20649991371,
+          71508.19429999683,
+          69030.5702999467,
+          69943.31120001152,
+          70173.07470005471,
+          70217.90120005608,
+          102635.01329999417,
+          103121.05149996933,
+          101856.7184000276,
+          101750.48449996393,
+          102249.16630005464,
+          102374.59439993836,
+          102139.25909996033,
+          102408.08779990766
+        ],
+        "prompt1": [
+          1959.1267999494448,
+          2214.7394999628887,
+          2384.131000027992,
+          2088.7435999466106,
+          2241.7364000575617,
+          2366.0203999606892,
+          2312.1864000568166,
+          2177.246499923058,
+          1515.254000085406,
+          1532.7500000130385,
+          1499.1347000468522,
+          1471.6303999302909,
+          1403.1303999945521,
+          1495.9827000275254,
+          2394.5378999924287,
+          2095.042400062084,
+          2066.710399929434,
+          2006.8520000204444,
+          2032.2163999080658,
+          2028.7771000294015,
+          2081.9141999818385,
+          2061.5378000074998,
+          3120.7155000884086,
+          3020.3649000031874,
+          3000.870499992743,
+          2972.3458000225946,
+          2994.539999985136,
+          3029.8493000445887,
+          2989.7776000434533,
+          3017.8771999198943
+        ]
+      }
+    }
+  },
+  "verdicts": {
+    "h1": {
+      "faces": {
+        "cache-full": {
+          "a_decode_lengths_equal": true,
+          "b_token_rate_ge_0.98": true,
+          "c_posthoc_gap_le_1e-3": true
+        },
+        "cache-spec": {
+          "a_decode_lengths_equal": true,
+          "b_token_rate_ge_0.98": true,
+          "c_posthoc_gap_le_1e-3": true
+        }
+      },
+      "numbers": {
+        "cache-full": {
+          "baseline_decode_lengths": [
+            34,
+            66
+          ],
+          "baseline_posthoc_mean": 0.470001,
+          "compared": 4,
+          "decode_lengths": [
+            34,
+            66
+          ],
+          "matched": 4,
+          "posthoc_gap": 0.0,
+          "posthoc_mean": 0.470001,
+          "token_rate": 1.0
+        },
+        "cache-spec": {
+          "baseline_decode_lengths": [
+            34,
+            66
+          ],
+          "baseline_posthoc_mean": 0.470001,
+          "compared": 4,
+          "decode_lengths": [
+            34,
+            66
+          ],
+          "matched": 4,
+          "posthoc_gap": 0.0,
+          "posthoc_mean": 0.470001,
+          "token_rate": 1.0
+        }
+      },
+      "verdict": "supported"
+    },
+    "h2": {
+      "faces": {
+        "a_baseline_over_d_gt_1": true,
+        "b_b2_over_d_gt_1": true
+      },
+      "numbers": {
+        "b2_ms": 22447.446850012057,
+        "baseline_ms": 28100.966099940706,
+        "d_ms": 3218.60610001022,
+        "official_ms": 25546.858199988492,
+        "report_only_official_ratios": {
+          "b2_vs_official": 0.8787,
+          "d_vs_official": 0.126,
+          "official_vs_baseline": 0.9091
+        },
+        "rule": "supported iff p50(A)/p50(D) > 1.0 AND p50(B2)/p50(D) > 1.0 strictly; official ratios and sigmas are report-only",
+        "sigma_b2": 5914.000789151827,
+        "sigma_baseline": 6282.485866395001,
+        "sigma_d": 797.9652127122741,
+        "speedup_d_vs_b2": 6.9743,
+        "speedup_d_vs_b2_raw": 6.974275867413779,
+        "speedup_d_vs_baseline": 8.7308,
+        "speedup_d_vs_baseline_raw": 8.730787560444714
+      },
+      "verdict": "supported"
+    },
+    "h3": {
+      "faces": {
+        "a_full_canvas_structure": true,
+        "b2_ledger_identity": true,
+        "d_ledger_identity": true,
+        "d_lt_b2": true,
+        "d_spec_balanced": true
+      },
+      "numbers": {
+        "a_forward_tokens_total": 4576,
+        "b2_forward_tokens_total": 1952,
+        "b2_forwards_total": 62,
+        "d_forward_tokens_total": 288,
+        "d_forwards_total": 8,
+        "rule": "per (D, prompt): stats delta == class reconstruction (prefill=1, spec_draft==spec_verify>0, commit, degraded 0, spec len==block, verify batch==N); D total FORWARD COUNT < B2 total; A all full-canvas aligned. Token-row totals are report-only (D trades more rows for far fewer launches)"
+      },
+      "verdict": "supported"
+    },
+    "h4": {
+      "faces": {
+        "b2_armed_engaged": true,
+        "b2_degraded_zero": true,
+        "d_armed_engaged": true,
+        "d_degraded_zero": true,
+        "reproduction_ok": true,
+        "topology_frozen": true
+      },
+      "numbers": {
+        "canary_faces": {
+          "b2_armed_engaged": true,
+          "b2_degraded_zero": true,
+          "d_armed_engaged": true,
+          "d_degraded_zero": true,
+          "topology_frozen": true
+        },
+        "repro_rows": []
+      },
+      "verdict": "supported"
+    },
+    "overall": "supported"
+  }
+}

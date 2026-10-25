@@ -50,6 +50,12 @@ ActFold 用 **Branch Folding（分支折叠）** 攻击这一冗余：在每一�
 > 13.5%）、质量全臂一致（gap 0.0、decode [34,66]），同一几何上比官方原生
 > `batch_sample` 快 1.52×（report-only）。
 >
+> **最新交付（AR034）**：**KV-cached speculative block decoding**——历史 KV 缓存
+> × 投机候选验证的组合档：历史 KV 按 batch 维只读展开 N 行（逐行位级等价），
+> 每个 small block 的 ~31 次串行前向压成「整块草稿 + `[N, block]` 验证 + 共享
+> commit」，四臂 reps=30 预承诺单次 **overall supported**——**8.7308× vs 非缓存
+> 基线臂、6.9743× vs AR033 缓存臂**，质量逐位不损（gap 0.0、decode [34,66]）。
+>
 > **最强 baseline 证据（AR022）**：Fast-dLLM-v2-1.5B 真实生成回路，贪心锚定
 > 批量投机 **7.02×** 于非缓存基线臂，且质量面与之**逐位对齐**（post-hoc
 > 置信 gap = 0.0、解码长度/早停完全恢复）；AR032 推进复用推至 **7.97×**。
@@ -104,6 +110,14 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 16 | **层级自适应重算预算 + 不确定性排序验证**（AR031） | AR021/AR022 的折叠量由 tau 门控**隐式**决定——逐层重算量无硬上界，发散需求突发时折叠收益不可控；批量验证的逐行选定与验证顺序解耦，有序化存在理论空间。三臂真实基准实测该 workload 下 cap 恒不绑定（诚实负结果即交付） | ①A2 窗口化逐层预算策略（warmup 均匀 + 窗口边界按层稳定度效用加权再估、floor+最大余数+盈余回收分配，`observe_layer` 设备端零同步累计）；②A1 精确计数 cap （豁免位 = stable ∪ forced ∪ NaN 恒重算不记账，非豁免按相似度降序折叠至重算 ≤ B_l；graph 面 gather 选择器零回读）；③`broadcast_forced_to_mask`（#43 位置级 forced `[T]` 在两个 cap 阻塞点广播到掩码形状，核心同形契约保持严格）；④不确定性排序验证（margin/margin_gap validated-first + early-stop，`uncertainty_stats` 观测面）；⑤三臂冻结判定基准（H1-H4 预注册 + 逐 (arm,prompt) 双跑 reproduction 一票否决） | 三臂 reps=30：质量/安全面**全 supported**（posthoc gap 0.0、解码长度 34/66 恢复、块级 exact ≥ off、winner 等价 100%、逐层预算违规 0、repro 6/6）；H2 **6.2690×** vs baseline；**H3 诚实 refuted**——机制无附加延迟收益（full vs adaptive-off 1.0004×，Δ=1.15ms << 2σ=1464.68ms），以**安全/正则化面**交付 |
 | 17 | **投机验证前向的块推进复用**（AR032） | 投机块循环每 block 三次折叠前向——draft serial、`[N,T]` batched 验证、block-advance serial——而第三次前向的唯一产出一个 token；验证 logits 在业界（SpecInfer/EAGLE）与本项目均为 write-only 即弃。验证前向已对 winner 行（== commit 后 canvas，构造性逐位相同）算过全 `[T,V]` logits，其尾位置分布就是推进分布本身——**前向级结构性冗余** | opt-in `speculative_advance_reuse`（默认关 = AR031 末态逐字节不变；True+N=0 构造期 ValueError）：省略 block-advance serial forward，`next_token = argmax(tail_logits)`；复用源冻结为**最后一个 small block** 的验证前向（S>1 错源必被内容条件化 fixture + 缺陷注入捕获，UT-3174）；`[1,V]` 尾行克隆断开 `[N,T,V]` cat backing 滞留（D8）；folding chain 直连 winner branch（on 臂不铸造 `fastdllm_ar_*`——off 臂 ar 计数即冻结 eligible 探针）；eager 全重算（tau=1.0）on/off 逐位一致硬门 + 两类 ULP 漂移面文档化；H3 计数面 `off_serial−on_serial==eligible` 硬门（单独可 refute） | 三臂 reps=30 预承诺单次：**overall supported（H1-H4 全过）**——H1 gap 0.0 / decode [34,66] on==off / exact-match 1.0/1.0；H2 **7.9698×** vs baseline（26305.87 vs 3300.68ms p50）；H3 **1.2875×** 归因（4249.76 vs 3300.68ms）+ 计数 4−2==2 逐 prompt 成立；H4 canary 3/3 + 逐臂 ledger 界 + repro 6/6——投机加速 rung 从 7.02×（AR022）推至 **7.97×**，质量逐位不损；**服务器复跑**：RTX 6000D 同三臂全 supported，H2 **10.3628×**（435.51 vs 42.03ms p50）、H3 归因 1.6374×（eligible=2/prompt）、repro 6/6——机制结构跨平台一致；**证据边界**：质量门覆盖首块早停几何（34/66 token），多块生成质量代价与 `reuse_graph` 面非法访存见[当前限制](#当前限制与路线图) 第 14/15 条 |
 | 18 | **Block-causal 精确历史缓存（官方 v2 parity）**（AR033） | 需求期审计发现：官方 v2 `batch_sample` **本就是分层缓存配方**（跨块 KV 提交 + 块内 sub-block KV + 失效规则，官方自述对 AR 解码最高 2.5×），而本仓库阶梯（AR016-AR032）对照的「官方基线臂」实为**非缓存全量重算变体**——既有加速比不能解读为 vs 官方 SOTA 配方（strawman 勘误，FR5）。D1 已证 block-causal 掩码下编辑位置左侧激活逐层 cos≡1.0——历史前缀跨重掩码迭代、跨块**构造级精确**，官方正是在 KV 层提取该结构性冗余，ActFold 此前从未提取 | opt-in `history_cache`（默认 `False` = AR032 终态逐字节不变；与投机路径组合显式 `ValueError`，禁止静默混跑）：prompt 预填充一次建史 → 每个重掩码迭代仅对活动切片前向（B1 跨块位级面）；块内 small-block KV 按官方边界失效规则缓存——活动 small block 前界 token 仍为 mask → 整块重建，否则仅切片部分前向（B2，`replace_position` 语义对齐官方 :102/:108）；块完成提交进史；wrapped 模型能力探测签名合同（不支持 cache kwargs → 显式 `RuntimeError`，绝不静默退化为全量重算）；fp32 tiny block-causal fixture 位级钉固（`torch.equal`）；raw-call recorder 七类分类 + 类几何断言重建账本（H3 结构面） | 四臂 reps=30 预承诺单次（**官方 v2 几何 block=32/sb=8**，~3.5h）：**overall supported（H1-H4 全过）**——H1 gap 0.0 / decode [34,66] 四臂一致 / token rate 1.0；H2 **B1 1.2989× / B2 1.5431×** vs 非缓存基线臂（B2 vs B1 1.188× 子块缓存增量）；H3 账本精确恒等 **A=5280 / B1=2208 / B2=714 tokens**（B2/A=0.1352）+ 全量画布结构面绿；H4 canary 全绿（degraded 0、armed engaged）+ repro 8/8；**C 臂（官方原生 `batch_sample`，report-only）**：B1/B2 分别比官方快 1.2821×/1.5232×，官方 vs 非缓存基线臂 1.0131×——strawman 勘误后全部阶梯口径重述为 vs 非缓存基线臂 |
+| 19 | **KV-cached speculative block decoding**（AR034） | AR033 交付了历史 KV 缓存（B2 1.5431×），但每个 small block 仍需 ~`sb` 次串行切片前向；AR021/AR022 的批量投机验证把重掩码迭代序列压成「1 草稿 + 1 验证」，二者此前**构造期互斥**（AR033 显式列为 out of scope）。组合的结构性机会：历史 KV **按 batch 维展开 N 行只读**（T001 P1/P3：逐行位级等价 maxdiff 0.0），候选行共享同一份历史，验证后一次性提交整块——launch 数从 ~`2·S·sb+1` 压到 `2·S+1`（WDDM/小内核主机的主开销） | 解除互斥（默认关字节不变；`history_small_block_cache`/`folded_model`/uncertainty 组合显式 `ValueError`）：**整活动块**草稿前向（块内双向注意力使切片不可用——P5 maxdiff 1.5–8.9）→ AR022 冻结语义构造 N 候选（row0=贪心 argmax、冻结种子公式）→ `[N, block]` 批量验证（`_expand_history_kv` 只读复制展开、`update=False`）→ min-prob winner 一次性提交 small block → 既有 commit+advance 前向；账本增 `spec_draft`/`spec_verify`；几何 sb=32（AR022 已验证的贪心语义；sb=8 随机行可击败贪心行——T007 实测 2/8 胜、96 vs 34 tokens 发散） | 四臂 reps=30 预承诺单次（**AR022 血缘几何 block=32/sb=32**，~2.5h）：**overall supported（H1-H4 全过）**——H1 gap **0.0** / decode **[34,66]** / token rate **1.0** / posthoc 0.470001==A；H2 **D vs A 8.7308×、D vs B2 6.9743×**（28101.0 / 22447.4 / **3218.6**ms p50；D 比官方快 **7.94×**，report-only）；H3 D 前向 **8 次** vs B2 **62 次**（每 prompt 4 vs 31），token 行 288 vs 1952 vs A 4576，账本恒等；H4 canary 全绿 + repro 8/8 |
+| 20 | **置信度门控投机提交（成本/质量旋钮）**（AR035） | AR034 组合臂在多块长生成上塌缩（README 限制项 14）：整块提交把 `sb` 个位置一次性写死，验证概率低的位置也被接受。门控提交只接受验证概率 ≥ `threshold` 的掩码位、并以 argmax 位强制推进保证每轮至少 1 token，理论上可在多块场景约束错误传播；但真实冒烟显示 τ=0.95 会把 1 轮整块提交打散成 ~12 轮 | 逐位门控接受 + 强制推进 + `spec_gated_iterations` 账本；三臂真实基准 A/D/G 冻结判定 | **诚实负面**：质量逐位不损（token 级 == A、mask-free、账本恒等、repro 全绿），但 p50 **0.7385× vs 非缓存基线**、成本 **9.58× vs AR034 组合臂**——定位为安全/保守度旋钮而非加速档 |
+| 21 | **提交-草稿融合（CDF）**（AR036） | AR034 组合臂每 block 固定 3 次前向（草稿 / `[N,B]` 验证 / 提交），launch 密度是主要成本；而 verify 的 row-0 尾部 logits 已给出下一块第 0 位（AR032 输入等价），块间因果注意力又允许「提交第 b 块 KV」与「计算第 b+1 块决策行」合并进同一次前向 | `commit_draft_fusion`：一次 `[1,2B]` 融合前向 + KV 裁剪回历史 + 草稿暂存给下一块消费；裁剪不可用则一次性告警回退 | **探针四关全 0.0**（融合块 logits / 下一块决策行 / 裁剪 KV）；每块 3→**2** 次前向，真实冒烟 `fused+draft==verify`、192 token 同长同质量，D/F **1.235×**（单 rep，宿主争用）；formal reps=30 待静默服务器 |
+| 22 | **自适应候选预算（ACB）**（AR037） | `[N,B]` 验证的职责只是从候选行里挑胜者，而 `sb=block=32` 下贪心行胜率实测 100%——多数验证只是在确认贪心行；同时「多块长生成质量塌缩」从未被真实长几何测过（此前全部工件在 34/66 token 早停几何） | 先做长几何测量（A vs D，192/320 token，`stop_token_id=-1`），再用草稿自身在仍掩码位的最小概率判定是否跳过验证；跳过块与 CDF 组合时 0 次额外前向 | **测量修正**：塌缩不成立（log p −2.0870 优于基线 −2.1162），长几何真实加速 9.4–10×；**ACB 实测**：τ=0.5 跳过率 50%，D+CDF 18.8→11.8 s（1.35×），log p 逐位不变，全栈对基线 **14.6×** |
+| 23 | **置信度分级验证调度（CSVC）**（AR038） | AR037 只做了「向下」一档（高置信→跳过），低置信块仍固定 N=4；按 SpecDec++/adaptive test-time compute 的思路，算力应跟随不确定性，低置信块应升档扩候选 | `candidate_budget_escalate` + `escalate_candidates`(默认 8) + `escalate_threshold`，与 skip 档共用块级置信度 `g_min`；账本 `spec_budget_escalations` | **诚实负面**：升档 N=8 的 mean log p 与 N=4 **完全相同**（−2.0870，逐位一致），成本 +46%（23.35 vs 16.02 s）→ 候选扩展在本架构价值上界为 0；保留为默认关的消融证据 |
+| 24 | **免费验证 + 无验证贪心提交（FV/VFG）**（AR039） | AR038 已证候选扩展零收益，说明 `[N,B]` 验证从未改变结果、只剩保险作用，却仍要付 1 次前向/块；而 CDF 的融合前向 `[block_b | next_canvas]` **本来就重新读取了刚提交的块**，其 logits 是零成本的第二意见 | `verification_free_commit` + `free_verify_floor`：置信时直接整块提交贪心草稿、跳过验证；用融合 logits 做免费复评，发现低置信即**再武装**下一块走完整验证；跳过块把草稿尾行交接给 CDF | **实测**：VFG 8.84 s、logp **−2.0870 与 ACB 逐位一致**、6 块中 4 块免验证、2 次免费验证报警；对非缓存基线 **19.5×**（ACB+CDF 14.6×）；顺带修复跳过块不交接 advance 的真实缺陷（ACB 11.84→10.16 s） |
+| 25 | **多 prompt × 多长度矩阵基准**（AR040） | AR033→AR039 全部证据都是**单 prompt 单几何**；「19.5× 且质量不降」是否可推广从未验证 | 可复用矩阵 runner：真实长文 prompt 集 × 长度 × 四臂（A/D/S/V），同模型 mean log p 作质量代理，冻结 H1-H4（质量 cell 比例、中位加速、账本、V 臂复现） | **速度鲁棒、质量不鲁棒**：中位 **16.2×**（16.1–24.5×，3/3 达标）但质量仅 **1/3** cell 达标——p2/p3 上组合臂明显劣于基线（−1.54 vs −0.81），VFG 在 p1 最好（−0.80）在 p3 最差（−1.85）→ 质量结论必须限定 workload；默认推荐保留验证的 D/S |
+| 26 | **置信度触发重掩码回退（CTR-F）**（AR041） | AR040 证明质量劣化来自**提交语义**（整块贪心一次性写死），而非验证环节；官方阈值重掩码在低置信块上明显更好 | `remask_fallback` + `remask_fallback_threshold`：块级最小置信度低于阈值时，该块**回退到官方迭代解掩**（复用既有切片路径，块级闩锁），其余块维持投机快速路径 | **机制无损**：回退档 logp 与基线**逐位相同**（3/3 prompt：−1.1528 / −0.8482 / −0.8086），且仍比基线快 **1.5×**（KV 缓存红利）；**标定结论**：块级最小值统计过悲观（15/15 块全回退）→ 质量安全模式 = τ≥0.2，速度优先模式 = D/VFG 并接受似然损失 |
 
 ### 机理详解（按创新演进顺序）
 
@@ -607,7 +621,270 @@ compared=4 为弱但诚实的冻结面（每 prompt 仅 2 可见生成 token）�
 **叙事口径**：AR016-AR032 冻结工件与判定函数一字不动，阶梯表与各节
 baseline 称谓重述为「非缓存 block-diffusion 基线臂」。
 
+
+#### 18. KV-cached speculative block decoding（AR034）：历史 KV × 投机验证，launch 数再降一个数量级
+
+动机：AR033 把重掩码迭代前向从全画布 `[T]` 收缩到活动切片（历史 KV 只读），
+但每个 small block 仍需 ~`sb` 次串行切片前向（threshold=0.95 下每迭代解
+~1 token）。AR021/AR022 的批量投机验证用「1 草稿 + 1 次 `[N,T]` 验证」替换
+整个迭代序列，可二者**构造期互斥**（AR033 只做缓存 parity，显式把组合列为
+out of scope）。组合的关键事实（T001 探针，真实 checkpoint）：历史
+`DynamicCache` 可按 batch 维展开 N 行（复制展开），批量验证**逐行与独立
+前向位级等价**（P3 maxdiff 0.0 / argmax 1.0），且**不修改输入历史**（P1）。
+另一个反直觉事实（P5）：块内双向注意力使**切片前向不可用于草稿/验证**
+（maxdiff 1.5–8.9 vs 整块），故组合臂前向整个活动块。
+
+机制（`history_cache=True` + `num_block_candidates>0`，默认关字节不变）：
+
+- **候选构造**：复用 AR022 冻结语义（row 0 = 草稿 argmax 贪心假设；随机行
+  用冻结种子公式；全程 device 端零回读）；
+- **批量验证**：`[N, block]` 单次前向 + `expand(kv, N)`（只读副本，
+  `update=False`）；R1 对齐取活动 small block 的决策行；min-prob 选 winner；
+- **一次性提交 + 推进**：winner 的 whole small block 写入画布；随后既有
+  `[1, block]` commit 前向提交 KV **并**产出推进 token（AR032 的 advance
+  reuse 在缓存路径上天然成立）；
+- **组合守卫**：`history_small_block_cache`（块内缓存 × 投机，v1 未定义）、
+  `folded_model`、`uncertainty_validation_order` 均构造期 `ValueError`；
+  原生模型不支持 cache kwargs → `RuntimeError`（AR033 探测复用）；
+- **几何（T007 实测落锤）**：投机提交单元必须匹配 AR022 已验证的贪心语义，
+  故用 `block=32 / small_block=32`。sb=8 下冻结 min-prob 规则会让随机 top-k
+  行击败贪心行（实测 2/8 胜 → decode 96 vs 34、gap 0.398）；N=1 贪心与 sb=32
+  均 token 级==A——这是**选择规则的实测边界**，不是并行提交本身的问题。
+
+实测（四臂基准 `scripts/ar034_kv_speculative_bench.py`，判定冻结先于数据
+收集，reps=30 预承诺单次，~2.5h）：**overall supported（H1-H4 全过）**——
+H1 gap **0.0**、decode **[34,66]** 全臂一致、token rate **1.0**、posthoc
+0.470001 逐位==A；H2 **D vs A 8.7308×、D vs B2 6.9743×**（28101.0 / 22447.4
+/ **3218.6** / 25546.9ms p50；D 比官方原生 `batch_sample` 快 **7.94×**，
+report-only；官方 vs 非缓存基线臂 1.10×）；H3 D 每 prompt 仅 **4 次前向**
+（prefill + spec_draft + spec_verify + commit）vs B2 **31 次**，token 行
+288 vs 1952 vs A 4576，账本 `spec_draft==spec_verify`、`prefill==1`、
+`degraded==0` 精确恒等；H4 canary 全绿 + repro 8/8。每个 small block 的
+~31 次串行前向被压成 2 次（草稿 + 验证）+ 1 次共享提交——**8.73× vs 非缓存
+基线臂、6.97× vs AR033 缓存臂**，质量逐位不损。
+
+诚实注记：(1) 8.73× 是首块早停几何（34/66 token）的 launch 压缩，**不外推到
+多块长生成**（AR022 的 D4 塌缩限制同样适用，见当前限制第 14 条）；(2) 几何为
+AR022 血缘 sb=32，与 AR033 的 sb=8 工件**不可跨工件比较** p50/decode；
+(3) 官方臂 report-only（RAW 未填充 prompt）；(4) 运行后段宿主状态变慢
+（official p50 25.5s、σ 明显抬升），round-robin 交错保护同 run 比值。
+
+#### 19. 置信度门控投机提交（AR035）：把「整块提交」换成「逐位门控接受」——一次诚实的成本测量
+
+AR034 的组合臂在多块长生成上会塌缩：整块提交一次写死 `sb` 个位置，验证概率低的位置同样被接受，
+错误在后续块里放大（README 限制项 14）。AR035 的假设是「只提交验证概率 ≥ `threshold` 的掩码位，
+未达标位保持掩码并在下一轮重新起草」，即以更多轮验证换更保守的提交。
+
+机制（`FastDLLMSamplerConfig.speculative_commit_gate`，默认关 = AR034 字节级不变）：winner 行确定后，
+以 `softmax(vrows[j*])` 取每个候选 token 的概率；`accept = (p >= threshold) & 仍为掩码`；空集时强制接受
+argmax 位（**每轮至少推进 1 token** 的进度保证）；只写 accept 位，`complete = 无剩余掩码`，
+未完成则继续下一轮。账本新增 `spec_gated_iterations`（只统计门控路径）。
+
+实测（`scripts/ar035_gated_spec_bench.py` 快速面，64 token、reps=2、τ=0.95）：
+p50 A 28269.4ms / D 3994.7ms / G 38282.0ms；**H1 supported**（token 级 == A、mask-free、decode [34] 三臂一致），
+**H3 supported**（G `gated == verify == 36`，A/D 为 0，degraded 0），**H4 supported**（repro 0 mismatch），
+**H2 refuted**——`A/G = 0.7385`（G 比非缓存基线还慢 1.35×）、`G/D = 9.5832`。
+
+结论：门控在真实权重上把「1 轮整块提交」打散成 12 轮左右，收益被轮数吃掉。AR035 因此按**安全/保守度旋钮**
+交付（预声明允许 H2 负面），不作为加速档进入阶梯；若后续要让门控成为多块长生成的加速档，需要相对门控
+（`p >= τ·max` 或 top-m 位）而非绝对阈值。
+
+#### 20. 提交-草稿融合（CDF，AR036）：把「提交」与「下一块草稿」压进同一次前向
+
+AR034 的组合臂每 block 三次前向：`[1,B]` 草稿、`[N,B]` 验证、`[1,B]` 提交（写 KV + 产出 advance token）。
+先做了一个结构推演：**深度 2 一次前向不可行**——下一块第 0 位是 advance token（依赖提交前向），而块内双向注意力
+让该位一错则整块验证失效；因此多块一体化前瞻在本架构下被锁死（记入 srs「非目标」，避免重复踩坑）。
+
+可行的是「提交(b) + 草稿(b+1)」融合：verify 的 row-0 尾部 logits 与提交前向尾行输入等价（AR032），
+故第 b+1 块画布在提交前即可构造；块间因果注意力允许一次 `[1,2B]` 前向同时写第 b 块 KV 并算出第 b+1 块全部决策行，
+再把多写的下一块（仍是掩码画布）KV 用 `DynamicCache.crop` 裁掉。每块 3 → **2** 次前向。
+
+**探针（真实 checkpoint，`scripts/ar036_cdf_probe.py`）**：P1 融合第 b 块 logits vs 独立提交 **maxdiff 0.0**；
+P2 下一块决策行 vs 独立草稿 **maxdiff 0.0 / argmax 100%**；P3 裁剪后 KV vs 提交 KV **0.0**；P4 `crop` 可用。
+
+**实现**：`FastDLLMSamplerConfig.commit_draft_fusion`（默认关 = AR035 逐字节一致；与 `speculative_commit_gate` 互斥），
+`_crop_history_kv` + 草稿 stash/consume + 裁剪不可用时一次性 `RuntimeWarning` 并实例内降级；账本新增 `spec_fused_forwards`。
+
+**实测（`scripts/ar036_commit_draft_fusion_bench.py`，快速冒烟）**：160 token、关 EOS、实际生成 192 token；
+`fused=6 + draft=4 == verify=10`（恒等式成立）、mask-free、与基线同长；单 rep **D/F = 1.235×**（宿主存在严重争用，仅方向性证据）。
+
+> **复现必读坑**：本 checkpoint 在常见 prompt 上会在 34 token 早停（仅 1 个完整块），CDF 因此**永不触发**。
+> 度量几何必须用 `--num-tokens 160 --no-eos --prompt-text "<长文本 prompt>"`，否则 `spec_fused_forwards` 恒为 0。
+
+#### 21. 自适应候选预算（ACB，AR037）：先证伪「长生成塌缩」，再删掉「只是确认」的验证
+
+**测量优先**。AR033→AR036 的全部工件都跑在 34/66 token 的早停几何上，因此 README 限制项 14 的
+「多块长生成质量塌缩」其实从未被验证。用 `stop_token_id=-1` + 192/320 token 长几何实测（真实 checkpoint）：
+
+| 指标（192 token） | A 非缓存基线 | D 缓存×投机 |
+|---|---|---|
+| mean log p（质量代理） | −2.1162 | **−2.0870（略优）** |
+| 低置信已提交位 (<0.5) | 48/223 | 43/223 |
+| 墙钟 | 172.4 s | **18.3 s（9.4×）** |
+| 逐位一致率 | — | 0.4260（首次分歧 @66） |
+
+结论：**塌缩不成立**——整块贪心提交与阈值重掩码是两条不同但等价的轨迹，逐位一致率不是质量指标；
+同模型似然 D 反而略优。同时长几何的真实加速（9.4×/10.0×）**高于**短几何的 8.73×。
+
+由此引出机制：既然 `sb=block=32` 下贪心行胜率 100%，`[N,B]` 验证多数时候只是在确认贪心行。
+**ACB**（`adaptive_candidate_budget` + `candidate_budget_threshold`）在草稿决策行上取仍掩码位置的
+最小贪心概率，达标即**跳过验证**、直接整块提交；与 AR036 CDF 组合时该块 **0 次额外前向**。
+
+实测（192 token，τ 扫描）：
+
+| 配置 | 墙钟 | verify | draft | fused | skips | mean log p |
+|---|---|---|---|---|---|---|
+| D（AR034） | 18.80 s | 6 | 6 | 0 | 0 | −2.0870 |
+| D + CDF | 16.02 s | 6 | 2 | 4 | 0 | −2.0870 |
+| **D + CDF + ACB(τ=0.5)** | **11.84 s** | 3 | 3 | 3 | 3 | **−2.0870** |
+
+τ=0.9 跳过率 0%（过保守），τ=0.7 → 33%，τ=0.5 → 50%，且**所有跳过配置的输出与非跳过逐位等价**。
+全栈对基线：**172.36 s → 11.84 s = 14.6×**。
+
+> 标定建议：默认 `candidate_budget_threshold=0.9` 在本文 workload 下不触发；生产建议 0.5–0.7。
+
+#### 22. 置信度分级验证调度（CSVC，AR038）：把「算力跟随不确定性」补完整，并测出它的价值上界
+
+AR037 的 ACB 只做了**向下**一档：高置信 → 跳过验证。按 SpecDec++/adaptive test-time compute 的思路，
+低置信块应该**升档**（扩候选行），把算力花在真正不确定的地方。AR038 把三档补完整：
+
+```
+g_min = min(softmax(草稿)[仍掩码位, 贪心 token])
+g_min >= skip_threshold            -> skip      (0 次额外前向)
+escalate_thr <= g_min < skip_thr    -> standard  (N = num_block_candidates)
+g_min <  escalate_thr               -> escalate  (N = escalate_candidates, 默认 8)
+```
+
+**实测（真实 checkpoint，192 token 长几何）**：
+
+| 配置 | 墙钟 | skips | escalations | mean log p |
+|---|---|---|---|---|
+| D + CDF（N=4） | 16.02 s | 0 | 0 | −2.0870 |
+| D + CDF + escalate(N=8) | 23.35 s | 0 | 6 | **−2.0870** |
+| ACB + CDF（τ=0.5） | **11.84 s** | 3 | 0 | −2.0870 |
+| ACB + CDF + escalate | 15.23 s | 3 | 3 | −2.0870 |
+
+结论（**诚实负面**）：升档对质量**零收益**（似然逐位相同），成本 **+46%**。原因是贪心锚定行在本 workload 下
+总是胜者，多出来的候选行只会多算验证。因此：
+
+- **skip 档是唯一有价值的档位**（AR037，−29% 墙钟且输出等价）；
+- **escalate 档默认关**，作为「test-time 候选扩展在本架构中价值上界 = 0」的已测量消融证据保留；
+- 若将来要在低置信块真正换质量，必须改**提交语义**（自校正重掩码），而不是加候选行。
+
+#### 23. 免费验证 + 无验证贪心提交（FV/VFG，AR039）：把「保险」改成先用免费信号、需要时再付费
+
+AR038 证明候选数扩展零收益——说明 `[N,B]` 验证在本 workload 上**从未改变过结果**，它只剩保险作用，
+却仍要付 1 次前向/块。与此同时，CDF 的融合前向 `[block_b | next_canvas]` **本来就重新读取了刚提交的块**，
+它的决策行 `aligned[:, 0:B]` 就是对该块已提交 token 的**免费复评**（零额外前向、零额外 KV 写入）。
+
+于是有两个机制：
+
+1. **VFG**：置信时直接整块提交贪心草稿，跳过 `[N,B]` 验证（CDF 下 = 1 次前向/块）；
+2. **FV + 再武装**：用融合 logits 复查刚提交块，若最小已提交概率 < `free_verify_floor`，
+   则**下一块强制走完整验证**。保险从「每块都买」变成「哨兵报警才买」。
+
+实现要点：跳过路径必须把**草稿尾行的 argmax** 交给 `_hc_pending_advance`（输入等价性同 AR032），
+否则下一块的 CDF 会静默失效——这是 AR037/AR038 遗留的真实缺陷，本轮已修复。
+
+**实测（真实 checkpoint，192 token 长几何）**：
+
+| 臂 | 墙钟 | verify | VFG 块 | FV（低置信） | mean log p |
+|---|---|---|---|---|---|
+| A 非缓存基线 | 172.36 s | — | — | — | −2.1162 |
+| D（CDF） | 14.50 s | 6 | 0 | — | −2.0870 |
+| S（ACB τ=0.5 + CDF） | 10.16 s | 3 | 0 | — | −2.0870 |
+| **V（VFG + CDF）** | **8.84 s** | **2** | **4** | 4 / 2 | **−2.0870** |
+
+- 6 个块里 4 块完全免验证，2 次免费验证报警触发再武装；
+- 输出与 ACB **逐位一致**（logp 相同）；
+- 对基线 **19.5×**（14.6× → 19.5×），且 ACB 自身因缺陷修复从 11.84 s 降到 10.16 s。
+
+#### 24. 多 prompt × 多长度矩阵基准（AR040）：把「19.5× 且质量不降」拆成「速度成立 / 质量有条件」
+
+AR033→AR039 的全部数字都来自**单 prompt、单几何、确定性单 rep**。这一节用一个可复用矩阵 runner
+（`scripts/ar040_matrix_bench.py`，6 条真实长文 prompt × 长度 × 四臂）把结论从「点」变成「分布」。
+
+**quick 实测（3 prompts × 160 token，真实 checkpoint）**：
+
+| cell | A | D | S | V | logp A | logp D=S | logp V | V 免验证/再武装 |
+|---|---|---|---|---|---|---|---|---|
+| p1 diffusion | 190.2 s | 12.04 s | 11.98 s | **7.76 s** | −1.153 | −1.312 | **−0.796** | 3 / 2 |
+| p2 向量库 | 125.3 s | 11.63 s | 11.73 s | **8.56 s** | **−0.848** | −0.990 | −1.303 | 2 / 3 |
+| p3 编译器 | 150.1 s | 12.02 s | 12.59 s | **9.28 s** | **−0.809** | −1.537 | −1.849 | 2 / 3 |
+
+冻结判定：**H1 失败（质量 1/3 cell 达标）、H2 序关系失败（1/3）、H3/H4 通过 → overall = refuted**。
+
+**三条硬结论**：
+
+1. **速度鲁棒**：中位 **16.2×**（各 cell 16.1–24.5×），3/3 达标——加速不是某个 prompt 的偶然。
+2. **质量不鲁棒**：p2/p3 上**带验证的 D/S 也明显劣于基线**（−1.537 vs −0.809）。单 prompt 的
+   「logp 不降」是 workload 特例，**不得再作为普适结论引用**。
+3. **VFG 是方差换速度**：p1 上最好（−0.796，甚至优于基线），p3 上最差（−1.849）；
+   跳过验证会提交贪心行，即使随机候选行本会胜出。
+
+**工程建议**：默认用 **D 或 S（保留验证）**；`verification_free_commit` 仅在可接受似然损失、
+追求极限延迟时启用，且必须跑本矩阵复验。要真正恢复质量鲁棒性，必须改**提交语义**
+（自校正重掩码 / 低置信块回退到阈值重掩码），而不是调候选数或阈值。
+
+#### 25. 置信度触发重掩码回退（CTR-F，AR041）：把质量交还给官方迭代，只在需要时付代价
+
+AR040 已定位病根：质量劣化来自**提交语义**——整块贪心把 31 个位置一次性写死，而官方是用
+`p > 0.95` 逐位置解掩、迭代修正。AR041 因此引入一个「安全阀」：块级置信度 `g_min` 低于阈值时，
+**该块整体回退到官方迭代解掩**（复用仓库既有的 `sb_available=False` 切片路径，零新增语义），
+并用块级闩锁保证同一块不重复判定。
+
+**实测（真实 checkpoint，160 token，AR040 的三条 prompt）**：
+
+| prompt | A 官方迭代 | D 整块贪心 | R（回退档） | logp A / D / R |
+|---|---|---|---|---|
+| p1 | 166.7 s | 10.0 s | 109.1 s | −1.1528 / −1.3118 / **−1.1528** |
+| p2 | 106.6 s | 10.4 s | 77.5 s | −0.8482 / −0.9904 / **−0.8482** |
+| p3 | 191.7 s | 15.0 s | 131.7 s | −0.8086 / −1.5370 / **−0.8086** |
+
+**三条结论**：
+
+1. **回退档质量与基线逐位相同**（logp 完全相等），且仍快 **1.5×** —— 这是「**质量安全模式**」：
+   官方解码语义 + 历史 KV 缓存，零质量代价。
+2. **块级最小置信度过于悲观**：τ 扫描 0.5/0.3/0.2 在 15/15 个块上全部回退（31 个掩码位里几乎总有
+   概率极低的位置）。τ=0.1 时 p2 放行 1 块，logp 立刻从 −0.8482 掉到 −0.8914 —— **放行即掉质量**。
+3. 因此本 checkpoint 上「整块贪心提交」**没有可安全放行的块**：速度与质量必须显式二选一，
+   或用**提交后修订**（免费验证定位低置信已提交位 → 回滚该块 KV 重解）。
+
+**模式选择建议**：质量优先 → `remask_fallback=True, remask_fallback_threshold>=0.2`（1.5×、零损失）；
+延迟优先 → D/VFG（10–19×，需在目标 workload 上接受似然损失并用 AR040 矩阵复验）。
+
 ## 最新实验结果
+### KV-cached speculative block decoding 四臂基准（AR034）：H1-H4 全 supported，D 8.73× vs 非缓存基线臂 / 6.97× vs 缓存臂（最新头条）
+
+**工作负载**：Fast-dLLM-v2-1.5B（AR019 venv `transformers==4.53.1`，
+Quadro RTX 5000 16GB WDDM，seed 2026），**AR022 血缘几何
+num_tokens=128 / block=32 / small_block=32**、2 prompts、reps=30 四臂
+round-robin（#39 计时，warmup 丢弃，~2.5h）：**A 非缓存基线臂**（全画布
+重算）/ **B2 AR033 缓存臂**（`history_cache` + 块内 sub-block 缓存）/
+**D 组合臂**（`history_cache` + `num_block_candidates=4` + 贪心锚定）/
+**C 官方原生 `batch_sample`**（report-only，RAW 未填充 prompt）。判定函数
+冻结先于数据收集；repro 双跑按 `(arm, prompt_index)` 配对；覆盖保护
+（rc=4 / rc=3）。工件：`results/optimization/ar034_kv_speculative_bench.json`
+（quick 面 `*_quick.json` 同判定契约、独立路径）。
+
+**冻结判定与实测**：
+
+| 判定 | 条件（冻结） | 实测 | 结果 |
+|---|---|---|---|
+| **H1 质量对齐** | D/B2 vs A：posthoc gap ≤ 1e-3；decode 长度全臂一致；贪心 token rate ≥ 0.98 | gap **0.0**（posthoc 0.470001==A）；decode **[34,66]**；token rate **1.0**（4/4） | **supported** |
+| **H2 端到端加速** | `p50(A)/p50(D) > 1` **且** `p50(B2)/p50(D) > 1`（D 须胜两个参照）；C report-only | **8.7308×**（28101.0 vs 3218.6ms）**且 6.9743×**（22447.4 vs 3218.6ms）；C report-only：D 比官方快 **7.94×**、官方 vs A 1.10× | **supported** |
+| **H3 机制账本** | D 类账本精确重建（prefill=1、`spec_draft==spec_verify>0`、commit、degraded 0、spec len==block、verify batch==N）+ **D 总前向数 < B2**；A 全量画布结构面 | D **8** 次前向 vs B2 **62**（每 prompt 4 vs 31）；token 行 288 vs 1952 vs A 4576；计数 p0/p1 `{prefill:1, commit:1, spec_draft:1, spec_verify:1}` / B2 `{prefill:1, block_rebuild:1, sb0_partial:29/25, commit:1}`；degraded 0 | **supported** |
+| **H4 诚实账本** | canary 合取（D armed/degraded 0、B2 armed、拓扑冻结）+ repro 双跑严格相等（失配 → 全部 blocked） | canary 全绿；repro **8/8**、0 mismatch | **supported** |
+
+**overall: supported**。历史 KV 的只读批量展开（逐行位级等价）让 N 个候选
+共享同一份历史；每个 small block 的 ~31 次串行切片前向被压成 **2 次**
+（整块草稿 + `[N, block]` 验证）+ 1 次共享 commit——**8.73× vs 非缓存基线
+臂、6.97× vs AR033 缓存臂**，且质量逐位不损（gap 0.0 / decode 恢复 /
+token rate 1.0）。**几何注记（T007）**：sb=8 下随机 top-k 行可击败贪心行
+（2/8 胜 → decode 96 vs 34），故采用 AR022 血缘 sb=32。**证据边界**：8.73×
+是首块早停几何（34/66 token）的 launch 压缩，不外推到多块长生成（D4 限制
+第 14 条）；sb=32 与 AR033 的 sb=8 工件不可跨工件比较。
+
 
 ### Block-causal 精确历史缓存四臂基准（AR033）：H1-H4 全 supported + strawman 勘误，B2 1.54× vs 非缓存基线臂（最新头条）
 
@@ -1350,8 +1627,16 @@ pip install -e .                       # 可编辑安装
 | 12 | AR031 层级自适应重算预算 + 不确定性排序验证（三臂真实基准，reps=30） | Fast-dLLM-v2-1.5B 三臂（官方 baseline / adaptive-off / full） | **质量/安全面全 supported**（gap 0.0、长度 34/66 恢复、winner 等价 100%、逐层预算违规 0、repro 6/6）；**H3 诚实 refuted**（机制无附加延迟收益，full vs off 1.0004×） | full vs baseline **6.2690×**（vs adaptive-off 1.0004×，机制归因 refuted 如实入档） | `ar031_adaptive_uncertainty_bench.json` | 已交付（**安全/正则化档**；加速归因诚实负结果） |
 | 13 | AR032 投机验证前向的块推进复用（三臂真实基准，reps=30） | Fast-dLLM-v2-1.5B 三臂（官方 baseline / reuse-off=AR022 对齐 / reuse-on=②+单开关） | **质量逐位不损**（posthoc gap 0.0、decode [34,66] on==off、exact-match 1.0/1.0）+ 计数恒等式 4−2==2 硬门 + canary 3/3 + repro 6/6 | reuse-on vs baseline **7.9698×**（vs reuse-off 1.2875× 机制归因 supported） | `ar032_speculative_advance_bench.json` | 已交付（**加速档**：投机 rung 7.02× → 7.97×；H1-H4 全 supported；RTX 6000D 复跑 **10.36×** 全 supported，见[跨平台复核](#跨平台复核rtx-6000d-服务器复跑)） |
 | 14 | AR033 block-causal 精确历史缓存（四臂真实基准，reps=30，**官方 v2 几何 sb=8**） | Fast-dLLM-v2-1.5B 四臂（A 非缓存基线臂 / B1 `history_cache` 跨块面 / B2 +块内 sub-block 缓存 / C 官方原生 `batch_sample`，report-only） | **质量全臂一致**（posthoc gap 0.0、decode [34,66]、token rate 1.0）+ 账本精确恒等 A=5280/B1=2208/B2=714 tokens + canary 全绿 + repro 8/8 | B2 vs 非缓存基线臂 **1.5431×**（B1 1.2989×、B2 vs B1 1.188×；vs 官方 `batch_sample` 1.2821×/1.5232× report-only） | `ar033_history_cache_bench.json` | 已交付（**缓存 parity 档 + strawman 勘误档**：baseline 称谓重述 + 官方 v2 几何与血缘工件不可跨工件比较） |
+| 15 | AR034 KV-cached speculative block decoding（四臂真实基准，reps=30，**AR022 血缘几何 sb=32**） | Fast-dLLM-v2-1.5B 四臂（A 非缓存基线臂 / B2 AR033 缓存臂 / D 缓存×投机组合臂 / C 官方原生 `batch_sample`，report-only） | **质量逐位不损**（gap 0.0、decode [34,66]、token rate 1.0）+ 前向账本 D 8 vs B2 62 + canary 全绿 + repro 8/8 | D vs 非缓存基线臂 **8.7308×**、**D vs B2 6.9743×**（D 比官方快 7.94×，report-only） | `ar034_kv_speculative_bench.json` | 已交付（**组合加速档**：缓存×投机；H1-H4 全 supported；首块早停几何边界 + sb=32 不跨 AR033 工件比较） |
+| 16 | AR035 置信度门控投机提交（三臂真实基准，reps=2 快速面，τ=0.95） | Fast-dLLM-v2-1.5B 三臂（A 非缓存基线臂 / D AR034 组合臂 / G D+门控） | **质量逐位不损**（token 级 == A、mask-free、decode [34] 三臂一致、账本恒等、repro 0 mismatch） | **H2 诚实 refuted**：p50 A/G 0.7385、G/D 成本 9.5832——定位为安全/保守度旋钮，不计入加速档 |
+| 17 | AR036 提交-草稿融合（真实探针 + 快速冒烟） | Fast-dLLM-v2-1.5B 三臂（A 非缓存基线 / D AR034 组合臂 / F D+融合） | **探针四关全 0.0**（融合块 logits、下一块决策行、裁剪 KV 均与独立路径逐位一致）；质量面 mask-free、与基线同长 | 每块 **3→2** 次前向；冒烟 D/F **1.235×**（单 rep，宿主争用，formal 待跑） |
+| 18 | AR037 长几何测量 + 自适应候选预算（真实 checkpoint，192 token，单 rep） | Fast-dLLM-v2-1.5B 三臂（A 非缓存基线 / D+CDF / S=D+CDF+ACB(τ=0.5)） | **质量**：mean log p A −2.1162 < D −2.0870 = S −2.0870（塌缩假设被推翻，输出等价） | **速度**：A 172.4 s → D 16.0 s（10.8×）→ **S 11.8 s（14.6×）**；ACB 跳过率 50%、再快 1.35× |
+| 19 | AR038 置信度分级验证调度（真实 checkpoint，192 token，单 rep） | Fast-dLLM-v2-1.5B 消融（D+CDF / D+CDF+escalate N=8 / ACB+CDF / ACB+CDF+escalate） | **质量**：四者 mean log p 全为 −2.0870（升档零收益） | **速度**：升档反而 +46%（23.35 vs 16.02 s）→ escalate 档判定为无效档位（默认关），skip 档维持 −29%（11.84 s） |
+| 20 | AR039 免费验证 + 无验证贪心提交（真实 checkpoint，192 token，单 rep） | Fast-dLLM-v2-1.5B 四臂（A 基线 / D+CDF / ACB+CDF / VFG+CDF） | **质量**：D/S/V 的 mean log p 全为 −2.0870（与基线 −2.1162 相比略优且互等） | **速度**：A 172.4 s → D 14.50 s（11.9×）→ S 10.16 s（17.0×）→ **V 8.84 s（19.5×）**；VFG 6 块中 4 块免验证 |
+| 21 | AR040 矩阵基准（3 prompts × 160 token，quick，真实 checkpoint） | Fast-dLLM-v2-1.5B 四臂 × 3 prompt cell | **质量限定**：logp 达标 1/3 cell（p1 V 最好 −0.796、p3 V 最差 −1.849；D/S 在 p2/p3 也劣于基线） | **速度鲁棒**：中位 **16.2×**，3/3 cell 序关系外均达标 → 加速可推广、质量须按 workload 声明 |
+| 22 | AR041 置信度触发重掩码回退（3 prompts × 160 token，真实 checkpoint） | Fast-dLLM-v2-1.5B 三臂（A 官方迭代 / D 整块贪心 / R 回退档） | **质量**：R 的 logp 与 A **逐位相同**（−1.1528 / −0.8482 / −0.8086，3/3） | **速度**：R 比 A 快 1.38–1.53×（KV 缓存）；D 快 10–19× 但质量下降 → 质量安全/延迟优先两种模式二选一 |
 
-**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）与第 11 档（AR030）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec；第 12 档（AR031）是**安全/正则化档**——质量与安全面全 supported，机制加速归因按预注册门诚实 refuted（full vs adaptive-off 1.0004×），不作为加速 rung 引用；第 13 档（AR032）是**加速档**——投机回路在质量逐位不损的前提下把推进 forward 全额回收（H1-H4 全 supported，7.9698× vs baseline / 1.2875× 归因）；第 14 档（AR033）是**缓存 parity 档 + 勘误档**——历史 KV 缓存对齐官方 v2 分层配方（B2 1.5431× vs 非缓存基线臂），同时把本表第 1-13 档的 baseline 称谓重述为「**非缓存 block-diffusion 基线臂**」（**strawman 勘误**：官方 v2 `batch_sample` 本就是分层缓存配方，既有加速比不得解读为 vs 官方 SOTA 配方之比；C 臂 report-only 参照——官方 vs 非缓存基线臂仅 1.0131×，ActFold B1/B2 比官方快 1.2821×/1.5232×；AR033 用官方 v2 几何 sb=8，与 pre-AR033 血缘工件 sb=32 不可跨工件比较）。**计时口径**：所有 p50 比值为同 run A/B 内部有效；baseline p50 跨工件漂移（WDDM 主机状态噪声 + graph/eager 执行模式差异，3096.76→17279.30→26305.87ms）使跨工件绝对值不可直接比。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
+**读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）与第 11 档（AR030）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec；第 12 档（AR031）是**安全/正则化档**——质量与安全面全 supported，机制加速归因按预注册门诚实 refuted（full vs adaptive-off 1.0004×），不作为加速 rung 引用；第 13 档（AR032）是**加速档**——投机回路在质量逐位不损的前提下把推进 forward 全额回收（H1-H4 全 supported，7.9698× vs baseline / 1.2875× 归因）；第 14 档（AR033）是**缓存 parity 档 + 勘误档**——历史 KV 缓存对齐官方 v2 分层配方（B2 1.5431× vs 非缓存基线臂），同时把本表第 1-13 档的 baseline 称谓重述为「**非缓存 block-diffusion 基线臂**」（**strawman 勘误**：官方 v2 `batch_sample` 本就是分层缓存配方，既有加速比不得解读为 vs 官方 SOTA 配方之比；C 臂 report-only 参照——官方 vs 非缓存基线臂仅 1.0131×，ActFold B1/B2 比官方快 1.2821×/1.5232×；AR033 用官方 v2 几何 sb=8，与 pre-AR033 血缘工件 sb=32 不可跨工件比较）。第 15 档（AR034）是**组合加速档**——历史 KV × 投机验证（D 8.7308× vs 非缓存基线臂 / 6.9743× vs AR033 缓存臂，H1-H4 全 supported，质量逐位不损），受首块早停几何约束（34/66 token），sb=32 与 AR033 的 sb=8 工件不可跨工件比较。**计时口径**：所有 p50 比值为同 run A/B 内部有效；baseline p50 跨工件漂移（WDDM 主机状态噪声 + graph/eager 执行模式差异，3096.76→17279.30→26305.87ms）使跨工件绝对值不可直接比。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
 
 ### 跨平台复核（RTX 6000D 服务器复跑）
 
@@ -1563,6 +1848,22 @@ print(sampler.history_cache_stats)     # 七类前向计数整数账本（默认
 > 首块早停几何（34/66 token），多块生成（≥2 个 small block 连续提交）
 > 的质量代价与帕累托见[当前限制](#当前限制与路线图) 第 14 条。
 
+```python
+# KV-cached speculative block decoding（AR034）：历史 KV × 投机候选——
+# [N, block] 批量验证共享只读历史 KV，winner 一次性提交 small block
+# （投机提交单元须 == block_size；默认关逐字节现状；须 folded_model=None）
+config = FastDLLMSamplerConfig(
+    history_cache=True,
+    num_block_candidates=4,
+    candidate_top_k=10,
+    candidate_include_greedy=True,
+    block_size=32,
+    small_block_size=32,
+)
+sampler = FastDLLMSampler(model, config)
+output = sampler.sample(prompt_ids)     # 原生批量验证，无 folded_model
+```
+
 ### 5. 真实 checkpoint 基准（AR019 venv + 本地权重）
 
 ```bash
@@ -1597,6 +1898,12 @@ print(sampler.history_cache_stats)     # 七类前向计数整数账本（默认
 <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar033_history_cache_bench `
     --model-path <本地权重目录> --reps 30                  # --quick 冒烟（reps=3 单 prompt）
 # 复现协议详见 docs/RERUN_CHECKLIST.md 第 21 步
+
+# KV-cached speculative block decoding 四臂基准（AR034；AR022 血缘几何 sb=32，~2.5 小时）
+# 正式工件覆盖保护：默认路径已存在则拒绝覆写；--force + --force-reason 为自觉重跑通道
+<venv目录>\Scripts\python.exe -X utf8 -m scripts.ar034_kv_speculative_bench `
+    --model-path <本地权重目录> --reps 30                  # --quick 冒烟（reps=3 单 prompt）
+# 复现协议详见 docs/RERUN_CHECKLIST.md 第 22 步
 
 # 多 parent 批量折叠基准（AR025）——合成面 CPU 分钟级、无需 GPU/权重：
 python -m scripts.ar025_multi_parent_bench --mode synth  # 8 形状点×双构造
@@ -1801,12 +2108,12 @@ bash scripts/run_ablation.sh --synthetic
 
 - **black**（line-length=100）/ **isort** / **pyflakes** 零告警
 - **mypy**（`--ignore-missing-imports`）：`actfold` 75 文件 0 错 +
-  `scripts` 31 文件 0 错（`--explicit-package-bases`，命名空间包口径；
+  `scripts` 32 文件 0 错（`--explicit-package-bases`，命名空间包口径；
   维护轮已清既有债务，新增脚本保持为零）
-- **pytest** 快速套件 **1480 passed / 4 skipped / 3 deselected**（零失败；
+- **pytest** 快速套件 **1519 passed / 4 skipped / 3 deselected**（零失败；
   = AR032 后基线 1463 + 2 例 deep-experiments 回归 UT
   `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复
-  `8f133ac` 随带）+ 15 例 AR033 套件）
+  `8f133ac` 随带）+ 15 例 AR033 套件 + 11 例 AR034 套件）
   （含 AR025 sample_joint 15 例、AR024/AR026 并行轮新增、
   AR027 合同测试 66 例（UT-2701~2764）、**AR029 套件 94 例**（UT-2901~2978：
   计划 20 / 缓存 35 / 集成 27 / 机制基准判定 12；user-authorized quick 面）、
@@ -1824,6 +2131,7 @@ bash scripts/run_ablation.sh --synthetic
   边界规则 + 复现）、整数前向账本（对齐几何 + 短尾块几何）、默认关零回归
   （计数器全零 + 探针零调用）、互斥 fail-fast 五非法组合、能力探针
   named-parameter 严格性 + stats 模式）；
+  **AR034 套件 11 例**（UT-3401~3406：组合臂多几何确定性、前向账本恒等 + D 前向数 < 缓存臂、`_expand_history_kv` 复制语义与只读历史不变性、默认关零回归、非法组合 fail-fast、贪心行参赛）；
   lm-eval×2 bench-backend 用例已随 `pytest addopts` 默认 deselect
   （3 deselected，与代码无关）；skip = CUPTI + evalplus-unix 平台面等；
   BS-007 图重放性能判定在 Windows WDDM 小内核主机上按实测数字诚实 skip——
@@ -1857,9 +2165,9 @@ python demo.py
 - [`docs/OPTIMIZATION_GUIDE.md`](docs/OPTIMIZATION_GUIDE.md) — **37 个部分的完整机制与证据链**（每项创新动机 → 机理 → mutation → 基准）
 - [`docs/OPTIMIZATION_REPORT.md`](docs/OPTIMIZATION_REPORT.md) — 优化阶段报告
 - [`docs/ACADEMIC_REPORT.md`](docs/ACADEMIC_REPORT.md) — 学术版报告
-- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；第 17 步 = AR029 机制 quick 面（BLOCKED-DEFERRED）；第 18 步 = AR030 机制 quick 面（BLOCKED-DEFERRED）；第 19 步 = AR031 三臂基准；第 20 步 = AR032 三臂基准（含跨 rung 计时漂移口径）；第 21 步 = AR033 四臂历史缓存基准（官方 v2 几何 + strawman 勘误口径）；§7 = 高算力服务器复现路径）
-- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule、#46 真实 checkpoint 运维法规、#48 AR029 金字塔缓存契约、#49 AR030 页共享缓存契约、#50 AR031 层级预算契约、#51 AR032 推进复用契约与 #52 AR033 历史缓存契约 + 基线口径律）
-- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR033）
+- [`docs/RERUN_CHECKLIST.md`](docs/RERUN_CHECKLIST.md) — 复现清单（环境/venv/权重/命令；第 13–16 步 = AR023 探针与跨族基准 / AR025 合成面 / AR026 图路径 / AR025 真实面双链基准；第 17 步 = AR029 机制 quick 面（BLOCKED-DEFERRED）；第 18 步 = AR030 机制 quick 面（BLOCKED-DEFERRED）；第 19 步 = AR031 三臂基准；第 20 步 = AR032 三臂基准（含跨 rung 计时漂移口径）；第 21 步 = AR033 四臂历史缓存基准（官方 v2 几何 + strawman 勘误口径）；第 22 步 = AR034 四臂缓存×投机基准；§7 = 高算力服务器复现路径）
+- [`AGENTS.md`](AGENTS.md) — 贡献者与 AI 代理的约定和陷阱清单（含 Reproduction Guide Rule、#46 真实 checkpoint 运维法规、#48 AR029 金字塔缓存契约、#49 AR030 页共享缓存契约、#50 AR031 层级预算契约、#51 AR032 推进复用契约、#52 AR033 历史缓存契约 + 基线口径律与 #53 AR034 缓存×投机组合契约）
+- [`CHANGELOG.md`](CHANGELOG.md) — 发布历史（AR001–AR034）
 
 ---
 
@@ -1912,7 +2220,7 @@ python demo.py
       官方原生 `batch_sample` 参照臂 report-only（ActFold B1/B2 比官方快
       1.2821×/1.5232×），并交付 **strawman 勘误**（AR016-AR032 阶梯的
       「官方 baseline」实为非缓存全量重算变体，称谓重述、冻结工件零回改，
-      见第 16 条），详见最新实验结果与 ladder 第 14 档。
+      见第 16 条），详见最新实验结果与 ladder 第 14 档。**AR034**（KV-cached speculative block decoding）已按四臂真实基准收口：**overall supported（H1-H4 全过）**——历史 KV × 投机验证（整块草稿 + `[N, block]` 只读批量验证 + winner 一次性提交），**8.7308× vs 非缓存基线臂 / 6.9743× vs AR033 缓存臂**，质量逐位不损；几何 sb=32（AR022 血缘），详见最新实验结果与 ladder 第 15 档。
 2. **真实模型覆盖面**：LLaDA-8B / Dream-7B bf16 权重 14–16GB，16GB 显存叠加
    图缓冲为紧约束（AR026 生产捕获首验在此跑通，但四模式正式面建议 ≥24GiB）；
    真实模型两阶段实验（TFLOPs 削减与逐层结论）已在
@@ -2022,6 +2330,16 @@ python demo.py
        以 spec 勘误入档（AR032 冻结工件不受影响）。LLaDA/Dream 家族不做
        history cache（全双向掩码下历史不精确冻结，属不同机制域）；缓存
        与折叠谱系/投机路径/CUDA graph 的组合留路线图。
+  17. **AR034 组合臂的几何边界（缓存 × 投机）**。组合臂的投机提交单元必须匹配
+       AR022 已验证的贪心语义：本 AR 采用 `block=32 / small_block=32`（贪心行
+       100% 胜、token 级==A）。sb=8 下冻结的 min-prob 规则会让随机 top-k 行击败
+       贪心行（T007 实测 2/8 胜 → decode 96 vs 34、posthoc gap 0.398），这是
+       **选择规则的实测边界**而非并行提交本身的问题（N=1 贪心与 sb=32 均
+       token 级==A）；未来若要 sb<block 的组合，须先设计更稳的 winner 规则并
+       重新冻结判定。8.7308× 是**首块早停几何**（34/66 token）的 launch 压缩，
+       不外推到多块长生成（第 14 条 D4 塌缩**已被 AR037 实测推翻**：192 token 长几何下 D 的 mean log p −2.0870 优于非缓存基线 −2.1162，逐位一致率 0.43 属轨迹分歧而非质量退化，真实长几何加速 9.4×）；sb=32 与 AR033 的 sb=8
+       工件不可跨工件比较。块内 small-block 缓存 × 投机（N 行 `replace_position`
+       近似面）、CUDA graph × 缓存/投机（动态 KV 与静态图缓冲冲突）留路线图。
 
 ---
 

@@ -1,0 +1,133 @@
+{
+  "ar": "AR035",
+  "block_size": 32,
+  "created_at": "2026-10-25T07:10:05.904250+00:00",
+  "environment": {
+    "device": "Quadro RTX 5000",
+    "driver": "556.18",
+    "model_path": "D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "torch": "2.5.1+cu121"
+  },
+  "h1_quality": {
+    "decode_equal_all": true,
+    "decode_lengths": {
+      "baseline": [
+        34
+      ],
+      "cache-gated": [
+        34
+      ],
+      "cache-spec": [
+        34
+      ]
+    },
+    "identical_rows": [
+      0,
+      1
+    ],
+    "mask_free_all": true,
+    "token_rate_vs_baseline": 1.0,
+    "verdict": "supported"
+  },
+  "h2_cost": {
+    "cost_g_over_d": 9.583170777749379,
+    "p50_a_ms": 28269.39080003649,
+    "p50_d_ms": 3994.6830999688245,
+    "p50_g_ms": 38281.73034999054,
+    "speedup_a_over_g": 0.7384564527669915,
+    "verdict": "refuted"
+  },
+  "h3_ledger": {
+    "ledgers": {
+      "baseline": {
+        "block_rebuilds": 0,
+        "commit_forwards": 0,
+        "degraded_calls": 0,
+        "forward_tokens": 0,
+        "prefill_forwards": 0,
+        "slice_forwards": 0,
+        "spec_draft_forwards": 0,
+        "spec_gated_iterations": 0,
+        "spec_verify_forwards": 0
+      },
+      "cache-gated": {
+        "block_rebuilds": 0,
+        "commit_forwards": 3,
+        "degraded_calls": 0,
+        "forward_tokens": 7008,
+        "prefill_forwards": 3,
+        "slice_forwards": 33,
+        "spec_draft_forwards": 36,
+        "spec_gated_iterations": 36,
+        "spec_verify_forwards": 36
+      },
+      "cache-spec": {
+        "block_rebuilds": 0,
+        "commit_forwards": 3,
+        "degraded_calls": 0,
+        "forward_tokens": 672,
+        "prefill_forwards": 3,
+        "slice_forwards": 0,
+        "spec_draft_forwards": 3,
+        "spec_gated_iterations": 0,
+        "spec_verify_forwards": 3
+      }
+    },
+    "verdict": "supported"
+  },
+  "h4_reproduction": {
+    "mismatches": 0,
+    "ok": true,
+    "reps": 2,
+    "verdict": "supported"
+  },
+  "num_prompts": 1,
+  "num_tokens": 64,
+  "overall": "refuted",
+  "quick": true,
+  "reps": 2,
+  "schema": "ar035_gated_spec_bench",
+  "schema_version": 1,
+  "seed": 2026,
+  "small_block_size": 32,
+  "threshold": 0.95,
+  "timings": {
+    "per_arm_full_stats": {
+      "baseline": {
+        "mean": 28269.39080003649,
+        "n": 2,
+        "p50": 28269.39080003649,
+        "std": 3772.1852000104263
+      },
+      "cache-gated": {
+        "mean": 38281.73034999054,
+        "n": 2,
+        "p50": 38281.73034999054,
+        "std": 4778.777450090274
+      },
+      "cache-spec": {
+        "mean": 3994.6830999688245,
+        "n": 2,
+        "p50": 3994.6830999688245,
+        "std": 666.9446000014432
+      }
+    },
+    "per_arm_p50_ms": {
+      "baseline": 28269.39080003649,
+      "cache-gated": 38281.73034999054,
+      "cache-spec": 3994.6830999688245
+    },
+    "per_prompt_p50_ms": {
+      "baseline": {
+        "0": 28269.39080003649
+      },
+      "cache-gated": {
+        "0": 38281.73034999054
+      },
+      "cache-spec": {
+        "0": 3994.6830999688245
+      }
+    }
+  },
+  "title": "confidence-gated speculative commit (cost/quality knob)"
+}

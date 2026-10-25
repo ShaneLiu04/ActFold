@@ -1,0 +1,330 @@
+{
+  "ar": "AR040",
+  "arms": [
+    "baseline",
+    "cache-spec",
+    "cache-adaptive",
+    "cache-vfg"
+  ],
+  "block_size": 32,
+  "cells": [
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -1.1527930200667285,
+          "ms": 190150.12290002778
+        },
+        "cache-adaptive": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.3117783750974237,
+          "ms": 11982.041399925947
+        },
+        "cache-spec": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.3117783750974237,
+          "ms": 12039.382899994962
+        },
+        "cache-vfg": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 576,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 2,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 3,
+            "spec_verify_forwards": 2
+          },
+          "logp": -0.7963235205483117,
+          "ms": 7754.626800073311,
+          "repro_ok": true
+        }
+      },
+      "length": 160,
+      "prompt_head": "Write a long detailed technical explanat"
+    },
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8482006593817182,
+          "ms": 125258.16700002179
+        },
+        "cache-adaptive": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -0.9904012411443602,
+          "ms": 11734.224000014365
+        },
+        "cache-spec": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -0.9904012411443602,
+          "ms": 11625.88790000882
+        },
+        "cache-vfg": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 704,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 3,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 2,
+            "spec_verify_forwards": 3
+          },
+          "logp": -1.3031866998171169,
+          "ms": 8555.459900060669,
+          "repro_ok": true
+        }
+      },
+      "length": 160,
+      "prompt_head": "Explain the design of a modern vector da"
+    },
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8086002477894817,
+          "ms": 150076.88319997396
+        },
+        "cache-adaptive": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.5370440079404344,
+          "ms": 12591.221799957566
+        },
+        "cache-spec": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.5370440079404344,
+          "ms": 12016.63689990528
+        },
+        "cache-vfg": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 704,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 3,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_verification_free_blocks": 2,
+            "spec_verify_forwards": 3
+          },
+          "logp": -1.8493981006257603,
+          "ms": 9282.554799923673,
+          "repro_ok": true
+        }
+      },
+      "length": 160,
+      "prompt_head": "Describe how a compiler lowers a high-le"
+    }
+  ],
+  "created_at": "2026-10-25T14:06:06.787697+00:00",
+  "environment": {
+    "device": "Quadro RTX 5000",
+    "driver": "556.18",
+    "model_path": "D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "torch": "2.5.1+cu121"
+  },
+  "lengths": [
+    160
+  ],
+  "num_prompts": 3,
+  "quick": true,
+  "schema": "ar040_matrix_bench",
+  "schema_version": 1,
+  "seed": 2026,
+  "thresholds": {
+    "h1_cell_ratio": 0.9,
+    "h1_logp_drop": 0.05,
+    "h2_median_speedup": 10.0,
+    "h2_order_ratio": 0.8
+  },
+  "title": "matrix benchmark: robustness of the ladder across prompts and lengths",
+  "verdicts": {
+    "cells": 3,
+    "h1_pass": false,
+    "h1_quality_cells": 1,
+    "h2_median_speedup": 16.16762695558856,
+    "h2_order_cells": 1,
+    "h2_pass": false,
+    "h3_ledger_pass": true,
+    "h4_repro_pass": true,
+    "overall": "refuted"
+  }
+}

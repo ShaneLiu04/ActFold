@@ -19,7 +19,7 @@ pip install -r requirements-dev.txt
 # 3) 30 秒自检：期望 85.5% FLOPs 降幅 / MSE 2.35e-03 / 稳定率 93.75%
 python demo.py
 
-# 4) 整仓质量门：期望 1480 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线 1463 + 2 例 deep-experiments 回归 UT `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复 8f133ac 随带 + 15 例 AR033 套件 UT-3301~3307）
+# 4) 整仓质量门：期望 1491 passed / 4 skipped / 3 deselected（slow 默认跳过；AR032 后基线 1463 + 2 例 deep-experiments 回归 UT `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复 8f133ac 随带 + 15 例 AR033 套件 UT-3301~3307 + 11 例 AR034 套件 UT-3401~3406）
 python -m pytest tests/ -q
 
 # 5) 真实 checkpoint 实验（LLaDA/Dream/Fast-dLLM remote code 需 transformers 4.53.1）
@@ -462,6 +462,31 @@ python -m scripts.ar030_paged_agent_bench --quick
 #      勘误：官方 v2 batch_sample 本就是分层缓存配方（:37/:81/:102/:108/:111），
 #      既有阶梯加速比全部重述为 vs 非缓存 block-diffusion 基线臂（叙事级，
 #      冻结工件零回改，详见 AGENTS #52 基线口径律）。
+# 22) AR034 KV-cached speculative block decoding 四臂基准（Fast-dLLM-v2-1.5B，同 venv/权重）
+#     a) 前置：第 9 步的 AR019 venv（transformers==4.53.1）与本地权重目录
+#        （--model-path 或 FASTDLLM_MODEL_PATH）；判定函数冻结于脚本内（预承诺单次）
+#     b) quick 冒烟（reps=3/单 prompt/64 token，独立 _quick 工件；本机 ~4 分钟）：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar034_kv_speculative_bench `
+#     --quick --model-path <本地权重目录>
+#     c) 正式面（reps=30、**AR022 血缘几何 num_tokens=128/block=32/small_block=32**、
+#        2 prompts 四臂；本机 16GB WDDM 实测 ~2.5h——A/B2 各 ~31 次前向/块、D 仅 4 次/代、
+#        C 原生 generate ~25-100s/代；#39 计时 + round-robin + 逐 (arm,prompt) 双跑；
+#        覆盖保护 rc=4，--force 须配 --force-reason（rc=3））：
+# <venv目录>\Scripts\python.exe -X utf8 -m scripts.ar034_kv_speculative_bench `
+#     --model-path <本地权重目录> --reps 30
+#     工件：results/optimization/ar034_kv_speculative_bench.json
+#     （四臂 = A 非缓存基线 / B2 AR033 缓存臂 / D 组合臂（num_block_candidates=4,
+#      candidate_top_k=10, candidate_include_greedy=True）/ C 官方原生 batch_sample
+#      report-only（RAW 未填充 prompt）；H1 质量对齐、H2 D 须同时胜 A 与 B2、
+#      H3 类账本恒等 + D 前向数 < B2、H4 canary + repro 双跑严格相等）
+#     对照数字：H1-H4 全 supported——H1 gap 0.0 / decode [34,66] / token rate 1.0；
+#      H2 D vs A 8.7308×（28101.0 vs 3218.6ms）、D vs B2 6.9743×（22447.4 vs
+#      3218.6ms）；D 比官方快 7.94×（report-only）；H3 D 8 次前向 vs B2 62 次
+#      （每 prompt 4 vs 31）、token 行 288 vs 1952 vs A 4576；H4 canary 全绿 + repro 8/8
+#     几何注记（重要）：投机提交单元必须 == block_size（AR022 已验证语义）；sb=8 下
+#      随机 top-k 行可击败贪心行（T007：2/8 胜 → decode 96 vs 34），故本基准用 sb=32，
+#      与 AR033 的 sb=8 工件不可跨工件比较。8.73× 是首块早停几何（34/66 token）的
+#      launch 压缩，不外推到多块长生成（README 限制第 14 条）。
 ```
 
 ## 4. 方法学要求（重跑必须满足）
@@ -559,3 +584,98 @@ python -m scripts.ar030_paged_agent_bench --quick
    `results/optimization/formal_runs/<UTC>/` 下生成 `queue.log` 与 `queue.json`
    （逐面 argv、耗时、退出码、工件路径、校验结论）。失败即停、不重试、不续跑。
    `--allow-busy` 仅覆盖 GPU 静默一项且写入日志（其它 preflight 项不可豁免）。
+
+## 23. AR035 confidence-gated speculative commit (quick only, host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar035_gated_spec_bench --quick
+```
+
+Expected: ~2-4 min on a Quadro RTX 5000 (A arm dominates: the non-cached baseline runs full
+recompute), artifact `results/optimization/ar035_gated_spec_bench_quick.json`, schema
+`ar035_gated_spec_bench`. Quick outcome on the reference host: H1/H3/H4 supported, H2 refuted
+(p50 A/G 0.7385, G/D 9.5832). The formal face (128 tokens, reps=30) is a pre-committed single
+run and should be executed on a quiet server; `--quick` never writes the formal path.
+
+## 24. AR036 commit-draft fusion (quick smoke, host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar036_cdf_probe
+<venv>\Scripts\python.exe -m scripts.ar036_commit_draft_fusion_bench --quick `
+  --num-tokens 160 --no-eos --prompt-text "Write a long detailed technical explanation of ..."
+```
+
+Expected probe output: `P1_blockb_logits_maxdiff=0.000000`,
+`P2_nextblock_rows_maxdiff=0.000000 argmax_match=1.000000`, `P3_cropped_kv_maxdiff=0.0`,
+`P4_crop_available=True`.
+
+Expected bench: 5 blocks, `spec_fused_forwards > 0`, and `draft + fused == verify` on the F arm.
+**Trap**: without `--num-tokens 160 --no-eos` the checkpoint early-stops at ~34 tokens (one block)
+and `spec_fused_forwards` stays 0 — the run then proves nothing about fusion. Formal run (reps=30)
+needs a quiet GPU; quick artifacts never take the formal path.
+
+## 25. AR037 long-horizon measurement + ACB (host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar037_long_quality_probe --lengths 192,320
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion
+```
+
+Resource note: the baseline arm dominates (~170 s for 192 tokens, ~300 s for 320 on a Quadro
+RTX 5000); the composed arms are ~12-18 s. Everything is deterministic (temperature 0, fixed
+seed), so a single rep reproduces exactly.
+
+Expected: `agreement≈0.43` with `logpA≈-2.1162`, `logpD≈-2.0870` (D is not worse — do not read
+agreement as quality), ACB `skip_rate≈0.5` at tau=0.5 with `logp` unchanged.
+
+## 26. AR038 cascade ablation (host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion `
+  --escalate --escalate-threshold 0.9 --escalate-candidates 8
+```
+
+Expected: `skips=3 escalations=3` on the S arm and `escalations=6` on the D arm, `logp=-2.0870` for
+both (identical to the non-escalated runs), wall clock 23.35 s (D) / 15.23 s (S) — i.e. escalation
+buys nothing. Recorded as the measured bound on candidate-count scaling.
+
+## 27. AR039 free verification + VFG (host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar037_acb_probe --num-tokens 192 --threshold 0.5 --fusion --vfg
+```
+
+Expected on the reference host: `arm=D ms≈14500`, `arm=S ms≈10160`, `arm=V ms≈8840`, and
+`logp=-2.0870` for all three. The V arm must show `vfg>0`, `fv == fused`, and `verify < 6`
+(the free-verification sentinel re-arms the full verification for low-confidence blocks).
+
+## 28. AR040 matrix benchmark (quick on host, formal on server)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar040_matrix_bench --quick
+```
+
+Resources: the baseline arm dominates (~125-190 s per 160-token cell on a Quadro RTX 5000); the
+composed arms are 8-13 s. Quick (3 cells) runs in ~8 min; formal (6 prompts x {160,320}) is ~2 h.
+
+Expected quick verdict: `h1_quality_cells=1/3`, `h2_median_speedup≈16.2`, `h3=True`, `h4=True`,
+`overall=refuted` — i.e. speed is robust, quality is prompt-dependent. Use the per-cell `logp` values
+to decide whether a workload is safe for the greedy whole-block commit.
+
+## 29. AR041 remask-fallback threshold sweep (host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint root>\Fast_dLLM_v2_1.5B"
+<venv>\Scripts\python.exe -m scripts.ar041_remask_fallback_probe --thresholds 0.5,0.3,0.2,0.1
+```
+
+Cost: the baseline arm dominates (~2-3 min per prompt under contention). Expected: the R arm's
+`logp` equals the A arm's on every prompt (bit-identical), `fb` equals the block count at
+tau >= 0.2, and at tau = 0.1 one prompt releases a block and `logp` degrades. This is the
+quality-safe mode used by the README's recommendation table.

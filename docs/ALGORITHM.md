@@ -646,3 +646,116 @@ official native recipe on the same geometry, official vs non-cached
 baseline 1.0131×. Geometry isolation: sb=8 arms are not cross-artifact
 comparable with the pre-AR033 lineage (sb=32).
 
+## 19. KV-Cached Speculative Block Decoding (AR034)
+
+AR033 shrinks each remasking forward to the active slice against a read-only
+history KV, but a small block still costs ~`sb` serial forwards (one token per
+iteration at threshold 0.95). AR021/AR022 collapse that sequence into one draft
+plus one `[N, T]` batched verification; AR034 composes the two (opt-in
+`history_cache` + `num_block_candidates>0`; default off is byte-identical):
+
+- **Read-only history expansion**: the batch-1 `DynamicCache` is rebuilt with
+  every K/V repeated over the batch dimension (`_expand_history_kv`; detached,
+  no deepcopy, `update_past_key_values=False`). The T001 probe measured per-row
+  bit-exactness vs independent forwards (maxdiff 0.0) and a byte-identical input
+  cache after the verify.
+- **Whole-block draft and verify**: intra-block attention is bidirectional, so a
+  slice forward is not equivalent to the block forward (T001 P5: maxdiff
+  1.5-8.9); both the draft and the `[N, block]` verification forward the whole
+  active block.
+- **Frozen candidate + selection semantics**: row 0 is the draft argmax (AR022
+  greedy anchoring), the random rows use the frozen seed formula, and the
+  min-prob rule selects the winner, which is committed as a whole small block.
+  The existing `[1, block]` commit forward then commits the KV and produces the
+  advance token (AR032's advance reuse is inherent here).
+- **Geometry law**: the speculative commit unit must match the AR022-validated
+  config (`small_block_size == block_size`). At sb=8 the frozen min-prob rule
+  lets random rows beat the greedy row (T007: 2/8 wins, 96 vs 34 tokens); at
+  sb=32 greedy wins 100% and the stream is token-exact vs the non-cached
+  baseline.
+
+Empirical face (Fast-dLLM-v2-1.5B, four arms A/B2/D/C, block=32, small=32,
+reps=30, pre-committed single shot, artifact
+`results/optimization/ar034_kv_speculative_bench.json`): overall **supported**
+-- H1 gap 0.0, decode [34, 66], token rate 1.0; H2 **8.7308x vs the non-cached
+baseline** and **6.9743x vs the AR033 cache arm** (28101.0 / 22447.4 / 3218.6ms
+p50); H3 D 8 forwards vs B2 62 with the exact class ledger; H4 canary green +
+reproduction 8/8. Scope: the first-block early-stop geometry (34/66 tokens);
+the multi-block parallel-commit collapse (AR022 D4) applies identically.
+
+## 20. Confidence-Gated Speculative Commit (AR035)
+
+AR034's composition arm commits the whole small block at once, so positions whose verification
+probability is low are accepted anyway — the D4 multi-block collapse. AR035 replaces that commit
+with per-position gating: `accept = (softmax(vrows[j*])[candidate] >= threshold) & still_masked`,
+an empty set force-accepts the argmax position (at least one token per round), and the small
+block is complete only when no mask remains (the caller then breaks instead of continuing).
+
+The mechanism is safe but expensive: with an absolute `threshold` (0.95) the one-round commit
+becomes ~12 rounds on the real checkpoint. Frozen three-arm evidence (`ar035_gated_spec_bench`)
+therefore delivers H2 as an honest refutation (0.7385x vs baseline, 9.5832x cost vs AR034) and
+positions AR035 as a conservatism knob. A relative gate (fraction of the row max, or top-m
+positions) is the natural next design, not a threshold retune.
+
+## 21. Commit-Draft Fusion (AR036)
+
+The AR034 composition arm spends three forwards per block: a whole-block draft, an `[N, B]`
+batched verification, and a `[1, B]` commit that writes KV and yields the advance token.
+Because the verify row-0 tail logits are input-equivalent to the commit forward's tail (AR032),
+the next block's canvas is fully known *before* the commit runs, and block-causal attention lets
+one `[1, 2B]` forward both commit block b's KV and compute block b+1's decision rows. The extra
+KV written for the still-masked next block is cropped away (`DynamicCache.crop`), and the rows are
+stashed so the next block launches no draft forward: 3 -> 2 forwards per block.
+
+A depth-2 one-forward lookahead is structurally impossible here: the next block's position 0 is
+produced by the previous commit's tail, and intra-block bidirectional attention makes a wrong
+position 0 invalidate the entire block's verification.
+
+## 22. Adaptive Candidate Budget (AR037)
+
+Long-horizon measurement first. With EOS disabled and 192/320 generated tokens, the composition
+arm's token agreement with the non-cached baseline is only 0.43/0.40 — but that is a trajectory
+difference, not a quality loss: the same-model mean log p is -2.0870 (composition) vs -2.1162
+(baseline). The "multi-block collapse" limitation is therefore refuted, and the real long-horizon
+speedup (9.4x/10.0x) exceeds the short-geometry figure.
+
+With the greedy candidate row winning essentially always at `sb == block`, the `[N, block]`
+verification mostly confirms it. ACB uses the draft's own probability at the still-masked
+positions: if the weakest greedy probability clears `candidate_budget_threshold`, the block is
+committed as drafted and no verification forward runs. Combined with commit-draft fusion a
+skipped block costs zero further forwards. Measured at tau = 0.5: 50% of blocks skip, wall clock
+18.8s -> 11.8s, output identical (log p -2.0870), full stack 14.6x over the baseline.
+
+## 23. Confidence-Scheduled Verification Cascade (AR038)
+
+One block-level confidence number, three tiers: `g_min = min(softmax(draft)[masked, greedy])`
+drives skip (AR037), standard (`num_block_candidates`), and escalate (`escalate_candidates`).
+The escalate tier was measured to be worthless in this architecture: with the greedy-anchored row
+always winning at `sb == block`, widening the candidate set to 8 leaves the output token-identical
+(mean log p -2.0870 in every configuration) while adding 46% wall clock. It ships default-off as
+an ablation bound: candidate-count scaling is not a quality lever here; changing the commit
+semantics (e.g. revision) is.
+
+## 24. Free Verification and Verification-Free Greedy Commit (AR039)
+
+The fused commit+draft forward re-reads the block it just committed, so its decision rows score
+those tokens at zero extra cost ("free verification"). Combined with the measured invariant that
+the greedy candidate row always wins, the `[N, B]` verification becomes optional: with
+`verification_free_commit`, a confident block commits the greedy draft and skips verification
+entirely, while a low free-verification score *re-arms* the full verification for the next block.
+A skipped block must still hand its draft tail argmax to the fusion stash, otherwise CDF silently
+disables for subsequent blocks (a bug fixed in this AR; ACB improved from 11.84s to 10.16s).
+
+Measured at 192 tokens: VFG 8.84s vs ACB+CDF 10.16s vs CDF 14.50s vs baseline 172.36s (19.5x),
+mean log p -2.0870 across all composed arms.
+
+## 25. Confidence-Triggered Remask Fallback (AR041)
+
+When a block's draft confidence is too low, the one-shot greedy commit is exactly where quality
+degrades. CTR-F latches such blocks and routes them back to the official thresholded remasking
+iterations (one slice forward per iteration, per-position `p > threshold` unmasking), while
+confident blocks keep the speculative fast path. Measured on three prompts at 160 tokens, the
+fallback tier reproduces the baseline's mean log p exactly while remaining 1.4-1.5x faster from
+the history KV cache. The gate itself is almost never satisfied at a min-based statistic (15/15
+blocks fall back at tau <= 0.2), so the mechanism yields an explicit quality-safe mode rather than
+a free lunch; releasing blocks at tau = 0.1 immediately costs likelihood.
