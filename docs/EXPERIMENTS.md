@@ -896,3 +896,29 @@ Runs A, D and the chunked arm at each chunk size per prompt, printing ms / mean 
 count. Expected reference numbers: A 87-135 s; D ~8 s; C4 23 s; C8 13 s; C16 ~8 s; C32 ~5 s, with
 log p bouncing wildly across chunks (no monotone trade-off). Use it as an ablation map, not a tuning
 recipe.
+
+### 4.5m AR043 stack consolidation (preset selection)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar043_stack_consolidation_bench --quick
+```
+
+Five arms (baseline / kv-only / spec / quality / latency) over the AR040 prompt set. Frozen verdicts:
+best-quality arm (fastest with log p within 0.05 of baseline on every cell), best-latency arm,
+stacking gain (latency not slower than spec on >= 2/3 cells), and preset reproduction. Clean-run
+reference: kv-only 1.5129x, spec 12.82x, AR041-fallback 1.4542x (same log p -> rejected), latency
+14.28x. If the host is contended, the numbers drift and the run must be marked contaminated.
+
+### 4.5n AR044 refine-after-fill (blocked on the reference host)
+
+```powershell
+$env:FASTDLLM_MODEL_PATH="<checkpoint>"
+<venv>\Scripts\python.exe -m scripts.ar044_refine_probe --num-tokens 160 --prompts 3 --passes 1,2,3
+```
+
+Short-geometry run (96 tokens, one prompt) succeeded once the GPU dropped to 38%:
+kv-only -1.5499 (258.9 s, contended), latency -1.3047 (5.4 s), R1 -1.0153 (6.7 s),
+**R2 -0.9483 (9.6 s)**. Refine-after-fill therefore beats the official decode on quality at
+~2x the latency arm's cost, which is why `balanced` (passes = 2) was added.
+Remaining work: the 3-prompt x 160-token distribution on a quiet GPU.

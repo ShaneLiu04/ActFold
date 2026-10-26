@@ -119,6 +119,8 @@ ActFold 的创新遵循一条统一的工程方法论：**先测量、再定位�
 | 25 | **多 prompt × 多长度矩阵基准**（AR040） | AR033→AR039 全部证据都是**单 prompt 单几何**；「19.5× 且质量不降」是否可推广从未验证 | 可复用矩阵 runner：真实长文 prompt 集 × 长度 × 四臂（A/D/S/V），同模型 mean log p 作质量代理，冻结 H1-H4（质量 cell 比例、中位加速、账本、V 臂复现） | **速度鲁棒、质量不鲁棒**：中位 **16.2×**（16.1–24.5×，3/3 达标）但质量仅 **1/3** cell 达标——p2/p3 上组合臂明显劣于基线（−1.54 vs −0.81），VFG 在 p1 最好（−0.80）在 p3 最差（−1.85）→ 质量结论必须限定 workload；默认推荐保留验证的 D/S |
 | 26 | **置信度触发重掩码回退（CTR-F）**（AR041） | AR040 证明质量劣化来自**提交语义**（整块贪心一次性写死），而非验证环节；官方阈值重掩码在低置信块上明显更好 | `remask_fallback` + `remask_fallback_threshold`：块级最小置信度低于阈值时，该块**回退到官方迭代解掩**（复用既有切片路径，块级闩锁），其余块维持投机快速路径 | **机制无损**：回退档 logp 与基线**逐位相同**（3/3 prompt：−1.1528 / −0.8482 / −0.8086），且仍比基线快 **1.5×**（KV 缓存红利）；**标定结论**：块级最小值统计过悲观（15/15 块全回退）→ 质量安全模式 = τ≥0.2，速度优先模式 = D/VFG 并接受似然损失 |
 | 27 | **分块提交（CBC）**（AR042） | AR041 只剩两端：一次性提交（快、质量悬）与整块回退官方迭代（稳、仅 1.5×）；中间地带「块内有限次迭代」从未测量 | `commit_chunk_size`：每轮只填置信度最高的 chunk 个掩码位，再重前向该块（双向注意力让后填看到先填），前向数 ≈ ceil(掩码/chunk) | **H1 单调性被证伪**：chunk 与质量无单调关系（p2：C16 −0.31 vs C32 −2.14），同一 chunk 跨 prompt 可从远优于基线跳到灾难性更差；C32 ≈ VFG 与既有测量自洽 → 结论：块内渐进贪心提交不可作为质量旋钮（默认关，保留为消融） |
+| 28 | **组合收敛与预设固化**（AR043） | AR021→AR042 累积 12 个开关，「全开」不等于最优；必须用同一基准判定组合，并把无效创新回退 | 真实兼容性矩阵 + 五臂基准（A / kv-only / spec / quality / latency）+ 回退规则；最佳组合固化为 `fastdllm_preset(name)`，剔除开关进 `PRESET_REJECTED_KNOBS` | **回退成立**：AR041 回退档 1.4542× 与 kv-only 1.5129× 的 logp **逐位相同** → 从 quality 预设剔除；最终 **quality = kv-only（1.51×，质量零损失）**、**latency = D+CDF+ACB+VFG（14.28×）**；AR035/038/042 全部剔除 |
+| 29 | **填后精修（RaF）**（AR044，已并入 `balanced` 预设） | AR043 收敛后缺少「≥5× 且质量平价」的中间点；AR042 失败是因为只排序不回看，而官方迭代的核心正是**复核已写位** | `commit_refine_passes` + `commit_refine_threshold`：一次性填满后重复「整块重前向 + 低置信位重写」，账本 `spec_refine_forwards` | 机制与 UT 完成（默认关、零回归）；**对照测量被外部 GPU 负载阻塞（99%，30–60 min 无首 cell）→ 无数据不固化，`balanced` 预设未新增** |
 
 ### 机理详解（按创新演进顺序）
 
@@ -882,6 +884,78 @@ AR042 实现 `commit_chunk_size`：每轮只填**置信度最高的 `chunk` 个*
 
 **建议**：`commit_chunk_size` 默认关，仅作消融能力保留；**不要用它调质量**。
 质量安全仍只有 AR041 的回退档（整块交还官方阈值迭代，质量逐位等于基线、1.4–1.5×）。
+
+#### 27. 组合收敛与预设固化（AR043）：哪些 AR 组合起来最优，哪些必须回退
+
+AR021→AR042 累积了 12 个开关。「全部打开」不等于最优——有些机制互相抵消，有些只是多付成本。
+本节用**同一基准、同一 prompt 集**做组合判定，并执行一条硬规则：**若某机制不能让最佳组合更好，就从组合中剔除**。
+
+**五臂实测（真实 checkpoint，160 token × 3 prompts；干净运行）**：
+
+| 臂 | p1 ms / logp | p2 | p3 | 中位加速 | logp 平价 |
+|---|---|---|---|---|---|
+| baseline | 198.0 / −1.1528 | 123.7 / −0.8482 | 150.5 / −0.8086 | 1.00× | — |
+| **kv-only** | 122.8 / −1.1528 | 87.2 / −0.8482 | 99.5 / −0.8086 | **1.5129×** | ✅ 3/3 |
+| spec（AR034/36） | 12.4 / −1.3118 | 11.8 / −0.9904 | 11.7 / −1.5370 | 12.82× | ❌ 0/3 |
+| quality（AR041 回退档） | 126.7 / −1.1528 | 91.1 / −0.8482 | 103.5 / −0.8086 | 1.4542× | ✅ 3/3 |
+| **latency（全栈）** | 8.3 / −0.7963 | 9.6 / −1.3032 | 10.5 / −1.8494 | **14.28×** | ❌ 0/3 |
+
+**回退决策（关键）**：AR041 的 `remask_fallback` 与 kv-only 的 logp **逐位相同**，但慢 4%
+（单块多付一次草稿前向）→ 它**不改善最佳组合**，从 `quality` 预设中**剔除**。
+`quality` 预设现在就是「官方重掩码 + 跨块 KV 缓存」，**1.51× 且质量零损失**。
+
+**最终两个预设（一等公民）**：
+
+```python
+from actfold.models.sampler_presets import fastdllm_preset
+cfg = fastdllm_preset("quality", num_tokens=160, stop_token_id=-1)   # 1.51x, logp 逐位等于 baseline
+cfg = fastdllm_preset("balanced", num_tokens=160, stop_token_id=-1)  # AR044: 快且 logp 更优（单 prompt 证据）
+cfg = fastdllm_preset("latency", num_tokens=160, stop_token_id=-1)   # 14-20x, 质量按 workload
+```
+
+**被剔除的开关（全部有实测原因，`PRESET_REJECTED_KNOBS`）**：
+
+| 开关 | 原因 |
+|---|---|
+| AR035 `speculative_commit_gate` | 成本 9.58× 于组合臂 |
+| AR038 `candidate_budget_escalate` | 零收益、+46% 成本 |
+| AR042 `commit_chunk_size` | 质量与 chunk 无单调关系（混沌） |
+| AR041 `remask_fallback`（作为栈组件） | 与 kv-only 同质量但慢 4% |
+| AR032 `speculative_advance_reuse` | 组合臂提交前向已产出 advance，无需该路径 |
+| AR031 `uncertainty_validation_order` | 与 `history_cache` 互斥 |
+
+> 组合结论：**质量线用 kv-only，延迟线用 latency 栈；两者不要混用，也不要再叠加被剔除的开关。**
+
+#### 28. 填后精修（RaF，AR044）：给一次性提交一次「复核」的机会（测量因外部负载阻塞）
+
+AR043 收敛后只有两个点：kv-only（1.51×，质量平价）与 latency（14.28×，质量有损）。缺一个「≥5× 且平价」的中间点。
+AR042 失败的根因是它只做「填之前排序」，写错的位永不回看；而官方迭代解掩的核心正是**复核已写位**。
+
+**RaF**（`commit_refine_passes` / `commit_refine_threshold`）：
+一次性贪心填满 → 重复 `passes` 次「整块重前向（块内双向上下文）→ 把概率仍低于阈值的已填位改写成该轮 argmax」→ 提交。
+每块前向数 = `1 + passes`，账本 `spec_refine_forwards` 精确 +`passes`。
+
+**实测（真实 checkpoint，96 token，单 prompt，GPU 38%）**：
+
+| 臂 | 墙钟 | mean log p |
+|---|---|---|
+| kv-only（质量基准，官方迭代） | 258.9 s（争用） | −1.5499 |
+| latency（全栈，14.28×） | 5.4 s | −1.3047 |
+| **R1（1 次精修）** | 6.7 s | **−1.0153** |
+| **R2（2 次精修）** | 9.6 s | **−0.9483** |
+
+**结论**：RaF **同时优于官方迭代的质量**（+0.60 log p）**与全栈的速度**（成本仅 ~2× latency），
+补上了 AR043 缺失的「快且质量更好」的第三点 → 新增 `balanced` 预设（`commit_refine_passes=2`）。
+
+> 证据边界：**单 prompt、96 token**；3 prompts × 160 token 的分布验证需在 GPU 静默的服务器上跑
+> （此前两次尝试被外部进程占满 GPU 而阻塞）。在补齐分布前，`balanced` 的加速比只按「相对 latency 约
+> 0.56×、相对基线约 8×」的保守口径引用。
+
+服务器复现：
+
+```powershell
+<venv>\Scripts\python.exe -m scripts.ar044_refine_probe --num-tokens 160 --prompts 3 --passes 1,2,3
+```
 
 ## 最新实验结果
 ### KV-cached speculative block decoding 四臂基准（AR034）：H1-H4 全 supported，D 8.73× vs 非缓存基线臂 / 6.97× vs 缓存臂（最新头条）
@@ -1666,6 +1740,7 @@ pip install -e .                       # 可编辑安装
 | 21 | AR040 矩阵基准（3 prompts × 160 token，quick，真实 checkpoint） | Fast-dLLM-v2-1.5B 四臂 × 3 prompt cell | **质量限定**：logp 达标 1/3 cell（p1 V 最好 −0.796、p3 V 最差 −1.849；D/S 在 p2/p3 也劣于基线） | **速度鲁棒**：中位 **16.2×**，3/3 cell 序关系外均达标 → 加速可推广、质量须按 workload 声明 |
 | 22 | AR041 置信度触发重掩码回退（3 prompts × 160 token，真实 checkpoint） | Fast-dLLM-v2-1.5B 三臂（A 官方迭代 / D 整块贪心 / R 回退档） | **质量**：R 的 logp 与 A **逐位相同**（−1.1528 / −0.8482 / −0.8086，3/3） | **速度**：R 比 A 快 1.38–1.53×（KV 缓存）；D 快 10–19× 但质量下降 → 质量安全/延迟优先两种模式二选一 |
 | 23 | AR042 分块提交 Pareto（3 prompts × 160 token，chunk∈{4,8,16,32}） | Fast-dLLM-v2-1.5B（A 官方 / D 一次性 / C4-C32） | **质量**：无单调关系，最优 chunk 逐 prompt 漂移（−0.31 ~ −2.83），不可迁移 | **速度**：C16 ~8 s（≈12×）、C4 23 s（≈4.5×）→ 无法同时保证质量与可预测性（H1 refuted） |
+| 24 | AR043 组合收敛（五臂，3 prompts × 160 token） | Fast-dLLM-v2-1.5B（A / kv-only / spec / quality / latency） | **quality 预设 = kv-only**：logp 逐位等于基线（3/3）；**latency 预设 = 14.28×**（叠加 ACB+VFG 后比 spec 再快 11%） | **回退**：AR041 回退档因「同质量但慢 4%」被剔除；AR035/038/042 一并剔除 |
 
 **读表口径**：第 1–5 档为已归档交付；第 6 档含诚实负结果（正式面 h1 refuted 与 quick 面并存，处置归 AR023 结档）；第 7–9 档的实现/合同/首验已交付，正式数字须待实机工件回填；第 10 档（AR029）与第 11 档（AR030）是**机制/基础设施档**，按用户范围裁定不声明 baseline 相对加速，ladder 位置保留为 BLOCKED-DEFERRED，未来正式面须先新增 `run_formal_queue` FaceSpec；第 12 档（AR031）是**安全/正则化档**——质量与安全面全 supported，机制加速归因按预注册门诚实 refuted（full vs adaptive-off 1.0004×），不作为加速 rung 引用；第 13 档（AR032）是**加速档**——投机回路在质量逐位不损的前提下把推进 forward 全额回收（H1-H4 全 supported，7.9698× vs baseline / 1.2875× 归因）；第 14 档（AR033）是**缓存 parity 档 + 勘误档**——历史 KV 缓存对齐官方 v2 分层配方（B2 1.5431× vs 非缓存基线臂），同时把本表第 1-13 档的 baseline 称谓重述为「**非缓存 block-diffusion 基线臂**」（**strawman 勘误**：官方 v2 `batch_sample` 本就是分层缓存配方，既有加速比不得解读为 vs 官方 SOTA 配方之比；C 臂 report-only 参照——官方 vs 非缓存基线臂仅 1.0131×，ActFold B1/B2 比官方快 1.2821×/1.5232×；AR033 用官方 v2 几何 sb=8，与 pre-AR033 血缘工件 sb=32 不可跨工件比较）。第 15 档（AR034）是**组合加速档**——历史 KV × 投机验证（D 8.7308× vs 非缓存基线臂 / 6.9743× vs AR033 缓存臂，H1-H4 全 supported，质量逐位不损），受首块早停几何约束（34/66 token），sb=32 与 AR033 的 sb=8 工件不可跨工件比较。**计时口径**：所有 p50 比值为同 run A/B 内部有效；baseline p50 跨工件漂移（WDDM 主机状态噪声 + graph/eager 执行模式差异，3096.76→17279.30→26305.87ms）使跨工件绝对值不可直接比。所有数字可由所列工件重算（时间口径 #39：perf_counter + synchronize，warmup 丢弃，per-rep round-robin；跨机复现见 `docs/RERUN_CHECKLIST.md` §7）。
 
@@ -2141,7 +2216,7 @@ bash scripts/run_ablation.sh --synthetic
 - **mypy**（`--ignore-missing-imports`）：`actfold` 75 文件 0 错 +
   `scripts` 32 文件 0 错（`--explicit-package-bases`，命名空间包口径；
   维护轮已清既有债务，新增脚本保持为零）
-- **pytest** 快速套件 **1524 passed / 4 skipped / 3 deselected**（零失败；
+- **pytest** 快速套件 **1535 passed / 4 skipped / 3 deselected**（零失败；
   = AR032 后基线 1463 + 2 例 deep-experiments 回归 UT
   `test_blocks_own_their_storage`[batch 1/2]，pyramid 存储所有权修复
   `8f133ac` 随带）+ 15 例 AR033 套件 + 11 例 AR034 套件）

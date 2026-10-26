@@ -664,6 +664,7 @@ def test_ut3303_sb_cache_mechanism_faces() -> None:
             "free_verify_low_conf",
             "spec_remask_fallbacks",
             "spec_chunk_forwards",
+            "spec_refine_forwards",
         )
     } == {
         "prefill_forwards": 1,
@@ -714,6 +715,7 @@ def test_ut3304_cross_block_ledger_aligned() -> None:
             "free_verify_low_conf",
             "spec_remask_fallbacks",
             "spec_chunk_forwards",
+            "spec_refine_forwards",
         )
     } == {
         "prefill_forwards": 1,
@@ -753,6 +755,7 @@ def test_ut3304_cross_block_ledger_short_final() -> None:
             "free_verify_low_conf",
             "spec_remask_fallbacks",
             "spec_chunk_forwards",
+            "spec_refine_forwards",
         )
     } == {
         "prefill_forwards": 1,
@@ -810,6 +813,7 @@ def test_ut3305_default_off_zero_regression(monkeypatch: pytest.MonkeyPatch) -> 
             "free_verify_low_conf",
             "spec_remask_fallbacks",
             "spec_chunk_forwards",
+            "spec_refine_forwards",
         )
     } == {
         "prefill_forwards": 0,
@@ -959,6 +963,7 @@ def test_ut3307_stats_schema_and_cumulation() -> None:
         "free_verify_low_conf",
         "spec_remask_fallbacks",
         "spec_chunk_forwards",
+        "spec_refine_forwards",
     }
     assert set(sampler.history_cache_stats) == keys
     read = sampler.history_cache_stats

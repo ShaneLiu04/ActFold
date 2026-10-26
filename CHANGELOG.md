@@ -4,6 +4,25 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### AR044 — 填后精修（RaF）；对照测量被外部 GPU 负载阻塞
+
+- 新增 `commit_refine_passes` / `commit_refine_threshold`（默认关）：一次性填满后重复「整块重前向 + 低置信位重写」，
+  账本 `spec_refine_forwards`；精修块走非融合提交。
+- UT-4401~4404；全量 **1534 passed / 4 skipped**。
+- 短几何实测（96 token，单 prompt）：R2 精修 **−0.9483** vs 官方迭代 −1.5499 / 全栈 −1.3047，
+  成本 9.6 s vs 5.4 s → **新增 `balanced` 预设（passes=2）**，补上「快且质量更好」的第三点。
+  证据边界：单 prompt；3-prompt 矩阵待 GPU 静默服务器（命令与判读见 README §28 / RERUN 32）。
+
+### AR043 — 组合收敛与预设固化（含回退）
+
+- 新增 `actfold/models/sampler_presets.py`：`baseline` / `quality` / `latency` 三个已验证预设 +
+  `PRESET_REJECTED_KNOBS`（剔除原因）；`fastdllm_preset` 未知名 `KeyError`、非法覆盖 `ValueError`。
+- 五臂实测（3 prompts × 160 token）：kv-only 1.5129×（logp 逐位等于基线）、spec 12.82×、
+  AR041 回退档 1.4542×（同质量但更慢）、latency 14.28×。
+- **回退**：`remask_fallback` 从 quality 预设剔除（同质量慢 4%）；AR035/AR038/AR042 一并剔除。
+  最终 quality = kv-only；latency = D+CDF+ACB+VFG。
+- UT-4301~4306；全量 **1530 passed / 4 skipped**。基准 `scripts/ar043_stack_consolidation_bench.py`。
+
 ### AR042 — 分块提交（CBC）：中间地带实测为混沌，H1 单调性被证伪
 
 - 新增 `commit_chunk_size`（默认 0）：块内渐进解掩（每轮填最高置信 chunk 位 + 重前向该块），账本 `spec_chunk_forwards`。

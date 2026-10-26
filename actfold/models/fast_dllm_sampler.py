@@ -156,6 +156,8 @@ class FastDLLMSamplerConfig(SamplerConfig):
     remask_fallback: bool = False
     remask_fallback_threshold: float = 0.5
     commit_chunk_size: int = 0
+    commit_refine_passes: int = 0
+    commit_refine_threshold: float = 0.5
 
     def __post_init__(self) -> None:
         if self.num_block_candidates < 0:
@@ -231,6 +233,16 @@ class FastDLLMSamplerConfig(SamplerConfig):
                     "speculative_commit_gate=True (the gated commit changes the "
                     "committed set; ACB assumes whole-block commit)."
                 )
+        if self.commit_refine_passes < 0:
+            raise ValueError(f"commit_refine_passes must be >= 0, got {self.commit_refine_passes}")
+        if self.commit_refine_passes > 0 and not (
+            self.history_cache and self.num_block_candidates > 0
+        ):
+            raise ValueError(
+                "commit_refine_passes > 0 requires history_cache=True and "
+                "num_block_candidates > 0 (refine-after-fill is a composition-arm "
+                "commit scheme)."
+            )
         if self.commit_chunk_size < 0:
             raise ValueError(f"commit_chunk_size must be >= 0, got {self.commit_chunk_size}")
         if self.commit_chunk_size > 0 and not (
@@ -492,6 +504,7 @@ class FastDLLMSampler(DiffusionSampler):
         self._fv_rearm = False
         self._hc_remask_fallbacks = 0
         self._hc_spec_chunk_forwards = 0
+        self._hc_spec_refine_forwards = 0
         self._hc_remask_fallback_blocks: set[int] = set()
         self._hc_fusion_disabled = False
         self._hc_draft_stash: dict[str, Any] | None = None
@@ -567,6 +580,7 @@ class FastDLLMSampler(DiffusionSampler):
             "free_verify_low_conf": self._hc_free_verify_low_conf,
             "spec_remask_fallbacks": self._hc_remask_fallbacks,
             "spec_chunk_forwards": self._hc_spec_chunk_forwards,
+            "spec_refine_forwards": self._hc_spec_refine_forwards,
         }
 
     def _probe_history_cache_support(self) -> _HistoryCacheSupport:
@@ -1102,6 +1116,42 @@ class FastDLLMSampler(DiffusionSampler):
             self._hc_remask_fallback_blocks.add(int(block_idx))
             self._hc_remask_fallbacks += 1
             return False
+
+        passes = int(getattr(cfg, "commit_refine_passes", 0))
+        if passes > 0 and num_masked > 0:
+            # AR044 refine-after-fill: commit the one-shot greedy fill, then
+            # re-read the whole block `passes` times and rewrite the
+            # positions whose token probability is still below the threshold.
+            # Unlike AR042's progressive fill, every pass re-examines ALL
+            # originally masked positions with full in-block context.
+            fill = block_view.clone()
+            greedy_tokens = topk_idx[0, :, 0]  # AR022 greedy row, whole block
+            fill[0, masked_local + sb_lo] = greedy_tokens[masked_local]
+            for _ in range(passes):
+                x[:, start:end] = fill[:, sb_lo:sb_hi]
+                out = raw_model(
+                    input_ids=x[:, -active_len:],
+                    use_cache=True,
+                    past_key_values=kv,
+                    update_past_key_values=False,
+                    block_size=bs,
+                )
+                a2 = torch.cat([block_boundary_raw, out.logits[:, :-1, :]], dim=1)
+                if win_offset > 0:
+                    a2 = torch.cat([a2.new_zeros((B, win_offset, a2.shape[-1])), a2], dim=1)
+                cur = a2[:, sb_lo:sb_hi]
+                probs = F.softmax(cur[0].float(), dim=-1)
+                cur_tokens = cur[0].argmax(dim=-1)
+                p = probs[masked_local, fill[0, masked_local + sb_lo]]
+                low = p < float(cfg.commit_refine_threshold)
+                fill[0, masked_local[low] + sb_lo] = cur_tokens[masked_local[low]]
+                self._hc_spec_refine_forwards += 1
+                self._hc_forward_tokens += active_len
+            x[:, start:end] = fill[:, sb_lo:sb_hi]
+            finished |= (x[:, start:end] == stop_id).any(dim=1)
+            if cfg.return_history:
+                history.append(x.clone())
+            return True
 
         chunk = int(getattr(cfg, "commit_chunk_size", 0))
         if chunk > 0 and num_masked > 0:

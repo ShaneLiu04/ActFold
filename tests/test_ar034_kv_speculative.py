@@ -128,6 +128,7 @@ def test_ut3402_forward_count_identity(block_size: int, small: int, num_tokens: 
         "free_verify_low_conf",
         "spec_remask_fallbacks",
         "spec_chunk_forwards",
+        "spec_refine_forwards",
     }
 
     cache = FastDLLMSampler(llm, config=_cfg(history_cache=True, **common))

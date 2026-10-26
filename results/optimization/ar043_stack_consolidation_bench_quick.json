@@ -1,0 +1,431 @@
+{
+  "ar": "AR043",
+  "arms": [
+    "baseline",
+    "kv-only",
+    "spec",
+    "quality",
+    "latency"
+  ],
+  "cells": [
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -1.1527930200667285,
+          "ms": 199588.24060007464
+        },
+        "kv-only": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 5088,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 154,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -1.1527930200667285,
+          "ms": 130695.19360002596
+        },
+        "latency": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 576,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 2,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 3,
+            "spec_verify_forwards": 2
+          },
+          "logp": -0.7963235205483117,
+          "ms": 26116.242299904115,
+          "repro_ok": true
+        },
+        "quality": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 5088,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 154,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -1.1527930200667285,
+          "ms": 123540.26859998703,
+          "repro_ok": true
+        },
+        "spec": {
+          "gen_tokens": 164,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.3117783750974237,
+          "ms": 12125.29950006865
+        }
+      },
+      "prompt_head": "Write a long detailed technical explanat"
+    },
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8482006593817182,
+          "ms": 431222.4152000854
+        },
+        "kv-only": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 3552,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 106,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8482006593817182,
+          "ms": 90413.59739995096
+        },
+        "latency": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 704,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 3,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 2,
+            "spec_verify_forwards": 3
+          },
+          "logp": -1.3031866998171169,
+          "ms": 9349.406199995428,
+          "repro_ok": true
+        },
+        "quality": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 3552,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 106,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8482006593817182,
+          "ms": 89712.83249999397,
+          "repro_ok": true
+        },
+        "spec": {
+          "gen_tokens": 162,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -0.9904012411443602,
+          "ms": 12831.006099935621
+        }
+      },
+      "prompt_head": "Explain the design of a modern vector da"
+    },
+    {
+      "arms": {
+        "baseline": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 0,
+            "degraded_calls": 0,
+            "forward_tokens": 0,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 0,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8086002477894817,
+          "ms": 196517.1840999974
+        },
+        "kv-only": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 4032,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 121,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8086002477894817,
+          "ms": 137754.99709998257
+        },
+        "latency": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 704,
+            "free_verify_blocks": 3,
+            "free_verify_low_conf": 3,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 2,
+            "spec_verify_forwards": 3
+          },
+          "logp": -1.8493981006257603,
+          "ms": 9777.895599952899,
+          "repro_ok": true
+        },
+        "quality": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 4,
+            "degraded_calls": 0,
+            "forward_tokens": 4032,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 121,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 0,
+            "spec_fused_forwards": 0,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 0
+          },
+          "logp": -0.8086002477894817,
+          "ms": 806684.5190000022,
+          "repro_ok": true
+        },
+        "spec": {
+          "gen_tokens": 166,
+          "ledger": {
+            "block_rebuilds": 0,
+            "commit_forwards": 1,
+            "degraded_calls": 0,
+            "forward_tokens": 960,
+            "free_verify_blocks": 0,
+            "free_verify_low_conf": 0,
+            "prefill_forwards": 1,
+            "slice_forwards": 0,
+            "spec_budget_escalations": 0,
+            "spec_budget_skips": 0,
+            "spec_chunk_forwards": 0,
+            "spec_draft_forwards": 2,
+            "spec_fused_forwards": 3,
+            "spec_gated_iterations": 0,
+            "spec_remask_fallbacks": 0,
+            "spec_verification_free_blocks": 0,
+            "spec_verify_forwards": 5
+          },
+          "logp": -1.5370440079404344,
+          "ms": 19231.5831000451
+        }
+      },
+      "prompt_head": "Describe how a compiler lowers a high-le"
+    }
+  ],
+  "created_at": "2026-10-26T02:18:27.452995+00:00",
+  "environment": {
+    "device": "Quadro RTX 5000",
+    "driver": "556.18",
+    "model_path": "D:\\ActFold\\ar019_model\\Fast_dLLM_v2_1.5B",
+    "torch": "2.5.1+cu121"
+  },
+  "num_prompts": 3,
+  "num_tokens": 160,
+  "quick": true,
+  "schema": "ar043_stack_consolidation_bench",
+  "schema_version": 1,
+  "title": "stack consolidation: measured-best preset selection",
+  "verdicts": {
+    "best_latency_arm": "latency",
+    "best_latency_logp_delta": -0.3797714645844201,
+    "best_latency_speedup": 20.098106191780573,
+    "best_quality_arm": "quality",
+    "best_quality_speedup": 1.6155723381687352,
+    "logp_parity": {
+      "baseline": true,
+      "kv-only": true,
+      "latency": false,
+      "quality": true,
+      "spec": false
+    },
+    "overall": "supported",
+    "speedup_vs_baseline": {
+      "baseline": 1.0,
+      "kv-only": 1.5271276249904495,
+      "latency": 20.098106191780573,
+      "quality": 1.6155723381687352,
+      "spec": 16.46047923178678
+    },
+    "v3_pass": true,
+    "v3_stack_gain_cells": 2,
+    "v4_repro_pass": true
+  }
+}
